@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Sensitive config (site credentials)
+.env
+**/.env
+!**/.env.example
+
+# Local data & databases
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+data/
+.tengence/
+
+# Build output
+dist/
+build/
+coverage/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Local agent workspace data (memory / session state, never committed)
+.workbuddy/

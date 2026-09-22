@@ -1,0 +1,26 @@
+{
+  "$schema": "./dsh.schema.json",
+  "name": "tengence-geo",
+  "model": {
+    "provider": "deepseek",
+    "name": "deepseek-chat",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "baseUrl": "https://api.deepseek.com"
+  },
+  "systemPromptFile": "agent.md",
+  "tools": {
+    "mcpServers": {
+      "tengence-geo": {
+        "command": "npx",
+        "args": ["-y", "@tengence/geo-mcp"],
+        "env": {
+          "SITES_ROOT": "${SITES_ROOT}",
+          "DB_DRIVER": "${DB_DRIVER:-sqlite}",
+          "DB_PATH": "${DB_PATH:-}"
+        }
+      }
+    }
+  },
+  "maxIterations": 25,
+  "temperature": 0.2
+}

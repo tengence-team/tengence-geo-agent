@@ -1,0 +1,5 @@
+# WordPress publishing behavior (aligned with the Tengence content pipeline conventions)
+publish:
+  per_day: 1
+  skip_dates: []
+  default_status: draft

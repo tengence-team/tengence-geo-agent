@@ -1,0 +1,38 @@
+{
+  "name": "tengence-geo-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "GEO/SEO content production & publishing agent — multi-site content engine (@tengence/geo-sdk) + CLI (@tengence/geo-cli) + MCP server (@tengence/geo-mcp) + pluggable harness launcher (@tengence/geo-agent)",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "SITES_ROOT=examples DB_DRIVER=sqlite DB_PATH=/tmp/geo-tests.sqlite node --test tests/*.test.js",
+    "test:sqlite": "SITES_ROOT=examples DB_DRIVER=sqlite DB_PATH=/tmp/geo-tests.sqlite node --test tests/sqlite-*.test.js",
+    "build": "node scripts/check-workspaces.js",
+    "geo:sdk-smoke": "SITES_ROOT=examples node dev/sdk-smoke.js",
+    "geo:sdk-probe": "node dev/sdk-require-probe.js",
+    "geo:cli:db-init": "node packages/geo-cli/bin/db-init.js",
+    "geo:mcp": "node packages/geo-mcp/bin/geo-mcp.js",
+    "geo:mcp-http": "node packages/geo-mcp/bin/geo-mcp-http.js",
+    "geo:agent": "node apps/agent/launcher.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "geo",
+    "seo",
+    "content",
+    "wordpress",
+    "mcp",
+    "agent",
+    "deepseek-harness",
+    "openai-compatible"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0"
+  }
+}

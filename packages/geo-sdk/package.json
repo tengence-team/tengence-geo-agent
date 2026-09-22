@@ -1,0 +1,54 @@
+{
+  "name": "@tengence/geo-sdk",
+  "version": "0.1.0",
+  "description": "GEO/SEO content engine library: multi-site content ingestion, gates, WordPress publishing, search inclusion, AI monitoring and multi-platform distribution. Dual storage drivers (SQLite default / MySQL production).",
+  "main": "index.js",
+  "files": [
+    "index.js",
+    "paths.js",
+    "site/",
+    "db/",
+    "wp/",
+    "content/",
+    "images/",
+    "search/",
+    "llm/",
+    "monitor/",
+    "syndicate/",
+    "taxonomy/",
+    "plan/",
+    "check/",
+    "publish/",
+    "diagnose/",
+    "standards/",
+    "cli/",
+    "util.js",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test ../../tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "geo",
+    "seo",
+    "content",
+    "wordpress",
+    "markdown",
+    "mcp",
+    "multi-tenant"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@rbbtsn0w/wechat-markdown": "^1.5.0",
+    "better-sqlite3": "^11.10.0",
+    "cheerio": "^1.0.0-rc.12",
+    "form-data": "^4.0.6",
+    "js-yaml": "^5.1.0",
+    "marked": "^18.0.5",
+    "mysql2": "^3.22.5",
+    "sharp": "^0.35.4"
+  }
+}

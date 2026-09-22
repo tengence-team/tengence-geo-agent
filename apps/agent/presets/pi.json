@@ -1,0 +1,14 @@
+{
+  "$comment": "Pi (terminal AI agent) integration config. Pi reads this file as the agent config for the current directory; the MCP server is defined in mcp.json (same directory).",
+  "model": "deepseek:deepseek-chat",
+  "provider": {
+    "deepseek": {
+      "apiKeyEnv": "DEEPSEEK_API_KEY",
+      "baseUrl": "https://api.deepseek.com"
+    }
+  },
+  "systemPromptFile": "agent.md",
+  "tools": {
+    "mcp": true
+  }
+}

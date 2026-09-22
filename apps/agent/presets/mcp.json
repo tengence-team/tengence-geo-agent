@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "tengence-geo": {
+      "command": "npx",
+      "args": ["-y", "@tengence/geo-mcp"],
+      "env": {
+        "SITES_ROOT": "${SITES_ROOT}",
+        "DB_DRIVER": "${DB_DRIVER:-sqlite}",
+        "DB_PATH": "${DB_PATH:-}"
+      }
+    }
+  }
+}

@@ -1,0 +1,30 @@
+# ============================================================
+# Monitor config (monitor domain) — example values; replace with your brand terms and competitors
+# Full field documentation: packages/geo-sdk/monitor/config.js
+# NOTE: complete_accuracy_markers must match the language of the model answers you
+# monitor — this example uses English (dual-engine); for zh-CN sites replace them
+# with the Chinese terms your answers actually contain.
+# ============================================================
+monitor:
+  brand_terms:
+    - Tengence GEO
+  strong_brand_terms:
+    - Tengence
+  homonym_brand_terms: []
+  entity_anchors:
+    - https://www.tengence.com/
+  site_domain: www.tengence.com
+  competitors:
+    - name: Sample Competitor A
+      aliases: [Sample Competitor A]
+    - name: Sample Competitor B
+      aliases: [Sample Competitor B]
+  accuracy_flags: []
+  complete_accuracy_markers: [GEO + SEO, dual-engine]
+  attempts: 3
+  temperature: 0.2
+  models: [deepseek, kimi]
+  report_dir: plan/2026/reports
+  pricing:
+    deepseek: { input_per_1m: 1, output_per_1m: 2 }
+    kimi: { input_per_1m: 4, output_per_1m: 16 }

@@ -1,0 +1,14 @@
+# ============================================================
+# Example site (fixture): copy this directory to sites/<your-site> to onboard a site
+# Fields follow the SDK site config layout (site identity / domain / languages / content dirs)
+# ============================================================
+site:
+  key: demo
+  name: Example Site
+  domain: demo.example.com
+  languages:
+    default: zh-CN
+  content:
+    root: data
+    posts: inbox
+    drafts: inbox

@@ -1,0 +1,46 @@
+{
+  "name": "@tengence/geo-cli",
+  "version": "0.1.0",
+  "description": "GEO content engine CLI: ingest, gates, publishing, inclusion submission, monitoring, image acquisition, planning (the CLI entry layer of @tengence/geo-sdk)",
+  "bin": {
+    "tengence-geo-article-export": "bin/article-export.js",
+    "tengence-geo-article-ingest": "bin/article-ingest.js",
+    "tengence-geo-article-save": "bin/article-save.js",
+    "tengence-geo-check-article": "bin/check-article.js",
+    "tengence-geo-db-init": "bin/db-init.js",
+    "tengence-geo-db-query": "bin/db-query.js",
+    "tengence-geo-geo-monitor-report": "bin/geo-monitor-report.js",
+    "tengence-geo-geo-monitor": "bin/geo-monitor.js",
+    "tengence-geo-image-acquire": "bin/image-acquire.js",
+    "tengence-geo-plan": "bin/plan.js",
+    "tengence-geo-promote-daily": "bin/promote-daily.js",
+    "tengence-geo-publish-devto": "bin/publish-devto.js",
+    "tengence-geo-publish-draft": "bin/publish-draft.js",
+    "tengence-geo-publish-from-db": "bin/publish-from-db.js",
+    "tengence-geo-publish-juejin": "bin/publish-juejin.js",
+    "tengence-geo-publish-update-article": "bin/publish-update-article.js",
+    "tengence-geo-publish-wechat": "bin/publish-wechat.js",
+    "tengence-geo-submit-baidu": "bin/submit-baidu.js",
+    "tengence-geo-submit-gsc": "bin/submit-gsc.js",
+    "tengence-geo-submit-indexnow": "bin/submit-indexnow.js",
+    "tengence-geo-taxonomy": "bin/taxonomy.js"
+  },
+  "files": [
+    "bin/"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "geo",
+    "seo",
+    "cli",
+    "wordpress",
+    "content",
+    "multi-tenant"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@tengence/geo-sdk": "0.1.0"
+  }
+}

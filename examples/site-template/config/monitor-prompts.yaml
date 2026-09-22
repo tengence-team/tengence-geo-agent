@@ -1,0 +1,49 @@
+# ============================================================
+# Monitor question bank — example (12 questions, all five layers; ≤2 variants per layer)
+# Extend the production bank with the same structure (id unique, layer ∈ L1..L5, variants optional)
+# NOTE: this example bank is in English. For zh-CN sites, write the questions in the
+# language of the answers you monitor — the extraction wordlists are language-specific.
+# ============================================================
+prompts:
+  - id: P01
+    layer: L1
+    question: What company is Tengence?
+    variants:
+      - Please introduce the company Tengence.
+  - id: P02
+    layer: L1
+    question: What products does Tengence offer?
+  - id: P03
+    layer: L2
+    question: What are the practical methods for GEO optimization?
+    variants:
+      - What aspects should GEO optimization start from?
+  - id: P04
+    layer: L2
+    question: How long does it take for a business to see GEO results?
+  - id: P05
+    layer: L2
+    question: What is the difference between GEO and SEO?
+  - id: P06
+    layer: L3
+    question: Which companies provide professional GEO services?
+    variants:
+      - Can you recommend a few reliable GEO service providers?
+  - id: P07
+    layer: L3
+    question: What are the mainstream GEO tools on the market?
+  - id: P08
+    layer: L3
+    question: What kind of website content do AI search engines cite?
+  - id: P09
+    layer: L4
+    question: How can a website increase its chances of being cited by AI?
+  - id: P10
+    layer: L4
+    question: How much does structured data help with GEO?
+  - id: P11
+    layer: L5
+    question: What are the new GEO trends in 2026?
+  - id: P12
+    layer: L5
+    question: How do you calculate the ROI of GEO optimization?
