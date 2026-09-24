@@ -125,7 +125,7 @@ function buildSeoGeoMeta(article, config, existingMeta = {}) {
   // description & summary: when config lacks them, no longer generate a body-truncated
   // fallback; keep the live value instead
   const desc = seo && seo.meta_description
-    ? seo.meta_description.replace(/\n+/g, ' ').slice(0, 160)
+    ? seo.meta_description.replace(/\n+/g, ' ').slice(0, 175)
     : '';
   const baseTitle = (article.title || '').replace(/\s*\|\s*Tengence\s*$/, '');
   const seoTitle = (seo && seo.title) || `${baseTitle} | Tengence`;
@@ -179,7 +179,7 @@ function buildSeoGeoMeta(article, config, existingMeta = {}) {
 function deriveExcerpt(config, dbExcerpt = '') {
   const seo = config && config.seo && Object.keys(config.seo).length ? config.seo : null;
   const seoDesc = seo && seo.meta_description
-    ? String(seo.meta_description).replace(/\n+/g, ' ').slice(0, 160).trim()
+    ? String(seo.meta_description).replace(/\n+/g, ' ').slice(0, 175).trim()
     : '';
   return (seoDesc || dbExcerpt || '').trim();
 }

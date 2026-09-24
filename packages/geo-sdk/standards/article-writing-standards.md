@@ -87,7 +87,7 @@ seo:
   title: "<H1 title> | <brand suffix>"
   focus_keyword: "<target keyword>"
   keywords: ["<target>", "<related 2>", "<related 3>", "<related 4>", "<related 5>"]
-  meta_description: "<90–158 characters, contains the primary keyword, says what the article delivers>"
+  meta_description: "<165–175 characters (Bing SEO threshold: a 152-char description is still flagged as too short; keep 165–175), contains the primary keyword, says what the article delivers>"
 featured_image: "<final cover image URL; fill in after imaging, otherwise an empty string>"
 ---
 ```
@@ -98,7 +98,9 @@ Rules:
    `seo.keywords`, `seo.meta_description`, `featured_image`).
 2. Summary / takeaways / FAQ / data sources go into the **body**; they are reverse-parsed
    and synced back. Writing them into front matter has no effect.
-3. `meta_description` must be **90–158 characters** — the single most common failure;
+3. `meta_description` must be **165–175 characters** (Bing flags descriptions shorter
+   than ~160 chars as "too short" — a 152-char description was still flagged; keep the
+   range 165–175) — the single most common failure;
    count it before you finish.
 4. The publish chain treats **front matter as the only source of truth**. `.meta.json` is
    retired and kept only as a fallback for legacy articles.

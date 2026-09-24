@@ -24,7 +24,32 @@
 
 const http = require('http');
 const https = require('https');
+const dns = require('dns');
 const { wpTarget } = require('./target');
+
+/**
+ * Origin-direct connection (bypass the CDN layer): when WP_ORIGIN_HOST is set
+ * (e.g. host.tengence.com, the origin server), resolve it once and force that IP
+ * for the TCP connection while keeping the public hostname (WP_URL) for SNI and
+ * certificate validation. Fixes "Client network socket disconnected before secure
+ * TLS connection was established" — the CDN (cdngslb / 163.181.66.x) blocks node's
+ * TLS ClientHello while the origin answers normally.
+ * Returns a promise of the origin IP (null when not configured or resolution fails).
+ */
+let originIpPromise = null;
+function resolveOriginIp() {
+  if (!process.env.WP_ORIGIN_HOST) return Promise.resolve(null);
+  if (!originIpPromise) {
+    originIpPromise = dns.promises
+      .lookup(process.env.WP_ORIGIN_HOST, { family: 4 })
+      .then((r) => r.address)
+      .catch(() => {
+        originIpPromise = null; // allow a retry on the next request
+        return null;
+      });
+  }
+  return originIpPromise;
+}
 
 /**
  * Low-level request: any absolute URL
@@ -44,7 +69,7 @@ function request(url, options = {}) {
     timeout = 60000,
   } = options;
 
-  return new Promise((resolve, reject) => {
+  return resolveOriginIp().then((originIp) => new Promise((resolve, reject) => {
     let target;
     try {
       target = new URL(url);
@@ -68,15 +93,22 @@ function request(url, options = {}) {
       }
     }
 
-    const req = mod.request(
-      {
-        hostname: target.hostname,
-        port: target.port || (useHttps ? 443 : 80),
-        path: target.pathname + target.search,
-        method,
-        headers: finalHeaders,
-      },
-      (res) => {
+    const reqOptions = {
+      hostname: target.hostname,
+      port: target.port || (useHttps ? 443 : 80),
+      path: target.pathname + target.search,
+      method,
+      headers: finalHeaders,
+    };
+    // force the origin IP when configured (SNI / cert validation still use hostname)
+    if (originIp) {
+      reqOptions.lookup = (host, opts, cb) => {
+        if (opts && opts.all) return cb(null, [{ address: originIp, family: 4 }]);
+        cb(null, originIp, 4);
+      };
+    }
+
+    const req = mod.request(reqOptions, (res) => {
         let text = '';
         res.setEncoding('utf8');
         res.on('data', (chunk) => (text += chunk));
@@ -109,7 +141,7 @@ function request(url, options = {}) {
 
     if (payload !== null) req.write(payload);
     req.end();
-  });
+  }));
 }
 
 /**

@@ -16,7 +16,7 @@ seo:
   title: "{SEO title (≤60 characters)}"
   keywords: ["{primary keyword}", "{secondary keyword}", "{long-tail keyword}"]
   focus_keyword: "{focus keyword}"
-  meta_description: "{90–158 characters, conclusion first}"
+  meta_description: "{165–175 characters, conclusion first}"
 featured_image: "https://www.<site-domain>/blog/static/images/{category}/{slug}/cover.webp"
 ---
 

@@ -234,7 +234,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, site
     ['FAQ answers with A: prefix', badA, badA === 0],
     ['front-matter seo four fields', [hasSeoTitle, hasFocusKeyword, hasKeywords, mdl > 0].filter(Boolean).length + '/4', hasSeoTitle && hasFocusKeyword && hasKeywords && mdl > 0],
     ['front-matter featured_image (featured-image hard check, §5-②)', hasFeaturedImage ? 'present' : 'missing', hasFeaturedImage],
-    ['meta_description chars', mdl, mdl >= 90 && mdl <= 158],
+    ['meta_description chars', mdl, mdl >= 165 && mdl <= 175],
     ['takeaway count (body/meta effective)', effTakeaways.length, effTakeaways.length >= 5],
     ['FAQ pair count (body/meta effective)', effFaq.length, effFaq.length >= 5],
     ['materialized takeaways block', take, take === 1],
