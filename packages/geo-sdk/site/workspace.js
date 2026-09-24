@@ -11,8 +11,11 @@
  * Resolution order (first hit wins):
  *   1. explicit argument (a tool parameter for this one call)
  *   2. already bound in this process (setSitesRoot / SITES_ROOT env)
- *   3. last bound value persisted in ~/.tengence/geo-mcp/state.json
- *   4. nothing found → require() throws an actionable error; nothing is invented
+ *   3. MCP client workspace roots (roots/list, bound at server startup by
+ *      geo-mcp/server.js bindFromClientRoots — the user's working directory as
+ *      exposed by the client, MCP-standard mechanism, no env needed)
+ *   4. last bound value persisted in ~/.tengence/geo-mcp/state.json
+ *   5. nothing found → require() throws an actionable error; nothing is invented
  *
  * There is deliberately no fallback directory: pointing writes at some guessed
  * location is worse than asking.

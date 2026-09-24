@@ -61,4 +61,58 @@ async function createServer() {
   return { server, tools };
 }
 
-module.exports = { createServer, printStartupBanner };
+/**
+ * Bind the work root from the MCP client's exposed workspace roots (generic,
+ * protocol-level — nothing site- or directory-specific lives here).
+ *
+ * MCP clients that declare the `roots` capability hand the server the directory
+ * the user is currently working in (the "workspace root"). We ask for it once at
+ * startup and bind the first usable root through the same validated path as the
+ * workspace_use tool (activates + persists to state.json). This is what lets a
+ * GUI client start this server with zero env config while still getting the
+ * user's actual working directory as the work root.
+ *
+ * Resolution order used elsewhere (site/workspace.js):
+ *   1. explicit SITES_ROOT env           (override, automation/multi-root)
+ *   2. client roots/list  (this function, MCP-standard workspace mechanism)
+ *   3. persisted state.json              (last workspace_use binding)
+ *   4. workspace_use tool at runtime     (final fallback, never guessed)
+ *
+ * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server connected server
+ * @returns {Promise<string|null>} bound workspace path, or null when the client exposes none
+ */
+async function bindFromClientRoots(server) {
+  const t = require('@tengence/geo-sdk');
+  const fs = require('fs');
+  // McpServer wraps the low-level Server (Protocol) in `.server`
+  const core = server.server;
+  const cap = core.getClientCapabilities();
+  if (!cap || !cap.roots || !cap.roots.listChanged) return null;
+  let res;
+  try {
+    const { ListRootsResultSchema } = await import('@modelcontextprotocol/sdk/types.js');
+    res = await core.request({ method: 'roots/list' }, ListRootsResultSchema);
+  } catch (e) {
+    return null; // client declined / protocol error — fall through to state/env
+  }
+  const roots = (res && res.roots) || [];
+  for (const root of roots) {
+    let dir = root && root.uri ? String(root.uri) : '';
+    if (dir.startsWith('file://')) dir = dir.slice('file://'.length);
+    if (!dir) continue;
+    try {
+      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
+        console.error(`[geo-mcp] workspace root not usable (skipped): ${dir}`);
+        continue;
+      }
+      t.workspace.use(dir); // validates, activates, persists to state.json
+      return dir;
+    } catch (e) {
+      console.error(`[geo-mcp] workspace root bind failed (skipped): ${e.message}`);
+      continue;
+    }
+  }
+  return null;
+}
+
+module.exports = { createServer, printStartupBanner, bindFromClientRoots };

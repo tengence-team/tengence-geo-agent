@@ -30,13 +30,21 @@
  * fails with 404 — point at the local script as shown above.
  */
 
-const { createServer, printStartupBanner } = require('../server');
+const { createServer, printStartupBanner, bindFromClientRoots } = require('../server');
 
 async function main() {
   const { server } = await createServer();
   const { StdioServerTransport } = await import('@modelcontextprotocol/sdk/server/stdio.js');
+  const { InitializedNotificationSchema } = await import('@modelcontextprotocol/sdk/types.js');
+  // After the client finishes the handshake (initialized), ask it for its
+  // workspace roots and bind the first usable one — no SITES_ROOT env required.
+  const core = server.server;
+  core.setNotificationHandler(InitializedNotificationSchema, async () => {
+    const bound = await bindFromClientRoots(server);
+    if (bound) console.error(`[geo-mcp] workspace=${bound} (bound from client roots)`);
+    printStartupBanner();
+  });
   const transport = new StdioServerTransport();
-  printStartupBanner();
   await server.connect(transport);
 }
 
