@@ -606,13 +606,25 @@ const tools = [
   },
   {
     name: 'search_submit_baidu',
-    description: 'Submit URLs to Baidu normal inclusion (requires BAIDU_TOKEN / BAIDU_SITE)',
+    description:
+      'Submit URLs to Baidu normal inclusion (requires BAIDU_TOKEN / BAIDU_SITE). ' +
+      'Two modes: pass url for an explicit list, or all=true to push the sitemap incrementally — ' +
+      'it recursively flattens sitemap_index.xml, skips every URL already logged as submitted in ' +
+      'data/baidu-log.jsonl, and pushes at most limit URLs (default 10) so a scheduled run stays ' +
+      'inside the daily quota.',
     inputSchema: z.object({
-      url: z.string().describe('URLs to submit (multiple allowed, comma-separated, ≤2000 per call)'),
+      url: z.string().optional().describe('URLs to submit (multiple allowed, comma-separated, ≤2000 per call); omit when all=true'),
+      all: z.boolean().optional().describe('sitemap incremental mode: push only URLs not yet logged as submitted'),
+      limit: z.number().optional().describe('max URLs to push when all=true (default 10)'),
       site: siteField,
     }),
     async run(args) {
-      if (!args.url) return fail(new Error('search_submit_baidu requires url'));
+      if (args.all) {
+        const cliArgs = ['--all', '--limit', String(args.limit == null ? 10 : args.limit), '--site', cliSite(args)];
+        const r = runCli('submit-baidu', cliArgs);
+        return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
+      }
+      if (!args.url) return fail(new Error('search_submit_baidu requires url (or all=true)'));
       try {
         const S = withSite(args);
         const res = await t.search.baidu.submitBatch(args.url.split(',').map((u) => u.trim()), {
