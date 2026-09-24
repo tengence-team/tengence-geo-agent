@@ -199,3 +199,76 @@ test('parseWechatPlanText: period/topic/weekday/status/slugs/draft ids', () => {
   assert.equal(second.status, 'todo', 'overview ⬜ → todo');
   assert.equal(second.draft_ids.length, 0);
 });
+
+// ==================== channel_plan markStatus (draft ids) ====================
+
+test('markStatus: records draft ids, preserves them when not passed', async () => {
+  const dbSqlite = require('../packages/geo-sdk/db/sqlite');
+  const { withConn } = require('../packages/geo-sdk/db/connection');
+  dbSqlite.getDb();
+  let id;
+  await withConn(async (conn) => {
+    const [r] = await conn.query(
+      `INSERT INTO tengence_geo_channel_plan
+         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
+       VALUES (1, 'wechat', '测试期', '测试主题', '周二', 'todo', ?, ?)`,
+      [JSON.stringify(['a', 'b']), JSON.stringify([])]
+    );
+    id = r.insertId;
+  });
+  try {
+    const res = await t.plan.channel.markStatus(id, 'draft', ['MEDIA_1']);
+    assert.equal(res.status, 'draft');
+    assert.deepEqual(res.draftIds, ['MEDIA_1']);
+    const row = await t.plan.channel.get(id);
+    assert.deepEqual(row.draft_ids, ['MEDIA_1'], 'draft ids must persist');
+    // not passing draftIds keeps the stored ones
+    await t.plan.channel.markStatus(id, 'paused');
+    const row2 = await t.plan.channel.get(id);
+    assert.deepEqual(row2.draft_ids, ['MEDIA_1'], 'existing draft ids preserved');
+    // invalid status rejected
+    await assert.rejects(() => t.plan.channel.markStatus(id, 'nope'), /Invalid channel_plan status/);
+  } finally {
+    await withConn(async (conn) => {
+      await conn.query('DELETE FROM tengence_geo_channel_plan WHERE id = ?', [id]);
+    });
+  }
+});
+
+test('nextDue: returns the earliest todo row, skips draft/published rows', async () => {
+  const dbSqlite = require('../packages/geo-sdk/db/sqlite');
+  const { withConn } = require('../packages/geo-sdk/db/connection');
+  dbSqlite.getDb();
+  let draftId;
+  let todoId;
+  await withConn(async (conn) => {
+    const [d] = await conn.query(
+      `INSERT INTO tengence_geo_channel_plan
+         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
+       VALUES (1, 'wechat', '已建草稿期', '主题A', '周二', 'draft', ?, ?)`,
+      [JSON.stringify(['x']), JSON.stringify(['MEDIA_A'])]
+    );
+    draftId = d.insertId;
+    const [t] = await conn.query(
+      `INSERT INTO tengence_geo_channel_plan
+         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
+       VALUES (1, 'wechat', '待办期', '主题B', '周四', 'todo', ?, ?)`,
+      [JSON.stringify(['y', 'z']), JSON.stringify([])]
+    );
+    todoId = t.insertId;
+  });
+  try {
+    const due = await t.plan.channel.nextDue('wechat');
+    assert.ok(due, 'a todo row must be due');
+    assert.equal(due.period, '待办期', 'draft rows are already handled and must be skipped');
+    assert.deepEqual(due.article_slugs, ['y', 'z']);
+    // mark it draft → next due becomes null
+    await t.plan.channel.markStatus(todoId, 'draft', ['MEDIA_B']);
+    const due2 = await t.plan.channel.nextDue('wechat');
+    assert.equal(due2, null, 'no todo rows left → nothing due');
+  } finally {
+    await withConn(async (conn) => {
+      await conn.query('DELETE FROM tengence_geo_channel_plan WHERE id IN (?, ?)', [draftId, todoId]);
+    });
+  }
+});

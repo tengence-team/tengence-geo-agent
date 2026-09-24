@@ -163,17 +163,17 @@ async function get(id) {
   return result;
 }
 
-/** Transition a row's status (todo → draft → published / paused). */
-async function markStatus(id, status) {
+/** Transition a row's status (todo → draft → published / paused); optionally records draft ids. */
+async function markStatus(id, status, draftIds) {
   const appId = DEFAULT_APP_ID();
   let result;
   await withConn(async (conn) => {
-    result = await repo.markStatus(conn, appId, Number(id), status);
+    result = await repo.markStatus(conn, appId, Number(id), status, draftIds);
   });
   return result;
 }
 
-/** The next due row for a platform (earliest not-published), or null. */
+/** The next due row for a platform (earliest row still in todo), or null. */
 async function nextDue(platform) {
   const appId = DEFAULT_APP_ID();
   let result;

@@ -133,28 +133,40 @@ async function getByPeriod(conn, appId, platform, period) {
 
 /**
  * Transition a row's status (todo → draft → published; paused for holds).
+ * Optionally records draft ids (e.g. wechat media_id) in the same write —
+ * used by the publish pipeline after a draft is actually created.
  */
-async function markStatus(conn, appId, id, status) {
+async function markStatus(conn, appId, id, status, draftIds) {
   if (!STATUSES.includes(status)) {
     throw new Error(`Invalid channel_plan status "${status}" (allowed: ${STATUSES.join(', ')})`);
   }
   const existing = await get(conn, appId, id);
   if (!existing) throw new Error(`channel_plan row not found: id=${id}`);
-  await conn.query(
-    `UPDATE ${CHANNEL_PLAN} SET status = ?, updated_at = NOW() WHERE app_id = ? AND id = ?`,
-    [status, appId, id]
-  );
-  return { id: Number(id), status };
+  if (draftIds !== undefined) {
+    if (!Array.isArray(draftIds)) throw new Error('draftIds must be an array of media ids');
+    await conn.query(
+      `UPDATE ${CHANNEL_PLAN} SET status = ?, draft_ids = ?, updated_at = NOW() WHERE app_id = ? AND id = ?`,
+      [status, JSON.stringify(draftIds), appId, id]
+    );
+  } else {
+    await conn.query(
+      `UPDATE ${CHANNEL_PLAN} SET status = ?, updated_at = NOW() WHERE app_id = ? AND id = ?`,
+      [status, appId, id]
+    );
+  }
+  return { id: Number(id), status, draftIds: draftIds === undefined ? existing.draft_ids : draftIds };
 }
 
 /**
- * The next due row for a platform: the earliest (by id) row that is not
- * published (todo first, then draft). Returns null when nothing is due.
+ * The next due row for a platform: the earliest row still in todo (nothing has
+ * been prepared for it yet — draft/published rows are already handled). This is
+ * what the scheduled publisher should prepare next. Returns null when all rows
+ * are at least drafted.
  */
 async function nextDue(conn, appId, platform) {
   const [rows] = await conn.query(
     `SELECT * FROM ${CHANNEL_PLAN}
-      WHERE app_id = ? AND platform = ? AND status IN ('todo', 'draft')
+      WHERE app_id = ? AND platform = ? AND status = 'todo'
       ORDER BY id ASC LIMIT 1`,
     [appId, platform]
   );

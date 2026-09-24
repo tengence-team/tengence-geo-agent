@@ -953,6 +953,30 @@ const tools = [
       }
     },
   },
+  {
+    name: 'channel_plan_mark',
+    description:
+      'Update a channel_plan row status (todo | draft | published | paused) and optionally record its draft ids (media ids). ' +
+      'Call after channel_publish to persist the created draft (e.g. wechat media_id) and keep the calendar in sync.',
+    inputSchema: z.object({
+      id: z.number().describe('channel_plan row id (see channel_plan_next rows)'),
+      status: z.enum(['todo', 'draft', 'published', 'paused']).describe('new row status'),
+      draftIds: z
+        .array(z.string())
+        .optional()
+        .describe('draft/media ids to record (e.g. wechat media_id); omit to keep existing'),
+    }),
+    async run(args) {
+      try {
+        const ch = t.plan.channel;
+        const updated = await ch.markStatus(args.id, args.status, args.draftIds);
+        const row = await ch.get(args.id);
+        return ok({ ok: true, updated, row });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
 ];
 
 const registry = new Map(tools.map((tool) => [tool.name, tool]));
