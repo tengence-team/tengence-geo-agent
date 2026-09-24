@@ -9,6 +9,7 @@
  * feedpath takes the sitemap's full URL (URL-encoded).
  * ============================================================================
  */
+const SITEMAP_TIMEOUT_MS = 30000;
 const API = 'https://www.googleapis.com/webmasters/v3';
 const enc = (s) => encodeURIComponent(s);
 const { gFetch } = require('./http');
@@ -47,9 +48,11 @@ async function listSitemaps({ siteUrl, token }) {
 /** Fetch a sitemap XML and extract the <loc> list (index / leaf not distinguished;
  * the caller decides the flattening strategy) */
 async function fetchSitemapUrls(sitemapUrl) {
+  // A first (cold) hit on the sitemap index of this site measures ~7s and the
+  // recursive child fetches stack on top, so the 10s default aborts intermittently.
   const res = await gFetch(sitemapUrl, {
     headers: { 'User-Agent': 'tengence-geo-submitter/1.0' },
-  });
+  }, SITEMAP_TIMEOUT_MS);
   const text = await res.text();
   if (!res.ok) throw new Error(`Sitemap fetch failed ${res.status}: ${sitemapUrl}`);
   return [...text.matchAll(/<loc>([^<]+)<\/loc>/g)].map((m) => m[1].trim());
