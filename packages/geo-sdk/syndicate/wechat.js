@@ -610,4 +610,135 @@ async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKe
   return { mediaId, action };
 }
 
-module.exports = { syncWechat, cleanWechatHtml, prepareArticle };
+// ==================== Read-back / progress reconciliation ====================
+
+/**
+ * List the draft box (draft/batchget): every draft's media_id + article titles.
+ * Paginated (offset/count=20) until total_count is reached.
+ * @returns {Promise<Array<{media_id:string, update_time:number, titles:string[]}>>}
+ */
+async function listDrafts() {
+  const accessToken = await getAccessToken();
+  const items = [];
+  const count = 20;
+  let offset = 0;
+  for (;;) {
+    const body = JSON.stringify({ offset, count, no_content: 1 });
+    const url = `https://api.weixin.qq.com/cgi-bin/draft/batchget?access_token=${accessToken}`;
+    const { json } = await httpsRequest(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, body);
+    if (json.errcode && json.errcode !== 0) {
+      throw new Error(`draft/batchget failed: ${json.errcode} ${json.errmsg}`);
+    }
+    for (const it of json.item || []) {
+      items.push({
+        media_id: it.media_id,
+        update_time: it.update_time,
+        titles: ((it.content || {}).news_item || []).map((n) => n.title),
+      });
+    }
+    if (items.length >= json.total_count || !json.item || json.item.length === 0) break;
+    offset += count;
+  }
+  return items;
+}
+
+/**
+ * List mass-sent articles (freepublish/batchget): article_id + titles.
+ * @returns {Promise<Array<{article_id:string, update_time:number, titles:string[]}>>}
+ */
+async function listPublished() {
+  const accessToken = await getAccessToken();
+  const items = [];
+  const count = 20;
+  let offset = 0;
+  for (;;) {
+    const body = JSON.stringify({ offset, count, no_content: 1 });
+    const url = `https://api.weixin.qq.com/cgi-bin/freepublish/batchget?access_token=${accessToken}`;
+    const { json } = await httpsRequest(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, body);
+    if (json.errcode && json.errcode !== 0) {
+      throw new Error(`freepublish/batchget failed: ${json.errcode} ${json.errmsg}`);
+    }
+    for (const it of json.item || []) {
+      items.push({
+        article_id: it.article_id,
+        update_time: it.update_time,
+        titles: ((it.content || {}).news_item || []).map((n) => n.title),
+      });
+    }
+    if (items.length >= json.total_count || !json.item || json.item.length === 0) break;
+    offset += count;
+  }
+  return items;
+}
+
+/**
+ * Reconcile the channel_plan calendar with the real WeChat backend:
+ *   - draft rows whose media_id IS in the draft box → keep draft;
+ *   - draft rows whose titles appear in freepublish → upgrade to published;
+ *   - draft rows whose media_id is missing AND not found in freepublish →
+ *     UNCERTAIN (no auto-write): WeChat provides no API for mass-sent
+ *     (push-notification) records, so a missing draft may mean "already
+ *     mass-sent manually" as well as "never created". Rollback to todo would
+ *     re-queue a published issue and risk a duplicate mass-send, so these rows
+ *     are reported for manual confirmation instead.
+ *   - published rows are never downgraded (title match only confirms them).
+ * `fetchers` is an injection seam for tests ({listDrafts, listPublished}).
+ * @returns {Promise<{ok:boolean, dryRun:boolean, report:Object}>}
+ */
+async function syncProgressFromWechat({ siteKey, dryRun = false, fetchers } = {}) {
+  const SITE = t.site.loadSite(siteKey);
+  const f = fetchers || { listDrafts, listPublished };
+  const drafts = await f.listDrafts();
+  const published = await f.listPublished();
+  const draftIds = new Set(drafts.map((d) => d.media_id));
+  const publishedTitles = new Set(published.flatMap((p) => p.titles));
+
+  const rows = await t.plan.channel.list({ platform: 'wechat' });
+  const report = { site: SITE.siteKey, drafts: drafts.length, published: published.length, changes: [], unchanged: [], uncertain: [] };
+
+  await t.db.withConn(async (conn) => {
+    for (const row of rows) {
+      const titles = [];
+      for (const slug of row.article_slugs) {
+        try {
+          const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug);
+          if (detail && detail.title) titles.push(detail.title);
+        } catch (_) { /* article missing → skip */ }
+      }
+      const matchedDraft = row.draft_ids.some((id) => draftIds.has(id));
+      const matchedPublished = titles.some((title) => publishedTitles.has(title));
+
+      if (row.status === 'draft') {
+        if (matchedDraft) {
+          report.unchanged.push({ id: row.id, period: row.period, status: 'draft', reason: 'draft media_id exists in the draft box' });
+        } else if (matchedPublished) {
+          if (!dryRun) await t.plan.channel.markStatus(row.id, 'published', row.draft_ids);
+          report.changes.push({ id: row.id, period: row.period, from: 'draft', to: 'published', reason: 'already mass-sent (title matched in freepublish list)' });
+        } else {
+          report.uncertain.push({
+            id: row.id,
+            period: row.period,
+            status: 'draft',
+            reason:
+              'draft media_id missing from the draft box and no freepublish record — ' +
+              'WeChat exposes no API for mass-sent (push) records, so the issue may have been ' +
+              'mass-sent manually. NOT auto-modified; confirm with the mp.weixin.qq.com 发表记录.',
+          });
+        }
+      } else if (row.status === 'published') {
+        report.unchanged.push({
+          id: row.id,
+          period: row.period,
+          status: 'published',
+          reason: matchedPublished ? 'confirmed in the publish list' : 'kept (published rows are never downgraded)',
+        });
+      } else {
+        report.unchanged.push({ id: row.id, period: row.period, status: row.status, reason: 'no change' });
+      }
+    }
+  });
+
+  return { ok: true, dryRun, report };
+}
+
+module.exports = { syncWechat, cleanWechatHtml, prepareArticle, listDrafts, listPublished, syncProgressFromWechat };

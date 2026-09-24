@@ -977,6 +977,50 @@ const tools = [
       }
     },
   },
+  // ---------- wechat backend read-back & progress reconciliation ----------
+  {
+    name: 'wechat_status',
+    description:
+      'Read the WeChat official-account backend: the draft box (draft/batchget — media_id + titles) and the mass-sent list ' +
+      '(freepublish/batchget — article_id + titles). Read-only. Requires WECHAT_APP_ID/SECRET in the site .env and the ' +
+      'current outbound IP whitelisted in mp.weixin.qq.com.',
+    inputSchema: z.object({ site: siteField }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const wechat = t.syndicate.wechat;
+        const drafts = await wechat.listDrafts();
+        const published = await wechat.listPublished();
+        return ok({ ok: true, drafts, published });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wechat_sync_progress',
+    description:
+      'Reconcile the channel_plan calendar with the real WeChat backend and auto-fix the DB: draft rows whose media_id is ' +
+      'missing from the draft box and not found in the publish list are rolled back to todo (draft_ids cleared); draft rows ' +
+      'whose titles appear in the publish list are upgraded to published. Published rows are never downgraded. Returns the ' +
+      'reconciliation report. dryRun=true previews without writing.',
+    inputSchema: z.object({
+      site: siteField,
+      dryRun: z.boolean().optional().describe('preview only — compute and report, do not write to the DB'),
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const result = await t.syndicate.wechat.syncProgressFromWechat({
+          siteKey: S.siteKey,
+          dryRun: !!args.dryRun,
+        });
+        return ok(result);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
 ];
 
 const registry = new Map(tools.map((tool) => [tool.name, tool]));

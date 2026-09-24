@@ -132,12 +132,15 @@ test('parseGeoBlocks (ZH regression): Chinese headings still parse', () => {
 
 // ==================== MCP registry ====================
 
-test('MCP registry: exposes 35 tools including the 3 standards tools and the 4 channel tools', () => {
-  assert.equal(tools.length, 35, 'expected 35 tools after adding standards_list/read/article_draft + channel_list/publish/plan_next/plan_mark');
+test('MCP registry: exposes 37 tools including the 3 standards tools, 4 channel tools and 2 wechat backend tools', () => {
+  assert.equal(tools.length, 37, 'expected 37 tools after adding standards_list/read/article_draft + channel_list/publish/plan_next/plan_mark + wechat_status/sync_progress');
   for (const n of ['standards_list', 'standards_read', 'article_draft']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
   for (const n of ['channel_list', 'channel_publish', 'channel_plan_next', 'channel_plan_mark']) {
+    assert.ok(registry.has(n), `registry missing ${n}`);
+  }
+  for (const n of ['wechat_status', 'wechat_sync_progress']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
   // every tool has the run contract
