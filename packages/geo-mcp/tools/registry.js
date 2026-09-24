@@ -1021,6 +1021,122 @@ const tools = [
       }
     },
   },
+  {
+    name: 'wechat_mass_preview',
+    description:
+      'Send a draft (media_id from the draft box) to one user as a preview (message/mass/preview). Requires a verified ' +
+      'account; pass openid (touser) or wxname (towxname). Use this to check layout before mass-sending.',
+    inputSchema: z.object({
+      media_id: z.string().describe('draft box media_id (see wechat_status drafts)'),
+      openid: z.string().optional().describe('receiver openid'),
+      wxname: z.string().optional().describe('receiver wxname (user must have interacted with the account)'),
+      dryRun: z.boolean().optional().describe('print the payload, do not send'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        if (!args.openid && !args.wxname) return fail(new Error('wechat_mass_preview requires openid or wxname'));
+        const result = await t.syndicate.wechat.massPreview(args.media_id, {
+          openid: args.openid,
+          wxname: args.wxname,
+          dryRun: !!args.dryRun,
+        });
+        return ok({ ok: true, ...result });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wechat_mass_send',
+    description:
+      'Mass-send (PUSH to followers) a draft via message/mass/sendall (all followers or one tag) or message/mass/send ' +
+      '(specific openids). Subscription accounts get 1 mass-send per day. After a successful send the draft is consumed ' +
+      '(auto-deleted from the draft box). If 风险操作保护 is on, the admin must confirm in mp.weixin.qq.com before it ' +
+      'really goes out. Safety: execution requires confirm="YES"; dryRun=true only prints the payload.',
+    inputSchema: z.object({
+      media_id: z.string().describe('draft box media_id (see wechat_status drafts)'),
+      tag_id: z.number().optional().describe('send to one user tag only (omit = all followers)'),
+      to_users: z.array(z.string()).optional().describe('specific openids (message/mass/send)'),
+      client_msg_id: z.string().optional().describe('clientmsgid — de-duplicates repeated sends'),
+      confirm: z.enum(['YES']).optional().describe('must be "YES" to actually push to followers (not needed for dryRun)'),
+      dryRun: z.boolean().optional().describe('print the payload, do not send'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        if (args.dryRun) {
+          const result = await t.syndicate.wechat.massSend(args.media_id, {
+            tagId: args.tag_id,
+            toUsers: args.to_users,
+            clientMsgId: args.client_msg_id,
+            dryRun: true,
+          });
+          return ok({ ok: true, ...result });
+        }
+        if (args.confirm !== 'YES') {
+          return fail(new Error('wechat_mass_send pushes to followers — pass confirm="YES" to execute (or dryRun=true to preview)'));
+        }
+        const result = await t.syndicate.wechat.massSend(args.media_id, {
+          tagId: args.tag_id,
+          toUsers: args.to_users,
+          clientMsgId: args.client_msg_id,
+        });
+        return ok({ ok: true, ...result });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wechat_mass_status',
+    description: 'Query a mass-send task status (message/mass/get, msg_id from wechat_mass_send).',
+    inputSchema: z.object({
+      msg_id: z.number().describe('mass-send task msg_id'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        if (!args.msg_id) return fail(new Error('wechat_mass_status requires msg_id'));
+        const result = await t.syndicate.wechat.massStatus(args.msg_id);
+        return ok({ ok: true, ...result });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wechat_article_delete',
+    description:
+      'Delete a published article (freepublish/delete, article_id from wechat_status published). IRREVERSIBLE — verify the ' +
+      'article_id first; index (1-based) deletes one article of a multi-article message, omit to delete the whole message.',
+    inputSchema: z.object({
+      article_id: z.string().describe('published article_id (see wechat_status published)'),
+      index: z.number().optional().describe('1-based position within the message; omit to delete the whole message'),
+      confirm: z.enum(['YES']).optional().describe('must be "YES" to actually delete (irreversible); not needed for dryRun'),
+      dryRun: z.boolean().optional().describe('print the payload, do not delete'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        if (args.dryRun) {
+          const result = await t.syndicate.wechat.deletePublished(args.article_id, { index: args.index, dryRun: true });
+          return ok({ ok: true, ...result });
+        }
+        if (args.confirm !== 'YES') {
+          return fail(new Error('wechat_article_delete is irreversible — pass confirm="YES" to execute (or dryRun=true to preview)'));
+        }
+        const result = await t.syndicate.wechat.deletePublished(args.article_id, { index: args.index });
+        return ok({ ok: true, ...result });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
 ];
 
 const registry = new Map(tools.map((tool) => [tool.name, tool]));

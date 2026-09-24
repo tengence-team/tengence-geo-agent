@@ -741,4 +741,148 @@ async function syncProgressFromWechat({ siteKey, dryRun = false, fetchers } = {}
   return { ok: true, dryRun, report };
 }
 
-module.exports = { syncWechat, cleanWechatHtml, prepareArticle, listDrafts, listPublished, syncProgressFromWechat };
+// ==================== Mass-send / preview / delete (push capabilities) ====================
+
+/**
+ * Mass-send (push) a draft to followers.
+ * Routes: all followers or one tag → message/mass/sendall; specific openids →
+ * message/mass/send. The mpnews media_id is the DRAFT media_id (draft/add) —
+ * after a successful send the draft is consumed (auto-deleted from the draft box).
+ * Subscription accounts get 1 mass-send per day; if "风险操作保护" is enabled in the
+ * backend, the admin must confirm the send before it really goes out.
+ * dryRun=true only builds & prints the payload (nothing is sent).
+ * `request` is an injection seam for tests.
+ * @returns {Promise<{dryRun:boolean, msgId?:string, payload?:Object, response?:Object}>}
+ */
+async function massSend(mediaId, { tagId, toUsers, clientMsgId, dryRun = false, request = httpsRequest, accessToken: injectedToken } = {}) {
+  if (!mediaId) throw new Error('massSend requires mediaId (a draft box media_id)');
+  const base = { mpnews: { media_id: mediaId }, msgtype: 'mpnews', send_ignore_reprint: 1 };
+  if (clientMsgId) base.clientmsgid = clientMsgId;
+  let url;
+  let body;
+  if (toUsers && toUsers.length) {
+    url = `https://api.weixin.qq.com/cgi-bin/message/mass/send?access_token=TOKEN`;
+    body = { ...base, touser: toUsers };
+  } else if (tagId) {
+    url = `https://api.weixin.qq.com/cgi-bin/message/mass/sendall?access_token=TOKEN`;
+    body = { ...base, filter: { is_to_all: false, tag_id: Number(tagId) } };
+  } else {
+    url = `https://api.weixin.qq.com/cgi-bin/message/mass/sendall?access_token=TOKEN`;
+    body = { ...base, filter: { is_to_all: true } };
+  }
+  if (dryRun) {
+    console.log(`[dry-run] massSend payload: ${JSON.stringify(body, null, 2)}`);
+    return { dryRun: true, payload: body };
+  }
+  const accessToken = injectedToken || await getAccessToken();
+  url = url.replace('TOKEN', accessToken);
+  const { json } = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify(body));
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`message/mass/send failed: ${json.errcode} ${json.errmsg}`);
+  }
+  return { dryRun: false, msgId: json.msg_id, msgDataId: json.msg_data_id, response: json };
+}
+
+/**
+ * Preview a draft by sending it to one user (message/mass/preview — verified
+ * accounts). touser (openid) or wxname; wxname requires the user to have
+ * interacted with the account.
+ * @returns {Promise<{msgId?:string, response?:Object}>}
+ */
+async function massPreview(mediaId, { openid, wxname, dryRun = false, request = httpsRequest, accessToken: injectedToken } = {}) {
+  if (!mediaId) throw new Error('massPreview requires mediaId');
+  if (!openid && !wxname) throw new Error('massPreview requires openid or wxname');
+  const body = {
+    ...(openid ? { touser: openid } : { towxname: wxname }),
+    mpnews: { media_id: mediaId },
+    msgtype: 'mpnews',
+  };
+  if (dryRun) {
+    console.log(`[dry-run] massPreview payload: ${JSON.stringify(body, null, 2)}`);
+    return { dryRun: true, payload: body };
+  }
+  const accessToken = injectedToken || await getAccessToken();
+  const url = `https://api.weixin.qq.com/cgi-bin/message/mass/preview?access_token=${accessToken}`;
+  const { json } = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify(body));
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`message/mass/preview failed: ${json.errcode} ${json.errmsg}`);
+  }
+  return { dryRun: false, msgId: json.msg_id, response: json };
+}
+
+/**
+ * Query a mass-send task status (message/mass/get).
+ * @returns {Promise<{status?:string, counts?:Object, response?:Object}>}
+ */
+async function massStatus(msgId, { request = httpsRequest, accessToken: injectedToken } = {}) {
+  if (!msgId) throw new Error('massStatus requires msgId');
+  const accessToken = injectedToken || await getAccessToken();
+  const url = `https://api.weixin.qq.com/cgi-bin/message/mass/get?access_token=${accessToken}`;
+  const { json } = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ msg_id: msgId }));
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`message/mass/get failed: ${json.errcode} ${json.errmsg}`);
+  }
+  return {
+    msgId,
+    status: json.msg_status,
+    counts: { total: json.total_count, filter: json.filter_count, sent: json.sent_count, error: json.error_count },
+    response: json,
+  };
+}
+
+/**
+ * Delete a mass-send record/task (message/mass/delete).
+ * @returns {Promise<{response?:Object}>}
+ */
+async function massDelete(msgId, { dryRun = false, request = httpsRequest, accessToken: injectedToken } = {}) {
+  if (!msgId) throw new Error('massDelete requires msgId');
+  const body = { msg_id: msgId };
+  if (dryRun) {
+    console.log(`[dry-run] massDelete payload: ${JSON.stringify(body, null, 2)}`);
+    return { dryRun: true, payload: body };
+  }
+  const accessToken = injectedToken || await getAccessToken();
+  const url = `https://api.weixin.qq.com/cgi-bin/message/mass/delete?access_token=${accessToken}`;
+  const { json } = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify(body));
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`message/mass/delete failed: ${json.errcode} ${json.errmsg}`);
+  }
+  return { dryRun: false, response: json };
+}
+
+/**
+ * Delete a published article (freepublish/delete) — IRREVERSIBLE.
+ * article_id comes from freepublish/batchget; index (1-based) deletes a single
+ * article of a multi-article message (omit to delete the whole message).
+ * @returns {Promise<{response?:Object}>}
+ */
+async function deletePublished(articleId, { index, dryRun = false, request = httpsRequest, accessToken: injectedToken } = {}) {
+  if (!articleId) throw new Error('deletePublished requires articleId');
+  const body = { article_id: articleId };
+  if (index) body.index = Number(index);
+  if (dryRun) {
+    console.log(`[dry-run] deletePublished payload: ${JSON.stringify(body, null, 2)}`);
+    return { dryRun: true, payload: body };
+  }
+  const accessToken = injectedToken || await getAccessToken();
+  const url = `https://api.weixin.qq.com/cgi-bin/freepublish/delete?access_token=${accessToken}`;
+  const { json } = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify(body));
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`freepublish/delete failed: ${json.errcode} ${json.errmsg}`);
+  }
+  return { dryRun: false, response: json };
+}
+
+module.exports = {
+  syncWechat,
+  cleanWechatHtml,
+  prepareArticle,
+  listDrafts,
+  listPublished,
+  syncProgressFromWechat,
+  massSend,
+  massPreview,
+  massStatus,
+  massDelete,
+  deletePublished,
+};
