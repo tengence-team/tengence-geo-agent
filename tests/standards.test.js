@@ -132,8 +132,8 @@ test('parseGeoBlocks (ZH regression): Chinese headings still parse', () => {
 
 // ==================== MCP registry ====================
 
-test('MCP registry: exposes 41 tools including the 3 standards tools, 4 channel tools, 2 wechat backend tools and 4 wechat push tools', () => {
-  assert.equal(tools.length, 41, 'expected 41 tools after adding standards_list/read/article_draft + channel_list/publish/plan_next/plan_mark + wechat_status/sync_progress + wechat_mass_preview/send/status + article_delete');
+test('MCP registry: exposes 42 tools including the 3 standards tools, 4 channel tools, 6 wechat tools', () => {
+  assert.equal(tools.length, 42, 'expected 42 tools after adding standards_list/read/article_draft + channel_list/publish/plan_next/plan_mark + wechat_status/sync_progress + mass_preview/send/status + article_delete + draft_publish');
   for (const n of ['standards_list', 'standards_read', 'article_draft']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
@@ -143,7 +143,7 @@ test('MCP registry: exposes 41 tools including the 3 standards tools, 4 channel 
   for (const n of ['wechat_status', 'wechat_sync_progress']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
-  for (const n of ['wechat_mass_preview', 'wechat_mass_send', 'wechat_mass_status', 'wechat_article_delete']) {
+  for (const n of ['wechat_mass_preview', 'wechat_mass_send', 'wechat_mass_status', 'wechat_article_delete', 'wechat_draft_publish']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
   // every tool has the run contract

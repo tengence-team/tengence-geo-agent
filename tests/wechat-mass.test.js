@@ -12,7 +12,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { massSend, massPreview, massStatus, massDelete, deletePublished } = require('../packages/geo-sdk/syndicate/wechat');
+const { massSend, massPreview, massStatus, massDelete, deletePublished, publishDraftByMediaId } = require('../packages/geo-sdk/syndicate/wechat');
 
 const FAKE_TOKEN = 'fake-token';
 const calls = [];
@@ -97,4 +97,22 @@ test('deletePublished: whole message vs single index; dryRun', async () => {
   await deletePublished('ARTICLE_1', { index: 2, accessToken: FAKE_TOKEN, request: okRequest });
   assert.match(calls[0].url, /\/freepublish\/delete/);
   assert.deepEqual(calls[0].body, { article_id: 'ARTICLE_1', index: 2 });
+});
+
+test('publishDraftByMediaId: freepublish/submit payload; dryRun', async () => {
+  const dr = await publishDraftByMediaId('MEDIA_1', { dryRun: true });
+  assert.equal(dr.dryRun, true);
+  assert.deepEqual(dr.payload, { media_id: 'MEDIA_1' });
+
+  calls.length = 0;
+  const r = await publishDraftByMediaId('MEDIA_1', {
+    accessToken: FAKE_TOKEN,
+    request: async (url, _o, body) => {
+      calls.push({ url, body: JSON.parse(body) });
+      return { statusCode: 200, json: { errcode: 0, errmsg: 'ok', publish_id: 20260924 } };
+    },
+  });
+  assert.match(calls[0].url, /\/freepublish\/submit\?access_token=fake-token$/);
+  assert.deepEqual(calls[0].body, { media_id: 'MEDIA_1' });
+  assert.equal(r.publishId, 20260924);
 });

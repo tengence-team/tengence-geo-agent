@@ -176,6 +176,27 @@ async function publishDraft(accessToken, mediaId) {
   return json;
 }
 
+/**
+ * Publish an existing draft box media_id to the account homepage via
+ * freepublish/submit (NO push to followers — the draft is consumed and moves to
+ * the published list). dryRun=true prints the payload without calling the API.
+ */
+async function publishDraftByMediaId(mediaId, { dryRun = false, request = httpsRequest, accessToken: injectedToken } = {}) {
+  if (!mediaId) throw new Error('publishDraftByMediaId requires mediaId');
+  const body = { media_id: mediaId };
+  if (dryRun) {
+    console.log(`[dry-run] freepublish/submit payload: ${JSON.stringify(body, null, 2)}`);
+    return { dryRun: true, payload: body };
+  }
+  const accessToken = injectedToken || await getAccessToken();
+  const url = `https://api.weixin.qq.com/cgi-bin/freepublish/submit?access_token=${accessToken}`;
+  const { json } = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify(body));
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`freepublish/submit failed: ${json.errcode} ${json.errmsg}`);
+  }
+  return { dryRun: false, publishId: json.publish_id, response: json };
+}
+
 // ==================== Article processing ====================
 
 /**
@@ -885,4 +906,5 @@ module.exports = {
   massStatus,
   massDelete,
   deletePublished,
+  publishDraftByMediaId,
 };

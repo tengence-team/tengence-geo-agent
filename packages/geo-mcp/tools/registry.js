@@ -1137,6 +1137,27 @@ const tools = [
       }
     },
   },
+  {
+    name: 'wechat_draft_publish',
+    description:
+      'Publish a draft box media_id to the account homepage via freepublish/submit (NO push to followers — the draft is ' +
+      'consumed and moves to the published list, where it is visible in the account homepage). Use for the "发布" step; ' +
+      'mass push (推送粉丝) is a separate tool wechat_mass_send.',
+    inputSchema: z.object({
+      media_id: z.string().describe('draft box media_id (see wechat_status drafts)'),
+      dryRun: z.boolean().optional().describe('print the payload, do not publish'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const result = await t.syndicate.wechat.publishDraftByMediaId(args.media_id, { dryRun: !!args.dryRun });
+        return ok({ ok: true, ...result });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
 ];
 
 const registry = new Map(tools.map((tool) => [tool.name, tool]));
