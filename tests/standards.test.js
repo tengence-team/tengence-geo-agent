@@ -132,8 +132,8 @@ test('parseGeoBlocks (ZH regression): Chinese headings still parse', () => {
 
 // ==================== MCP registry ====================
 
-test('MCP registry: exposes 29 tools including the 3 standards tools', () => {
-  assert.equal(tools.length, 29, 'expected 29 tools after adding standards_list/read/article_draft');
+test('MCP registry: exposes 31 tools including the 3 standards tools', () => {
+  assert.equal(tools.length, 31, 'expected 31 tools after adding standards_list/read/article_draft + later additions');
   for (const n of ['standards_list', 'standards_read', 'article_draft']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }

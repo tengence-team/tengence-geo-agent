@@ -99,6 +99,119 @@ function logLine(entry, logPath = defaultLogPath()) {
   }
 }
 
+/** UTC ISO time → Beijing (UTC+8) date YYYY-MM-DD (pure offset math, no ICU) */
+function beijingDay(iso) {
+  const d = new Date(iso);
+  return new Date(d.getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * Today's remaining quota: scan the log tail-to-head for the latest "same-day
+ * (Beijing time) successful submission" record and return its detail.remain.
+ * Returns null when there is no record / the log is unreadable (unknown).
+ * Baidu's over-quota response carries no remain, so this is the only way to
+ * infer the remaining daily quota.
+ */
+function lastRemainToday(logPath = defaultLogPath()) {
+  let q = null;
+  try {
+    if (!fs.existsSync(logPath)) return null;
+    const today = beijingDay(new Date().toISOString());
+    const lines = fs.readFileSync(logPath, 'utf8').split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      try {
+        const d = JSON.parse(line);
+        if (d.ok && d.detail && Number.isFinite(d.detail.remain) && beijingDay(d.ts) === today) {
+          q = d.detail.remain;
+          break;
+        }
+      } catch {
+        /* skip a bad single line */
+      }
+    }
+  } catch {
+    /* unreadable log treated as unknown */
+  }
+  return q;
+}
+
+/** Record a failed batch: update stats.fail + batches and write the log (kept in sync) */
+function failBatch(stats, logPath, batchNo, urls, error) {
+  stats.fail += urls.length;
+  stats.batches.push({ no: batchNo, ok: false, error });
+  logLine({ action: 'submit', batch: batchNo, ok: false, error, urls: urls.slice(0, 20) }, logPath);
+}
+
+/**
+ * Adaptive batched submission: when a whole batch hits "over quota", split and
+ * retry by today's remaining quota instead of wasting the whole batch:
+ *   1. If the log has a same-day success remain, split by that quota up front
+ *      (the publish pipeline typically consumes quota first via single pushes);
+ *   2. With unknown quota, try the full batch first, then halve on over-quota
+ *      (failed requests do not consume quota, so halving is cheap);
+ *   3. After a success, keep pushing with the response remain; stop at remain=0.
+ *      The leftover count is recorded as failed.
+ * Non over-quota errors (bad token / network, etc.) fail the whole batch without
+ * splitting, matching the previous behavior.
+ * @returns {Promise<void>} Results are merged into stats (ok / fail / batches)
+ */
+async function submitBatchAdaptive(batch, { token, site, logPath = defaultLogPath(), batchNo = 1, stats, submit = submitBatch }) {
+  let remaining = batch.slice();
+  let quota = null; // known today's remaining quota (0 = exhausted); null = unknown
+  let size = null;  // size of the next attempt; null = decide automatically
+
+  while (remaining.length > 0) {
+    // 1) decide the size of this attempt
+    if (quota === 0) break; // quota exhausted, give up on the rest
+    if (size == null) {
+      if (quota == null) {
+        const q = lastRemainToday(logPath);
+        if (q === 0) break; // the log says today's quota is exhausted
+        if (q > 0) {
+          quota = q;
+          size = Math.min(q, remaining.length);
+        } else {
+          size = remaining.length; // no log info: try the full batch
+        }
+      } else {
+        size = Math.min(quota, remaining.length);
+      }
+    }
+
+    const sub = remaining.slice(0, size);
+    try {
+      const r = await submit(sub, { token, site });
+      const pushed = r.success || 0;
+      stats.ok += pushed;
+      stats.batches.push({ no: batchNo, ok: true, detail: r });
+      logLine({ action: 'submit', batch: batchNo, ok: true, detail: r, urls: sub.slice(0, 20) }, logPath);
+      remaining = remaining.slice(pushed);
+      quota = r.remain;
+      size = null; // decide again next round
+    } catch (e) {
+      if (!/over\s*quota/i.test(e.message)) {
+        // non-quota problem: fail the whole batch, do not split
+        failBatch(stats, logPath, batchNo, remaining, e.message);
+        return;
+      }
+      // over quota: shrink the batch (failed requests don't consume quota, halving is cheap)
+      const next = Math.max(1, Math.floor(size / 2));
+      if (next >= size) {
+        failBatch(stats, logPath, batchNo, remaining, 'Baidu quota insufficient (over quota)');
+        return;
+      }
+      quota = null; // ignore a possibly stale log remain, switch to halving mode
+      size = next;
+    }
+  }
+
+  if (remaining.length > 0) {
+    failBatch(stats, logPath, batchNo, remaining, 'Baidu daily quota exhausted, leftover not submitted');
+  }
+}
+
 /**
  * Full incremental submission from a sitemap (--all orchestration: fetch → log
  * dedupe → batched submit → write log)
@@ -124,24 +237,16 @@ async function submitUrlsFromSitemap({ token, site, sitemapUrl, resubmit = false
   const list = pending.slice(0, limit);
   const noPending = list.length === 0;
 
-  // batched submission (Baidu max 2000 per request)
+  // batched submission (Baidu max 2000 per request; each batch adaptively splits
+  // by the remaining daily quota, see submitBatchAdaptive)
   const BATCH = 2000;
   const stats = { total: all.length, doneCount, pendingCount: pending.length, submitted: list.length, ok: 0, fail: 0, batches: [], noPending };
   for (let i = 0; i < list.length; i += BATCH) {
     const batch = list.slice(i, i + BATCH);
     const batchNo = i / BATCH + 1;
-    try {
-      const r = await submitBatch(batch, { token, site });
-      stats.ok += r.success || 0;
-      stats.batches.push({ no: batchNo, ok: true, detail: r });
-      logLine({ action: 'submit', batch: batchNo, ok: true, detail: r, urls: batch.slice(0, 20) }, logPath);
-    } catch (e) {
-      stats.fail += batch.length;
-      stats.batches.push({ no: batchNo, ok: false, error: e.message });
-      logLine({ action: 'submit', batch: batchNo, ok: false, error: e.message, urls: batch.slice(0, 20) }, logPath);
-    }
+    await submitBatchAdaptive(batch, { token, site, logPath, batchNo, stats });
   }
   return stats;
 }
 
-module.exports = { API, submitBatch, loadDoneUrls, logLine, submitUrlsFromSitemap, defaultLogPath };
+module.exports = { API, submitBatch, loadDoneUrls, logLine, submitUrlsFromSitemap, submitBatchAdaptive, lastRemainToday, defaultLogPath };

@@ -533,12 +533,15 @@ function appendLog(entry, LOG_DIR, LOG_FILE) {
 /**
  * Sync articles to the WeChat official-account draft box (--publish mass-sends
  * directly)
- * @param {{slugs:string[], dryRun?:boolean, shouldPublish?:boolean, siteKey?:string}} opts
+ * @param {{slugs:string[], dryRun?:boolean, shouldPublish?:boolean, siteKey?:string, keepOrder?:boolean}} opts
+ *   keepOrder=true keeps the given slug order (the 1st article becomes the
+ *   headline of a multi-article message) instead of sorting by publish time;
+ *   default false keeps the historical newest→oldest behavior.
  * @returns {Promise<{mediaId?:string, action:'draft'|'publish'}>}
  * @throws article not found / no featured image / WeChat API error (the CLI catches
  *         and exits 1)
  */
-async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKey }) {
+async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKey, keepOrder = false }) {
   const SITE = t.site.loadSite(siteKey);
   const SITE_DOMAIN = (process.env.SITE_DOMAIN || (SITE.site && SITE.site.site && SITE.site.site.domain) || 'www.tengence.com').replace(/^https?:\/\//, '').replace(/^www\./, 'www.');
   const LOG_DIR = path.join(SITE.siteDir, 'data');
@@ -552,17 +555,19 @@ async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKe
   let action = 'draft';
 
   await t.db.withConn(async (conn) => {
-    // sort by publish time descending
+    // sort by publish time descending unless keepOrder is set (1st slug = headline)
     const articlesMeta = [];
     for (const slug of slugs) {
       const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug);
       if (!detail) throw new Error(`Article not found: ${slug}`);
       articlesMeta.push({ slug, publishedAt: detail.published_at || detail.lastmod || 0 });
     }
-    articlesMeta.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
-    const sortedSlugs = articlesMeta.map((a) => a.slug);
+    if (!keepOrder) {
+      articlesMeta.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
+    }
+    const sortedSlugs = keepOrder ? slugs.slice() : articlesMeta.map((a) => a.slug);
 
-    console.log(`\nSend order (newest → oldest): ${sortedSlugs.join(' → ')}`);
+    console.log(`\nSend order (${keepOrder ? 'as given, 1st is headline' : 'newest → oldest'}): ${sortedSlugs.join(' → ')}`);
 
     if (dryRun) {
       for (const slug of sortedSlugs) {
