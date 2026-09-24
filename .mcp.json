@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "tengence-geo": {
+    "tengence-geo-mcp": {
       "command": "node",
       "args": ["packages/geo-mcp/bin/geo-mcp.js"]
     }
