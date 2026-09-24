@@ -62,6 +62,7 @@ lazy('wp', () => require('./wp'));
 lazy('content', () => require('./content'));
 lazy('images', () => require('./images'));
 lazy('search', () => require('./search'));
+lazy('webmaster', () => require('./webmaster'));
 lazy('publish', () => require('./publish'));
 lazy('check', () => require('./check'));
 lazy('syndicate', () => require('./syndicate'));

@@ -23,6 +23,7 @@
     "tengence-geo-submit-baidu": "bin/submit-baidu.js",
     "tengence-geo-submit-gsc": "bin/submit-gsc.js",
     "tengence-geo-submit-indexnow": "bin/submit-indexnow.js",
+    "tengence-geo-bing-webmaster": "bin/bing-webmaster.js",
     "tengence-geo-taxonomy": "bin/taxonomy.js"
   },
   "files": [

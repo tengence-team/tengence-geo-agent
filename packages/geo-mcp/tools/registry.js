@@ -603,6 +603,70 @@ const tools = [
     },
   },
 
+  // ---------- webmaster (搜索引擎站长后台管理域; separate from search/) ----------
+  {
+    name: 'webmaster_bing_status',
+    description:
+      'Read Bing Webmaster console data (verified sites / URL submission quota / query stats / crawl issues). Requires BING_WEBMASTER_API_KEY in the site .env. Note: Bing trimmed its JSON API on 2026-08-31 (GetPages/GetSitemaps/GetTrafficStats/GetUrlSubmissionStatus now 404).',
+    inputSchema: z.object({
+      action: z
+        .enum(['sites', 'quota', 'stats', 'issues'])
+        .describe('what to read from the Bing Webmaster console'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const apiKey = process.env.BING_WEBMASTER_API_KEY;
+        const domain = (S.site && S.site.site && S.site.site.domain) || process.env.SITE_DOMAIN;
+        const bing = t.webmaster.bing;
+        if (!apiKey) return fail(new Error('BING_WEBMASTER_API_KEY not configured in the site .env'));
+        switch (args.action) {
+          case 'sites':
+            return ok({ ok: true, sites: await bing.listSites({ apiKey }) });
+          case 'quota':
+            return ok({ ok: true, quota: await bing.getQuota({ apiKey, domain }) });
+          case 'stats':
+            return ok({ ok: true, query_stats: await bing.getQueryStats({ apiKey, domain }) });
+          case 'issues':
+            return ok({ ok: true, crawl_issues: await bing.getCrawlIssues({ apiKey, domain }) });
+          default:
+            return fail(new Error(`Unknown action: ${args.action}`));
+        }
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'webmaster_bing_submit',
+    description:
+      'Write to Bing Webmaster: submit URL(s) (comma-separated = batch, ≤10000 per call). Requires BING_WEBMASTER_API_KEY in the site .env.',
+    inputSchema: z.object({
+      url: z.string().describe('URL(s) to submit; multiple allowed, comma-separated'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const apiKey = process.env.BING_WEBMASTER_API_KEY;
+        const domain = (S.site && S.site.site && S.site.site.domain) || process.env.SITE_DOMAIN;
+        const bing = t.webmaster.bing;
+        if (!apiKey) return fail(new Error('BING_WEBMASTER_API_KEY not configured in the site .env'));
+        if (!args.url) return fail(new Error('webmaster_bing_submit requires url'));
+        const urls = args.url.split(',').map((u) => u.trim()).filter(Boolean);
+        const res = urls.length === 1
+          ? await bing.submitUrl({ apiKey, url: urls[0], domain })
+          : await bing.submitUrlBatch({ apiKey, urlList: urls, domain });
+        // keep the shared dedupe log in sync so later CLI --all runs skip these URLs
+        bing.logLine({ action: 'submit', ok: true, detail: res, urls }, bing.defaultLogPath('bing'));
+        return ok({ ok: true, submitted: urls.length, urls, response: res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+
   // ---------- diagnose (site GEO/SEO diagnosis) ----------
   {
     name: 'diagnose_site',
