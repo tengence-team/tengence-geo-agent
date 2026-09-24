@@ -45,10 +45,14 @@ const INTERNAL_LINK_RE = new RegExp(
 // ---------------------------------------------------------------- args
 function parseArgs(argv) {
   const { flags } = t.cli.args.parse(
-    { count: { type: 'string' }, 'dry-run': { type: 'boolean' } },
+    { count: { type: 'string' }, 'dry-run': { type: 'boolean' }, date: { type: 'string' } },
     argv
   );
-  return { count: flags.count ? parseInt(flags.count, 10) || 1 : null, dryRun: flags['dry-run'] };
+  return {
+    count: flags.count ? parseInt(flags.count, 10) || 1 : null,
+    dryRun: flags['dry-run'],
+    date: flags.date || null,
+  };
 }
 
 function todayStr(d = new Date()) {
@@ -131,6 +135,7 @@ async function main() {
   const schedule = loadSchedule();
   const count = args.count ?? (schedule.per_day || 1);
   const dryRun = args.dryRun;
+  const publishDate = args.date || null;
   const today = todayStr();
 
   console.log(`[promote-daily] ${today} | count=${count}${dryRun ? ' | DRY-RUN' : ''}`);
@@ -231,7 +236,9 @@ async function main() {
 
     // step 5: promote
     try {
-      await t.wp.posts.update(item.wp_post_id, { status: 'publish' });
+      const promotePatch = { status: 'publish' };
+      if (publishDate) { promotePatch.date = publishDate; promotePatch.modified = publishDate; }
+      await t.wp.posts.update(item.wp_post_id, promotePatch);
     } catch (e) {
       skipped.push({ item, reason: `promote to publish failed: ${e.message}` });
       console.log(`    ✗ Promote to publish failed: ${e.message}`);

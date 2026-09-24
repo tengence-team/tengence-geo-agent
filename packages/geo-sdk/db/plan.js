@@ -159,7 +159,7 @@ async function upsert(conn, appId, record) {
         target_word_count, publish_batch, publish_order, category, tags,
         article_id, wp_post_id, published_url,
         plan_status, queued_at, published_at, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       appId, record.slug,
       record.node_type || 'spoke', record.hub_cluster || null, record.matrix_code || null,

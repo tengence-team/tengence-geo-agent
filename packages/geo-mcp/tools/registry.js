@@ -96,9 +96,13 @@ function fail(err) {
 /** Delegate to a geo-cli bin (canonical orchestration); returns { code, stdout, stderr } */
 function runCli(binName, args, opts = {}) {
   const binPath = require.resolve(`@tengence/geo-cli/bin/${binName}.js`);
+  // Propagate the bound workspace to the child process: geo-cli resolves the site
+  // through SITES_ROOT (site/config.js) and an in-process setSitesRoot is invisible
+  // to a spawned child, so without this every site-dependent CLI starts unbound.
+  const sitesRoot = t.site.SITES_ROOT;
   const res = spawnSync(process.execPath, [binPath, ...args], {
     encoding: 'utf8',
-    env: { ...process.env, ...opts.env },
+    env: { ...process.env, ...(sitesRoot ? { SITES_ROOT: sitesRoot } : {}), ...opts.env },
     timeout: opts.timeout || 300000,
     maxBuffer: 16 * 1024 * 1024,
   });
@@ -373,10 +377,16 @@ const tools = [
   },
   {
     name: 'publish_daily',
-    description: 'Run the daily promotion task (promotes due drafts to publish by plan publish_order; default 1/day)',
-    inputSchema: z.object({ site: siteField }),
+    description: 'Run the daily promotion task (promotes due drafts to publish by plan publish_order; default 1/day). ' +
+      'Optional date sets the promoted article publish/modified time (YYYY-MM-DDTHH:MM:SS, site timezone).',
+    inputSchema: z.object({
+      site: siteField,
+      date: z.string().optional().describe('publish/modified time for the promoted article, YYYY-MM-DDTHH:MM:SS in the site timezone; omit to leave WordPress untouched'),
+    }),
     async run(args) {
-      const r = runCli('promote-daily', ['--site', cliSite(args)]);
+      const cliArgs = ['--site', cliSite(args)];
+      if (args.date) cliArgs.push('--date', args.date);
+      const r = runCli('promote-daily', cliArgs);
       return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
     },
   },
@@ -438,7 +448,9 @@ const tools = [
       try {
         const S = withSite(args);
         process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
-        const res = await t.plan.updateStatus(args.slug, { status: args.status });
+        // repo.updateStatus expects the DB column name (plan_status); passing "status"
+        // matched no allowed field and silently made this tool a no-op.
+        const res = await t.plan.updateStatus(args.slug, { plan_status: args.status });
         return ok({ ok: true, result: res });
       } catch (e) {
         return fail(e);

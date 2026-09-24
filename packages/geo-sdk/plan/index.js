@@ -103,6 +103,9 @@ function parseQueue(queuePath) {
     publish_order: it.seq || 0,
     matrix_code: it.code || null,
     title: it.title || null,
+    // focus_keyword: queue-only topics (no matrix row) carry their keyword here;
+    // upsert() skips null values, so a missing field never wipes a matrix keyword
+    focus_keyword: it.focus_keyword || null,
     target_word_count: it.words || null,
     category: it.category || it.dir || null,
     tags: Array.isArray(it.tags) ? it.tags : [],
@@ -324,6 +327,10 @@ async function importPlan(site, opts = {}) {
         if (st === 'queued' && !p.wp_post_id) {
           st = mdExists(bySlug, p.slug) ? 'written' : 'todo';
         }
+        // published is terminal: publish-queue.json / the matrix are one-time import
+        // seeds, so a stale file status must never rewind a row the DB already
+        // published — a rewind would let promote-daily publish the same article twice.
+        if (p.plan_status === 'published' && st !== 'published') st = 'published';
         const urlPatch = st === 'published' && !p.published_url ? articleUrl(p.slug) : null;
         if (st !== p.plan_status || urlPatch) {
           await repo.updateStatus(conn, appId, p.slug, {
