@@ -1,0 +1,33 @@
+platform: baijiahao
+name: 百家号
+api: official
+status: pending
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 30
+  maxBodyLen: 3000
+  tags: false
+  cover: true
+  draft: true
+  schedule: false
+rewrite:
+  title:
+    max: 30
+    style: "平实陈述，避免夸张/绝对化（最、第一、100%、点击不迷路等广告法敏感词）"
+  removeBlocks: ["相关阅读", "立即行动", "关于通智云", "关于Tengence"]
+  keepBlocks: ["关键要点", "常见问题", "数据来源"]
+  body:
+    minChars: 800
+    maxChars: 3000
+    firstPara: "直接给结论或痛点，前 50 字决定打开率"
+  tags:
+    max: 0
+    note: "百家号后台设置，不随正文提交"
+  cover:
+    required: true
+    note: "百家号必填封面，用 DB featured_image 或品牌图"
+  notes: |
+    - 官方 API 需要企业认证后的 app_id/app_token（后台「开发」页获取）
+    - 阶段 1 仅占位：channel_publish 对此平台返回 pending，待凭据后接入
+    - 正文 800-3000 字为宜，短段落；保留数据来源增强可信

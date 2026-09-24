@@ -1,0 +1,33 @@
+platform: xiaohongshu
+name: 小红书
+api: none
+status: manual
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 20
+  maxBodyLen: 1000
+  tags: true
+  cover: true
+  draft: false
+  schedule: false
+rewrite:
+  title:
+    max: 20
+    style: "口语化、有情绪钩子，可带 emoji；如『AI 搜不到你？90% 品牌都踩过』"
+  removeBlocks: ["相关阅读", "立即行动", "关于通智云", "关于Tengence", "数据来源"]
+  keepBlocks: ["关键要点", "常见问题"]
+  body:
+    minChars: 300
+    maxChars: 1000
+    firstPara: "场景化开场：『你有没有遇到过…』直接代入读者"
+  tags:
+    max: 10
+    note: "小红书话题标签 #GEO #AI搜索 #SEO，正文尾部加标签行"
+  cover:
+    required: true
+    note: "封面是打开率关键：3:4 竖图 + 大字标题"
+  notes: |
+    - 开放平台仅有电商类 API，无笔记发布 API：仅导出 md 发布包供人工发布
+    - 正文 ≤1000 字，分点 + emoji 列表；口语化
+    - 可改写成『图文笔记』结构：封面点 + 正文干货 + 结尾互动提问

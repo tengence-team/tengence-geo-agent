@@ -1,0 +1,33 @@
+platform: csdn
+name: CSDN
+api: none
+status: manual
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 50
+  maxBodyLen: 20000
+  tags: true
+  cover: false
+  draft: false
+  schedule: false
+rewrite:
+  title:
+    max: 50
+    style: "技术向，含核心关键词；可用『XX怎么做？』句式（CSDN 检索友好）"
+  removeBlocks: ["关于通智云", "关于Tengence", "立即行动"]
+  keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
+  body:
+    minChars: 800
+    maxChars: 20000
+    firstPara: "背景 + 问题 + 本文结构，技术读者可快速判断是否值得读"
+  tags:
+    max: 5
+    note: "CSDN 标签，技术类（GEO、SEO、搜索）"
+  cover:
+    required: false
+    note: "CSDN 自动取首图"
+  notes: |
+    - 无官方发布 API：仅导出 md 发布包供人工粘贴发布（CSDN 编辑器支持 md 粘贴）
+    - 技术教程结构；保留代码/表格/数据来源
+    - 文末可保留官网原文链接（CSDN 允许带来源链接）

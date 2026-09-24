@@ -1,0 +1,33 @@
+platform: zhihu
+name: 知乎
+api: none
+status: manual
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 40
+  maxBodyLen: 8000
+  tags: true
+  cover: false
+  draft: false
+  schedule: false
+rewrite:
+  title:
+    max: 40
+    style: "完整专业、陈述式，保留核心关键词；避免标题党（知乎折叠标题党）"
+  removeBlocks: ["相关阅读", "立即行动", "关于通智云", "关于Tengence"]
+  keepBlocks: ["关键要点", "常见问题", "数据来源"]
+  body:
+    minChars: 1500
+    maxChars: 8000
+    firstPara: "结论前置：第一段给出核心答案/立场，再展开论证"
+  tags:
+    max: 3
+    note: "知乎话题，用宽泛话题（GEO、SEO、搜索引擎优化）"
+  cover:
+    required: false
+    note: "知乎自动抓图，不强制"
+  notes: |
+    - 无官方公开发布 API：本平台仅导出 md 发布包供人工粘贴发布
+    - 深度内容受欢迎（1500-8000 字），引用数据来源增强可信
+    - 删除全部营销 CTA 与品牌块（知乎社区强排斥）

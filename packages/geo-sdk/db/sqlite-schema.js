@@ -16,12 +16,19 @@
  * The single source of truth for table names = the TABLES constants in db/schema.js
  * (PREFIX='tengence_geo_').
  * Versioning: PRAGMA user_version (see db/sqlite.js ensureSchema).
+ *
+ * channel_plan note: this table is WORKSPACE-LOCAL state (publishing calendar per
+ * external platform), not part of the MySQL production schema — it lives only in
+ * the SQLite file and is therefore defined here (not in schema.js).
  * ============================================================================
  */
 
 const { TABLES } = require('./schema');
 
-const SCHEMA_VERSION = 1;
+/** Workspace-local channel publishing calendar (not in the MySQL schema). */
+const CHANNEL_PLAN = 'tengence_geo_channel_plan';
+
+const SCHEMA_VERSION = 2;
 
 const createSqliteTablesSQL = `
 -- ========== 1. articles main table ==========
@@ -366,6 +373,26 @@ CREATE INDEX IF NOT EXISTS idx_sqlite_plan_queued ON ${TABLES.articlePlan} (app_
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_category ON ${TABLES.articlePlan} (app_id, category);
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_slug ON ${TABLES.articlePlan} (slug);
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_batch ON ${TABLES.articlePlan} (app_id, publish_batch);
+
+-- ========== 17. channel publishing calendar (workspace-local, not in MySQL) ==========
+CREATE TABLE IF NOT EXISTS ${CHANNEL_PLAN} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id INTEGER NOT NULL DEFAULT 1,
+  platform TEXT NOT NULL,
+  period TEXT NOT NULL,
+  topic TEXT,
+  weekday TEXT,
+  article_slugs TEXT NOT NULL,
+  status TEXT DEFAULT 'todo',
+  draft_ids TEXT,
+  notes TEXT,
+  schedule_at TEXT,
+  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  UNIQUE (app_id, platform, period)
+);
+CREATE INDEX IF NOT EXISTS idx_sqlite_channel_plan_app ON ${CHANNEL_PLAN} (app_id);
+CREATE INDEX IF NOT EXISTS idx_sqlite_channel_plan_status ON ${CHANNEL_PLAN} (app_id, platform, status);
 `;
 
-module.exports = { SCHEMA_VERSION, createSqliteTablesSQL };
+module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN };

@@ -861,6 +861,98 @@ const tools = [
       }
     },
   },
+  // ---------- cross-platform channel ----------
+  {
+    name: 'channel_list',
+    description:
+      'List all external content platforms in the syndicate registry: API type (official|cookie|none), status (ready|pending|manual), ' +
+      'capabilities (multi-article merge, per-platform limits, draft/cover/tags) and the full platform rewrite rules (styles). ' +
+      'The rewrite rules are the HARNESS rewriting guide — the server never rewrites content: read the original via article_export, ' +
+      'apply these rules yourself, then channel_publish to land the draft/export.',
+    inputSchema: z.object({
+      platform: z.string().optional().describe('filter to one platform key'),
+    }),
+    async run(args) {
+      try {
+        const platforms = t.syndicate.registry.listPlatforms();
+        return ok({
+          ok: true,
+          platforms: args.platform ? platforms.filter((p) => p.key === args.platform) : platforms,
+        });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_publish',
+    description:
+      'Publish/export to one external platform. Mode A: pass slugs[] and the server reads the DB and runs the platform pipeline ' +
+      '(wechat drafts box — preview in mp.weixin.qq.com before mass-sending; juejin draft; devto publish). Mode B: pass pre-written ' +
+      'articles[] ({slug,title,contentMd,summary,tags,sourceUrl,cover}) — the harness-rewritten draft — and the server exports a publish ' +
+      'package to <site>/data/channel-export/<platform>/<slug>.md with full front matter (manual publishing on every platform; ' +
+      'required for api:none platforms). asDraft defaults true (never mass-sends).',
+    inputSchema: z.object({
+      platform: z.string().describe('platform key (see channel_list)'),
+      slugs: z.array(z.string()).optional().describe('Mode A: article slugs to publish through the platform pipeline'),
+      articles: z
+        .array(
+          z.object({
+            slug: z.string(),
+            title: z.string(),
+            contentMd: z.string(),
+            summary: z.string().optional(),
+            tags: z.array(z.string()).optional(),
+            sourceUrl: z.string().optional(),
+            cover: z.string().optional(),
+            rewrite: z.string().optional(),
+            mode: z.string().optional(),
+          })
+        )
+        .optional()
+        .describe('Mode B: pre-written (harness-rewritten) articles to export as publish packages'),
+      asDraft: z.boolean().optional().describe('default true: create draft (wechat/juejin), never mass-send'),
+      keepOrder: z.boolean().optional().describe('wechat only: keep slugs order (1st = headline)'),
+      dryRun: z.boolean().optional().describe('print the plan, no external calls'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const site = withSite(args);
+        const result = await t.syndicate.channel.publishToChannel({
+          platform: args.platform,
+          slugs: args.slugs || [],
+          articles: args.articles || [],
+          asDraft: args.asDraft !== false,
+          keepOrder: !!args.keepOrder,
+          dryRun: !!args.dryRun,
+          siteKey: site.siteKey,
+        });
+        return ok({ ok: result.ok, ...result });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_plan_next',
+    description:
+      'Per-platform publishing calendar: return the next due issue for a platform (earliest row not published) plus all calendar rows ' +
+      '(status/period/topic/weekday/slugs). The due issue slugs are what to prepare next (the wechat 12-period plan is already imported).',
+    inputSchema: z.object({
+      platform: z.string().optional().describe('filter rows to one platform (default: all platforms)'),
+    }),
+    async run(args) {
+      try {
+        const ch = t.plan.channel;
+        const rows = await ch.list({ platform: args.platform });
+        const next = args.platform ? await ch.nextDue(args.platform) : null;
+        return ok({ ok: true, next, rows });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
 ];
 
 const registry = new Map(tools.map((tool) => [tool.name, tool]));

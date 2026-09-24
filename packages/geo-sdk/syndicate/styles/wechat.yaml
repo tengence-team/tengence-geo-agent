@@ -1,0 +1,35 @@
+platform: wechat
+name: 微信公众号
+api: official
+status: ready
+capabilities:
+  multiArticle: true
+  maxArticles: 8
+  maxTitleLen: 64
+  maxBodyLen: 20000
+  tags: false
+  cover: true
+  draft: true
+  schedule: false
+rewrite:
+  title:
+    max: 64
+    style: "信息完整直白，含核心关键词；避免营销夸张词（最/第一/绝对）"
+  removeBlocks: ["相关阅读", "立即行动"]
+  keepBlocks: ["关于通智云", "关于Tengence", "关键要点", "常见问题", "数据来源"]
+  body:
+    minChars: 1200
+    maxChars: 20000
+    firstPara: "承接标题，直接给出文章价值与可读理由，不铺垫"
+  tags:
+    max: 0
+    note: "公众号图文无标签概念，忽略"
+  cover:
+    required: true
+    note: "使用 DB featured_image；无图时提示需先配图"
+  notes: |
+    - 一次最多 8 篇图文合并一条消息，第 1 篇为头条（keepOrder=true 保持传入顺序）
+    - 正文用短段落（2-4 句/段），适度使用 emoji 分隔
+    - 文末保留"关于通智云GEO搜索"品牌块并引导关注
+    - 链接在图文内为可点击文字链；删除站外无关键作用的外链
+    - 发布流程：同步草稿箱 → 后台预览确认 → 手动群发（不要直接群发）

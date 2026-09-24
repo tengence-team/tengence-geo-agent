@@ -37,12 +37,12 @@ after(() => {
   try { fs.unlinkSync(tmp); } catch (_) { /* ignore */ }
 });
 
-test('auto-init: first connect creates 16 tables + user_version=1 (idempotent)', async () => {
+test('auto-init: first connect creates 17 tables + user_version=2 (idempotent)', async () => {
   // getDb() already performs lazy initialization internally; a second ensureSchema
   // is idempotent and returns applied:false
   const db = sqlite.getDb();
-  assert.equal(sqlite.dbStatus().tableCount, 16);
-  assert.equal(sqlite.dbStatus().schemaVersion, 1);
+  assert.equal(sqlite.dbStatus().tableCount, 17);
+  assert.equal(sqlite.dbStatus().schemaVersion, 2);
   assert.equal(sqlite.ensureSchema(db).applied, false);
 });
 

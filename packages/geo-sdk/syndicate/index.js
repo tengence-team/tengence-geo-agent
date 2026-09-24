@@ -19,5 +19,7 @@
 const devto = require('./devto');
 const juejin = require('./juejin');
 const wechat = require('./wechat');
+const registry = require('./registry');
+const channel = require('./channel');
 
-module.exports = { devto, juejin, wechat };
+module.exports = { devto, juejin, wechat, registry, channel };

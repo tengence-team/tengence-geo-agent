@@ -1,0 +1,33 @@
+platform: toutiao
+name: 头条号
+api: none
+status: manual
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 30
+  maxBodyLen: 3000
+  tags: false
+  cover: true
+  draft: false
+  schedule: false
+rewrite:
+  title:
+    max: 30
+    style: "吸引点击但避免标题党；可用数字/悬念/痛点（如『AI 搜不到你品牌？』）"
+  removeBlocks: ["相关阅读", "立即行动", "关于通智云", "关于Tengence"]
+  keepBlocks: ["关键要点", "常见问题", "数据来源"]
+  body:
+    minChars: 1000
+    maxChars: 3000
+    firstPara: "痛点开场，前两句给价值承诺"
+  tags:
+    max: 0
+    note: "头条后台设置话题，不随正文提交"
+  cover:
+    required: true
+    note: "头条必填封面图（3:2），用 DB featured_image 或品牌图"
+  notes: |
+    - 官方开放平台已停止注册：仅导出 md 发布包供人工发布
+    - 口语化、短段落、多用小标题；删除硬广
+    - 正文 1000-3000 字，过长会被折叠

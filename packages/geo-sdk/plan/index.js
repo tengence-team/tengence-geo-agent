@@ -615,4 +615,6 @@ module.exports = {
   reconcile,
   // parsing (tests/debugging)
   parseMatrix, parseQueue, mdExists,
+  // per-platform publishing calendar (workspace-local channel_plan table)
+  channel: require('./channel'),
 };

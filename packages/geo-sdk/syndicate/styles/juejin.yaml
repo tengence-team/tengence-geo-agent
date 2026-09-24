@@ -1,0 +1,34 @@
+platform: juejin
+name: 掘金
+api: cookie
+status: ready
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 40
+  maxBodyLen: 15000
+  tags: true
+  cover: false
+  draft: true
+  schedule: false
+rewrite:
+  title:
+    max: 40
+    style: "技术向、可直接作搜索标题；可用问句或数字（如『XX怎么做？7 个步骤』）"
+  removeBlocks: ["关于通智云", "关于Tengence", "立即行动"]
+  keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
+  body:
+    minChars: 800
+    maxChars: 15000
+    firstPara: "一句话交代背景 + 本文解决什么问题，适合技术读者"
+  tags:
+    max: 5
+    note: "掘金支持标签，用技术标签（如 GEO、SEO、搜索）"
+  cover:
+    required: false
+    note: "掘金自动取首图，无图时不强制"
+  notes: |
+    - 技术教程结构：背景 → 方案/步骤 → 要点 → FAQ → 参考来源
+    - 保留代码块、表格、数据来源以增强可信
+    - 删除品牌营销块（掘金社区排斥硬广）
+    - 发布走 cookie API：建草稿（draft）→ 后台确认后可发布

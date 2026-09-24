@@ -1,0 +1,34 @@
+platform: devto
+name: Dev.to
+api: official
+status: ready
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 128
+  maxBodyLen: 20000
+  tags: true
+  cover: false
+  draft: true
+  schedule: false
+rewrite:
+  title:
+    max: 128
+    style: "英文标题，技术向；保留核心术语（GEO/SEO/AI search）"
+  removeBlocks: ["关于通智云", "关于Tengence", "立即行动"]
+  keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
+  body:
+    minChars: 600
+    maxChars: 20000
+    firstPara: "English: state the problem and what this post covers"
+  tags:
+    max: 4
+    note: "Dev.to 最多 4 个标签，映射英文（seo/ai/search/saas）"
+  cover:
+    required: false
+    note: "Dev.to 使用自带图床，正文图片自动上传，封面可省"
+  notes: |
+    - 内容需英文化（标题/正文/tags）
+    - canonical_url 自动指向官网原文，无需手写
+    - front matter 必须含 title 与 keywords（tags 由 keywords 映射）
+    - 正文去掉首个 # 标题（API 有独立 title 字段）
