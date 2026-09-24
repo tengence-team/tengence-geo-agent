@@ -15,7 +15,7 @@ rewrite:
   title:
     max: 40
     style: "技术向、可直接作搜索标题；可用问句或数字（如『XX怎么做？7 个步骤』）"
-  removeBlocks: ["关于通智云", "关于Tengence", "立即行动"]
+  removeBlocks: ["<品牌简介块>", "立即行动"]
   keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
   body:
     minChars: 800

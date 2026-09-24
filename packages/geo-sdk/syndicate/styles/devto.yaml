@@ -15,7 +15,7 @@ rewrite:
   title:
     max: 128
     style: "英文标题，技术向；保留核心术语（GEO/SEO/AI search）"
-  removeBlocks: ["关于通智云", "关于Tengence", "立即行动"]
+  removeBlocks: ["<品牌简介块>", "立即行动"]
   keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
   body:
     minChars: 600

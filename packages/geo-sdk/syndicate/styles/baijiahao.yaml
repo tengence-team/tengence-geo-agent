@@ -15,7 +15,7 @@ rewrite:
   title:
     max: 30
     style: "平实陈述，避免夸张/绝对化（最、第一、100%、点击不迷路等广告法敏感词）"
-  removeBlocks: ["相关阅读", "立即行动", "关于通智云", "关于Tengence"]
+  removeBlocks: ["相关阅读", "立即行动", "<品牌简介块>"]
   keepBlocks: ["关键要点", "常见问题", "数据来源"]
   body:
     minChars: 800

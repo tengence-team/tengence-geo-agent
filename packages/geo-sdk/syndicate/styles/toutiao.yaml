@@ -15,7 +15,7 @@ rewrite:
   title:
     max: 30
     style: "吸引点击但避免标题党；可用数字/悬念/痛点（如『AI 搜不到你品牌？』）"
-  removeBlocks: ["相关阅读", "立即行动", "关于通智云", "关于Tengence"]
+  removeBlocks: ["相关阅读", "立即行动", "<品牌简介块>"]
   keepBlocks: ["关键要点", "常见问题", "数据来源"]
   body:
     minChars: 1000

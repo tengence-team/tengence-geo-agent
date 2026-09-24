@@ -15,7 +15,7 @@ rewrite:
   title:
     max: 40
     style: "完整专业、陈述式，保留核心关键词；避免标题党（知乎折叠标题党）"
-  removeBlocks: ["相关阅读", "立即行动", "关于通智云", "关于Tengence"]
+  removeBlocks: ["相关阅读", "立即行动", "<品牌简介块>"]
   keepBlocks: ["关键要点", "常见问题", "数据来源"]
   body:
     minChars: 1500
