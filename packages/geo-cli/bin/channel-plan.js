@@ -8,6 +8,9 @@
  *   tengence-geo channel-plan.js mark <id> <status>         # todo|draft|published|paused
  *   tengence-geo channel-plan.js import-wechat <plan.md>    # import 《微信公众号发布计划.md》
  *   tengence-geo channel-plan.js reconcile <platform> [--published=slug1,slug2]
+ *   tengence-geo channel-plan.js taxonomy sync [--platform=juejin]
+ *   tengence-geo channel-plan.js taxonomy list [--kind=tag] [--name=SEO | --prefix=搜索] [--limit=50]
+ *   tengence-geo channel-plan.js taxonomy resolve --category=geo-ai-search --tags=geo-seo,search-system
  * ============================================================================
  */
 const path = require('path');
@@ -17,10 +20,22 @@ const t = require('@tengence/geo-sdk');
 
 async function main() {
   const { positionals, flags } = t.cli.args.parse(
-    { platform: { type: 'string' }, status: { type: 'string' }, published: { type: 'string' }, all: { type: 'boolean' } },
+    {
+      platform: { type: 'string' },
+      status: { type: 'string' },
+      published: { type: 'string' },
+      all: { type: 'boolean' },
+      kind: { type: 'string' },
+      name: { type: 'string' },
+      prefix: { type: 'string' },
+      limit: { type: 'string' },
+      category: { type: 'string' },
+      tags: { type: 'string' },
+      keywords: { type: 'string' },
+    },
     process.argv.slice(2)
   );
-  t.site.loadSite(t.site.readSiteArg());
+  const site = t.site.loadSite(t.site.readSiteArg());
 
   const cmd = positionals[0] || 'list';
   const platform = flags.platform;
@@ -92,7 +107,60 @@ async function main() {
     return;
   }
 
-  console.error(`Unknown command "${cmd}" (list | next | mark | import-wechat | reconcile)`);
+  if (cmd === 'taxonomy') {
+    const sub = positionals[1] || 'list';
+    const jt = t.syndicate.juejinTaxonomy;
+    const repo = t.db.channelTaxonomy;
+    const appId = Number(process.env.APP_ID || 1);
+    const plat = flags.platform || 'juejin';
+
+    if (sub === 'sync') {
+      const res = await jt.syncJuejinTaxonomy();
+      console.log(`✅ taxonomy synced: ${JSON.stringify(res)}`);
+      const stats = await jt.taxonomyStats();
+      console.log(`   cached: ${JSON.stringify(stats)}`);
+      return;
+    }
+
+    if (sub === 'list') {
+      const limit = flags.limit ? Number(flags.limit) : 100;
+      let rows;
+      await t.db.withConn(async (conn) => {
+        if (flags.name) {
+          const one = await repo.findByName(conn, appId, plat, flags.kind || 'tag', flags.name);
+          rows = one ? [one] : [];
+        } else if (flags.prefix) {
+          rows = await repo.findByPrefix(conn, appId, plat, flags.kind || 'tag', flags.prefix, limit);
+        } else {
+          rows = await repo.list(conn, appId, { platform: plat, kind: flags.kind, limit });
+        }
+      });
+      const stats = await jt.taxonomyStats();
+      console.log(`taxonomy(${plat}) cached: categories=${stats.categories} tags=${stats.tags} — showing ${rows.length}`);
+      for (const r of rows) console.log(`  ${r.kind} | ${r.external_id} | ${r.name}${r.parent_id ? ` (parent=${r.parent_id})` : ''}`);
+      return;
+    }
+
+    if (sub === 'resolve') {
+      const res = await jt.resolveJuejinTaxonomy({
+        category: flags.category || null,
+        tags: flags.tags ? flags.tags.split(',').map((s) => s.trim()).filter(Boolean) : [],
+        keywords: flags.keywords ? flags.keywords.split(',').map((s) => s.trim()).filter(Boolean) : [],
+        siteDir: site.siteDir,
+        autoSync: false,
+      });
+      console.log('resolved:');
+      console.log(`  category: ${res.categoryName || '(env)'} = ${res.categoryId}  [${res.categoryOrigin}]`);
+      console.log(`  tags:     ${res.tagNames.join(', ') || '(env)'} = [${res.tagIds.join(', ')}]  [${res.origins.join(', ')}]`);
+      if (res.dictEmpty) console.log('  ⚠️ dictionary empty — run: channel-plan.js taxonomy sync');
+      return;
+    }
+
+    console.error(`Unknown taxonomy subcommand "${sub}" (sync | list | resolve)`);
+    process.exit(1);
+  }
+
+  console.error(`Unknown command "${cmd}" (list | next | mark | import-wechat | reconcile | taxonomy)`);
   process.exit(1);
 }
 

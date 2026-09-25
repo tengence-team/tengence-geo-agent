@@ -42,6 +42,8 @@ module.exports = {
   articles: require('./articles'),
   config: require('./config'),
   terms: require('./terms'),
+  /** External-platform taxonomy dictionary (category/tag id+name cache, e.g. juejin) */
+  channelTaxonomy: require('./channel-taxonomy'),
   /** JSON column / JSON-string tolerant parsing (single source, converged in batch 6) */
   value: require('./value'),
   /** Image repository (all capabilities moved from the business repo) */

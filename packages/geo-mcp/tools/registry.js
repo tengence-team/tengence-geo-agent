@@ -954,8 +954,12 @@ const tools = [
       'package to <site>/data/channel-export/<platform>/<slug>.md with full front matter (manual publishing on every platform; ' +
       'required for api:none platforms). asDraft defaults true (never mass-sends). ' +
       'PLATFORMS: wechat, juejin (cookie — 原文直发 via juejin draft), devto. ' +
-      'Juejin pipeline: reads DB article → creates draft → writes body (tags best-effort) → publishes; dryRun=true previews with no external calls; ' +
-      'idempotent — skips a slug already on Juejin (draft or published). This server is multi-channel; choose by platform=.',
+      'Juejin pipeline: reads DB article → resolves category/tags against the cached platform dictionary ' +
+      '(channel_taxonomy; our article_plan.category/tags → the platform\'s category_id/tag_ids — see channel_taxonomy_resolve) ' +
+      '→ creates draft → writes body → publishes; dryRun=true previews the plan AND the resolved taxonomy with no external ' +
+      'calls; idempotent — skips a slug already on Juejin (draft or published). Category and tag are both required by Juejin, ' +
+      'so a fallback chain (alias → dictionary → env → dictionary default) guarantees both are always sent. ' +
+      'This server is multi-channel; choose by platform=.',
     inputSchema: z.object({
       platform: z.string().describe('platform key (see channel_list)'),
       slugs: z.array(z.string()).optional().describe('Mode A: article slugs to publish through the platform pipeline'),
@@ -998,12 +1002,19 @@ const tools = [
           const ch = t.plan.channel;
           for (const r of result.results || []) {
             try {
+              // leave an audit trail of the taxonomy actually used (channel_plan stores
+              // no category/tag columns on purpose — article_plan stays the single source)
+              const tax = r.taxonomy;
+              const taxNote = tax
+                ? `tax: ${tax.category} [${tax.categoryOrigin}] / ${(tax.tags || []).join(', ')}`
+                : null;
               await ch.recordPublish({
                 platform: 'juejin',
                 slug: r.slug,
                 title: r.title || (r.detail && r.detail.title),
                 status: r.ok ? 'published' : 'failed',
                 draftId: r.draftId || (r.detail && r.detail.draftId),
+                notes: r.ok ? taxNote : null,
                 error: r.ok ? null : r.error || (r.detail && (r.detail.err || r.detail.message)) || r.stage,
               });
             } catch (logErr) {
@@ -1167,6 +1178,107 @@ const tools = [
       try {
         withSite(args);
         const res = await t.plan.channel.reconcileFromJuejin({ map: args.map });
+        return ok({ ok: true, ...res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  // ---------- external-platform taxonomy dictionary (channel_taxonomy) ----------
+  {
+    name: 'channel_taxonomy_sync',
+    description:
+      'Refresh the cached dictionary of an EXTERNAL platform\'s own taxonomy (category + tag id/name) into the workspace ' +
+      'table channel_taxonomy. Currently juejin: 8 categories + ~725 tags fetched from the platform APIs. The dictionary is ' +
+      'PLATFORM-scoped, shared by every site — a site publishing to Juejin needs NO mapping file of its own. It is used to ' +
+      'map our article_plan category/tags onto the platform\'s category_id/tag_ids at publish time. Idempotent (upsert by ' +
+      'platform id); publish auto-runs this once when the dictionary is empty, so calling it manually is only needed to ' +
+      'refresh after a platform word-list change. Names are indexed for exact/prefix lookup (infix search runs in memory). ' +
+      'Requires JUEJIN_COOKIE in the site .env. Read-only on the platform — it fetches lists, it does not publish.',
+    inputSchema: z.object({
+      platform: z.string().optional().describe('platform key (default juejin)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        withSite(args);
+        const res = await t.syndicate.juejinTaxonomy.syncJuejinTaxonomy();
+        const stats = await t.syndicate.juejinTaxonomy.taxonomyStats();
+        return ok({ ok: true, ...res, cached: stats });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_taxonomy_list',
+    description:
+      'Read the cached external-platform taxonomy dictionary (channel_taxonomy) — the platform\'s OWN categories and tags ' +
+      'with their ids. Filter by kind (category|tag); look one up exactly with name=, or by prefix with prefix= (prefix ' +
+      'lookups use the NOCASE index; infix/contains search is NOT index-accelerated, so do it client-side over this list). ' +
+      'Use it to see which platform tags exist before choosing an alias.',
+    inputSchema: z.object({
+      platform: z.string().optional().describe('platform key (default juejin)'),
+      kind: z.enum(['category', 'tag']).optional().describe('category | tag (omit for both)'),
+      name: z.string().optional().describe('exact name lookup (case-insensitive)'),
+      prefix: z.string().optional().describe('name prefix lookup, e.g. "搜索"'),
+      limit: z.number().optional().describe('max rows (default 100)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        withSite(args);
+        const appId = Number(process.env.APP_ID || 1);
+        const platform = args.platform || 'juejin';
+        const repo = t.db.channelTaxonomy;
+        let rows;
+        await t.db.withConn(async (conn) => {
+          if (args.name) {
+            const one = await repo.findByName(conn, appId, platform, args.kind || 'tag', args.name);
+            rows = one ? [one] : [];
+          } else if (args.prefix) {
+            rows = await repo.findByPrefix(conn, appId, platform, args.kind || 'tag', args.prefix, args.limit || 100);
+          } else {
+            rows = await repo.list(conn, appId, { platform, kind: args.kind, limit: args.limit || 100 });
+          }
+        });
+        const stats = await t.syndicate.juejinTaxonomy.taxonomyStats();
+        return ok({
+          ok: true,
+          platform,
+          cached: stats,
+          count: rows.length,
+          rows: rows.map((r) => ({ kind: r.kind, external_id: r.external_id, name: r.name, parent_id: r.parent_id, extra: r.extra })),
+        });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_taxonomy_resolve',
+    description:
+      'Preview how OUR taxonomy maps onto a platform\'s (article_plan.category/tags → platform category_id/tag_ids) WITHOUT ' +
+      'publishing. Returns the chosen ids/names plus a per-item origin showing which fallback layer fired (alias / exact / ' +
+      'token:<kw> / fuzzy / default / env / first / hardcoded). Use it to sanity-check a mapping before a real publish; it ' +
+      'never makes external calls and never writes.',
+    inputSchema: z.object({
+      category: z.string().optional().describe('our category slug, e.g. geo-ai-search'),
+      tags: z.array(z.string()).optional().describe('our tag slugs, e.g. ["geo-seo","search-system"]'),
+      keywords: z.array(z.string()).optional().describe('extra keywords (article target_keywords)'),
+      platform: z.string().optional().describe('platform key (default juejin)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const site = withSite(args);
+        const res = await t.syndicate.juejinTaxonomy.resolveJuejinTaxonomy({
+          category: args.category || null,
+          tags: args.tags || [],
+          keywords: args.keywords || [],
+          siteDir: site.siteDir,
+          autoSync: false,
+        });
         return ok({ ok: true, ...res });
       } catch (e) {
         return fail(e);

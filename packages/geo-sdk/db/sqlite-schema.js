@@ -28,7 +28,20 @@ const { TABLES } = require('./schema');
 /** Workspace-local channel publishing calendar (not in the MySQL schema). */
 const CHANNEL_PLAN = 'tengence_geo_channel_plan';
 
-const SCHEMA_VERSION = 2;
+/**
+ * Workspace-local dictionary of an EXTERNAL platform's own taxonomy (category /
+ * tag id + name), e.g. Juejin's 8 categories and ~725 tags. Platform-scoped, NOT
+ * site-scoped: every site that publishes to the platform shares one copy, so no
+ * site needs its own taxonomy config file (portability).
+ */
+const CHANNEL_TAXONOMY = 'tengence_geo_channel_taxonomy';
+
+// NOTE: v4 (not v3) — some local DBs were already stamped 3 by a transient earlier
+// bump that was rolled back while the committed value stayed 2. The version stamp is
+// only used as a monotonic "DDL already applied" marker (the DDL itself is idempotent,
+// IF NOT EXISTS), so jumping to 4 guarantees the channel_taxonomy table is created
+// everywhere regardless of which of {2,3} a given DB is currently at.
+const SCHEMA_VERSION = 4;
 
 const createSqliteTablesSQL = `
 -- ========== 1. articles main table ==========
@@ -393,6 +406,40 @@ CREATE TABLE IF NOT EXISTS ${CHANNEL_PLAN} (
 );
 CREATE INDEX IF NOT EXISTS idx_sqlite_channel_plan_app ON ${CHANNEL_PLAN} (app_id);
 CREATE INDEX IF NOT EXISTS idx_sqlite_channel_plan_status ON ${CHANNEL_PLAN} (app_id, platform, status);
+
+-- ========== 18. external-platform taxonomy dictionary (workspace-local, not in MySQL) ==========
+-- One row per platform category/tag. platform-scoped (shared by every site).
+-- Index rationale (verified with EXPLAIN QUERY PLAN against better-sqlite3, the
+-- driver this project actually uses):
+--   * UNIQUE (app_id, platform, kind, external_id) — the sync upsert key + direct
+--     lookup by platform id.
+--   * idx_channel_taxonomy_name — composite with name LAST so the leading equality
+--     columns pin a tight range. With COLLATE NOCASE it serves all three lookup
+--     shapes:
+--       exact     name = ?         COLLATE NOCASE → SEARCH ... AND name=?
+--       prefix    name LIKE ?      ('kw%')       → SEARCH ... AND name>? AND name<?
+--       ordering  ORDER BY name    COLLATE NOCASE → reuses the index (no temp b-tree)
+--     A plain (BINARY) index does NOT accelerate a prefix LIKE: SQLite's LIKE
+--     optimization only applies when the index collation is NOCASE (while the
+--     default case_sensitive_like is OFF). Infix LIKE '%kw%' cannot use ANY index
+--     — that matching runs in the application layer over the small dictionary.
+CREATE TABLE IF NOT EXISTS ${CHANNEL_TAXONOMY} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id INTEGER NOT NULL DEFAULT 1,
+  platform TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  parent_id TEXT,
+  extra TEXT,
+  synced_at TEXT,
+  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  UNIQUE (app_id, platform, kind, external_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_taxonomy_name ON ${CHANNEL_TAXONOMY} (app_id, platform, kind, name COLLATE NOCASE);
+-- NOTE: no separate (app_id, platform, kind) index — it is a redundant prefix of
+-- idx_channel_taxonomy_name (extra write cost, zero read benefit).
 `;
 
-module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN };
+module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN, CHANNEL_TAXONOMY };

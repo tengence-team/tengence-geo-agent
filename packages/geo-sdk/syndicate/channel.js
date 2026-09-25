@@ -19,6 +19,11 @@
  *
  * Soft-failure convention (same as baidu/wechat): one failing platform/article is
  * logged, not fatal to the rest.
+ *
+ * Juejin taxonomy (2026-09-26): before publishing, the platform dictionary cached in
+ * channel_taxonomy is used to map our article_plan category/tags onto the platform's
+ * own category_id/tag_ids (module: syndicate/juejin-taxonomy). Fallbacks guarantee a
+ * category + at least one tag on every publish. Platform-scoped, so no per-site config.
  * ============================================================================
  */
 const fs = require('fs');
@@ -27,8 +32,10 @@ const yaml = require('js-yaml');
 
 const t = require('../index');
 const registry = require('./registry');
+const planRepo = require('../db/plan');
 const { syncWechat } = require('./wechat');
 const juejin = require('./juejin');
+const juejinTaxonomy = require('./juejin-taxonomy');
 const { publishDevto } = require('./devto');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
@@ -68,10 +75,21 @@ function renderPublishPackage(platform, article) {
   return `---\n${fmText}---\n\n${body.trim()}\n`;
 }
 
-/** Read an article from the DB into the {slug,title,contentMd,target_keywords} shape. */
+/**
+ * Read an article from the DB into the {slug,title,contentMd,target_keywords} shape,
+ * plus our own plan taxonomy (article_plan.category / article_plan.tags) which the
+ * juejin resolver maps onto the platform's category_id / tag_ids.
+ */
 async function articleFromDb(conn, appId, slug, siteDomain) {
   const detail = await t.db.articles.getDetail(conn, appId, slug);
   if (!detail) throw new Error(`Article not found: ${slug}`);
+  let planRow = null;
+  try {
+    planRow = await planRepo.getBySlug(conn, appId, slug);
+  } catch (e) {
+    // a missing/unreadable plan row must not block publishing
+    planRow = null;
+  }
   return {
     slug,
     title: detail.title,
@@ -79,6 +97,8 @@ async function articleFromDb(conn, appId, slug, siteDomain) {
     targetKeywords: detail.target_keywords || '',
     featuredImage: detail.featured_image || '',
     publishedAt: detail.published_at || detail.lastmod || '',
+    planCategory: planRow ? planRow.category || null : null,
+    planTags: planRow && Array.isArray(planRow.tags) ? planRow.tags : [],
   };
 }
 
@@ -123,6 +143,17 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
 
   // ---- juejin / devto: export a DB-derived markdown, then run the platform pipeline ----
   const appId = DEFAULT_APP_ID();
+
+  // juejin taxonomy: preload the platform dictionary (channel_taxonomy) ONCE for the
+  // whole batch. The dictionary is platform-scoped, so no site needs its own mapping
+  // file. Auto-syncs when empty, EXCEPT on dryRun (which must make no external calls) —
+  // a dry-run instead reports dictEmpty so the operator knows to sync first. A failed
+  // sync is never fatal: resolution then falls back to the env ids.
+  let taxoCtx = null;
+  if (platform === 'juejin') {
+    taxoCtx = await juejinTaxonomy.prepareJuejinTaxonomy({ siteDir: site.siteDir, autoSync: !dryRun });
+  }
+
   const results = [];
   let failed = 0;
   await t.db.withConn(async (conn) => {
@@ -144,16 +175,40 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           }
           fs.writeFileSync(mdPath, `# ${title}\n\n${article.contentMd.trim()}\n`, 'utf8');
 
-          // dryRun: no external calls — just preview the plan
+          const tagKws = (article.targetKeywords || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+
+          // map OUR plan taxonomy (category/tags) onto the platform's own ids via the
+          // cached dictionary; never fails — always yields a category_id + ≥1 tag_id
+          const taxo = taxoCtx
+            ? juejinTaxonomy.resolveFromContext(taxoCtx, {
+                category: article.planCategory,
+                tags: article.planTags,
+                keywords: tagKws,
+              })
+            : null;
+          const taxoSummary = taxo
+            ? {
+                category: taxo.categoryName || taxo.categoryId,
+                categoryOrigin: taxo.categoryOrigin,
+                tags: taxo.tagNames.length ? taxo.tagNames : taxo.tagIds,
+                tagOrigins: taxo.origins,
+                dictEmpty: taxo.dictEmpty,
+              }
+            : null;
+
+          // dryRun: no external calls — just preview the plan (incl. resolved taxonomy)
           if (dryRun) {
             appendLog(site.siteDir, {
               action: 'dry-run',
               platform,
               slug,
               ok: true,
-              detail: { title, trimmed: titleTrimmed, tags: (article.targetKeywords || '').split(',').map((s) => s.trim()).filter(Boolean) },
+              detail: { title, trimmed: titleTrimmed, tags: tagKws, taxonomy: taxoSummary },
             });
-            results.push({ slug, ok: true, dryRun: true, title, trimmed: titleTrimmed });
+            results.push({ slug, ok: true, dryRun: true, title, trimmed: titleTrimmed, taxonomy: taxoSummary });
             continue;
           }
 
@@ -167,18 +222,35 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             }
           }
 
-          const tagKws = (article.targetKeywords || '')
-            .split(',')
-            .map((s) => s.trim())
-            .filter(Boolean);
-          const res = await juejin.publishJuejin({ mdFile: mdPath, title, publish: !asDraft, tags: tagKws });
-          appendLog(site.siteDir, { action: asDraft ? 'draft' : 'publish', platform, slug, ok: !res.failed, detail: res });
+          const res = await juejin.publishJuejin({
+            mdFile: mdPath,
+            title,
+            publish: !asDraft,
+            tags: tagKws,
+            categoryId: taxo ? taxo.categoryId : null,
+            tagIds: taxo ? taxo.tagIds : null,
+          });
+          appendLog(site.siteDir, {
+            action: asDraft ? 'draft' : 'publish',
+            platform,
+            slug,
+            ok: !res.failed,
+            detail: { ...res, taxonomy: taxoSummary },
+          });
           if (res.failed) {
             failed += 1;
             results.push({ slug, ok: false, stage: res.stage, detail: res, title });
           } else {
             // expose articleId so the caller can record it in channel_plan.draft_ids
-            results.push({ slug, ok: true, draftId: res.draftId, articleId: res.articleId, title, trimmed: titleTrimmed });
+            results.push({
+              slug,
+              ok: true,
+              draftId: res.draftId,
+              articleId: res.articleId,
+              title,
+              trimmed: titleTrimmed,
+              taxonomy: taxoSummary,
+            });
           }
         } else if (platform === 'devto') {
           const fm = {

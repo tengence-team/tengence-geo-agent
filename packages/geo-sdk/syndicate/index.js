@@ -18,8 +18,9 @@
  */
 const devto = require('./devto');
 const juejin = require('./juejin');
+const juejinTaxonomy = require('./juejin-taxonomy');
 const wechat = require('./wechat');
 const registry = require('./registry');
 const channel = require('./channel');
 
-module.exports = { devto, juejin, wechat, registry, channel };
+module.exports = { devto, juejin, juejinTaxonomy, wechat, registry, channel };

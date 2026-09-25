@@ -181,16 +181,6 @@ async function markStatus(id, status, draftIds) {
   return result;
 }
 
-/** The next due row for a platform (earliest row still in todo), or null. */
-async function nextDue(platform) {
-  const appId = DEFAULT_APP_ID();
-  let result;
-  await withConn(async (conn) => {
-    result = await repo.nextDue(conn, appId, platform);
-  });
-  return result;
-}
-
 /**
  * Clear every row for a platform (drop a stale bulk-import before re-seeding with
  * only the actually-published articles).
