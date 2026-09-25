@@ -7,19 +7,44 @@
  * all moved into this file. The CLI only parses <markdown_file> and
  * --title / --draft / --publish, and owns the exit code.
  *
- * Env var: JUEJIN_COOKIE (sites/<site>/.env, injected by t.site.loadSite()).
+ * Env vars (sites/<site>/.env, injected by t.site.loadSite()):
+ *   JUEJIN_COOKIE  (required) session cookie
+ *   JUEJIN_UID     (required) account user_id — used in create/update/list payloads
+ *   JUEJIN_AID     (optional) API aid, default 2608
  *
- * Note: the original script's "❌ 创建失败: ${JSON.stringify(result)}" referenced an
- * undefined variable (should have been createResult); fixed to createResult during
- * the sink-down. All other copy and flow are preserved verbatim.
- * ============================================================================
+ * Additions 2026-09-25 (掘金渠道完整化):
+ *   - 查: listDrafts / listPublished / getDraft (read-back of drafts & published)
+ *   - 删: deleteDraft / deleteArticle  (IRREVERSIBLE — caller must confirm)
+ *   - 定时: publishArticle accepts optional publish_time (server-side schedule;
+ *           the MCP server itself never schedules — an external harness triggers it)
+ *   - 幂等: isDuplicate(title) checks juejin drafts+published before publishing
+ *   - 去硬编码: user_id / aid read from env, no longer hard-coded
+ *   - 标签: best-effort tag_ids resolution from article target_keywords
  */
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
 
-// HTTP request helper (ported as-is)
+const JUEJIN_AID_DEFAULT = '2608';
+
+/** Read juejin credentials from injected env. */
+function creds() {
+  return {
+    cookie: process.env.JUEJIN_COOKIE || '',
+    uid: process.env.JUEJIN_UID || '',
+    aid: process.env.JUEJIN_AID || JUEJIN_AID_DEFAULT,
+    // Required at publish time — Juejin rejects an article with category_id '0'
+    // (err_no 1002 "至少添加一个分类"). Default to 人工智能 (AI) for this tech blog;
+    // override per-site via JUEJIN_CATEGORY_ID.
+    categoryId: process.env.JUEJIN_CATEGORY_ID || '6809637773935378440',
+    // Fallback tag when the article carries no target_keywords (or none resolve to a
+    // Juejin tag). Juejin requires ≥1 tag at publish (err_no 1003). Default 人工智能.
+    defaultTagId: process.env.JUEJIN_TAG_ID || '6809640642101116936',
+  };
+}
+
+// HTTP request helper (native, mirrors the original script)
 function request(url, options = {}, body = null) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
@@ -35,7 +60,7 @@ function request(url, options = {}, body = null) {
 
     const req = mod.request(reqOptions, (res) => {
       let data = '';
-      res.on('data', (chunk) => data += chunk);
+      res.on('data', (chunk) => (data += chunk));
       res.on('end', () => {
         try {
           resolve(JSON.parse(data));
@@ -51,159 +76,259 @@ function request(url, options = {}, body = null) {
       reject(new Error('Request timeout'));
     });
 
-    if (body) {
-      req.write(JSON.stringify(body));
-    }
+    if (body) req.write(JSON.stringify(body));
     req.end();
   });
 }
 
-// Create draft (empty)
-async function createDraft(cookie, title) {
-  const url = 'https://api.juejin.cn/content_api/v1/article_draft/create';
-  const headers = {
-    'Cookie': cookie,
+/** Build default headers (Cookie injected from env). */
+function jHeaders(referer, extra = {}) {
+  const { cookie, aid } = creds();
+  return {
+    Cookie: cookie,
     'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-    'Referer': 'https://juejin.cn/editor/drafts/new',
-    'Content-Type': 'application/json',
+    Referer: referer || 'https://juejin.cn/',
+    'content-type': 'application/json',
+    aid,
+    ...extra,
   };
+}
 
+// Create draft (empty)
+async function createDraft(title, tagIds = []) {
+  const { uid, categoryId } = creds();
+  const url = 'https://api.juejin.cn/content_api/v1/article_draft/create';
   const payload = {
-    title: title,
+    title,
     column_id: '0',
     tags: [],
-    category_id: '0',
+    tag_ids: tagIds || [],
+    category_id: categoryId,
     cover_image: '',
     is_english: 0,
-    user_id: '1430912681125418',
+    user_id: uid,
   };
-
-  return await request(url, { method: 'POST', headers }, payload);
+  return request(url, { method: 'POST', headers: jHeaders('https://juejin.cn/editor/drafts/new') }, payload);
 }
 
 // Extract brief content from blockquote
 function extractBrief(content) {
   const match = content.match(/^> \*\*摘要\*\*：(.+)$/m);
   if (match) return match[1].trim();
-  // Fallback: first 100 chars
   return content.replace(/^#.+\n/, '').substring(0, 100).trim();
 }
 
 // Update draft with content
-async function updateDraft(cookie, draftId, title, content) {
+async function updateDraft(draftId, title, content, tagIds = []) {
+  const { uid, categoryId } = creds();
   const url = 'https://api.juejin.cn/content_api/v1/article_draft/update';
-  const headers = {
-    'Cookie': cookie,
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-    'Referer': `https://juejin.cn/editor/drafts/${draftId}`,
-    'Content-Type': 'application/json',
-  };
-
-  const brief = extractBrief(content);
-
   const payload = {
     id: draftId,
-    title: title,
+    title,
     mark_content: content,
-    brief_content: brief,
+    brief_content: extractBrief(content),
     html_content: 'deprecated',
     column_id: '0',
     tags: [],
-    category_id: '0',
+    tag_ids: tagIds || [],
+    category_id: categoryId,
     cover_image: '',
     is_english: 0,
     is_original: 1,
     edit_type: 10,
-    user_id: '1430912681125418',
+    user_id: uid,
   };
-
-  return await request(url, { method: 'POST', headers }, payload);
+  return request(url, { method: 'POST', headers: jHeaders(`https://juejin.cn/editor/drafts/${draftId}`) }, payload);
 }
 
-// Publish article
-async function publishArticle(cookie, draftId) {
+// Publish a draft (optionally scheduled via publish_time)
+async function publishArticle(draftId, publishTime = null, tagIds = []) {
   const url = 'https://api.juejin.cn/content_api/v1/article/publish';
-  const headers = {
-    'Cookie': cookie,
-    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-    'Referer': `https://juejin.cn/editor/drafts/${draftId}`,
-    'Content-Type': 'application/json',
-  };
-
-  const payload = {
-    draft_id: draftId,
-  };
-
-  return await request(url, { method: 'POST', headers }, payload);
+  const payload = { draft_id: draftId, tag_ids: tagIds || [] };
+  if (publishTime) payload.publish_time = publishTime;
+  return request(url, { method: 'POST', headers: jHeaders(`https://juejin.cn/editor/drafts/${draftId}`) }, payload);
 }
+
+// ----------------------------- 查 (read-back) -----------------------------
+
+/** List drafts (paginated). Returns the raw API response (err_no / data[]). */
+async function listDrafts(page = 0, pageSize = 20) {
+  const { uid } = creds();
+  const payload = { user_id: uid, page_size: pageSize, page_no: page, sort_type: 0 };
+  return request(
+    'https://api.juejin.cn/content_api/v1/article_draft/list_by_user',
+    { method: 'POST', headers: jHeaders() },
+    payload
+  );
+}
+
+/** List published articles (paginated). Returns the raw API response. */
+async function listPublished(page = 0, pageSize = 20) {
+  const { uid } = creds();
+  const payload = { user_id: uid, page_size: pageSize, page_no: page, sort_type: 0 };
+  return request(
+    'https://api.juejin.cn/content_api/v1/article/list_by_user',
+    { method: 'POST', headers: jHeaders() },
+    payload
+  );
+}
+
+/** Fetch one draft's detail. */
+async function getDraft(draftId) {
+  return request(
+    'https://api.juejin.cn/content_api/v1/article_draft/get',
+    { method: 'POST', headers: jHeaders() },
+    { id: draftId }
+  );
+}
+
+// ----------------------------- 删 (delete) -----------------------------
+
+/** Delete a draft. IRREVERSIBLE. */
+async function deleteDraft(draftId) {
+  return request(
+    'https://api.juejin.cn/content_api/v1/article_draft/delete',
+    { method: 'POST', headers: jHeaders() },
+    { draft_id: draftId }
+  );
+}
+
+/** Delete a published article. IRREVERSIBLE. */
+async function deleteArticle(articleId) {
+  return request(
+    'https://api.juejin.cn/content_api/v1/article/delete',
+    { method: 'POST', headers: jHeaders() },
+    { article_id: articleId }
+  );
+}
+
+// ----------------------------- 幂等 / 标签 -----------------------------
+
+/** True if a juejin draft or published article already carries this (normalized) title. */
+async function isDuplicate(title) {
+  const norm = (s) => (s || '').trim().toLowerCase();
+  const target = norm(title);
+  if (!target) return false;
+  const matchItems = (resp) => {
+    const data = resp && resp.data;
+    const items = Array.isArray(data) ? data : data && Array.isArray(data.data) ? data.data : [];
+    return items.some(
+      (it) => norm(it.title) === target || norm(it.article_info && it.article_info.title) === target
+    );
+  };
+  try {
+    if (matchItems(await listDrafts(0, 50))) return true;
+    if (matchItems(await listPublished(0, 50))) return true;
+  } catch (e) {
+    // network/parse error → assume not duplicate, let the publish attempt proceed
+  }
+  return false;
+}
+
+/** Best-effort: map keyword strings → juejin tag_ids (empty on any failure). */
+async function resolveTagIds(keywords) {
+  const { defaultTagId } = creds();
+  if (!keywords || !keywords.length) return [defaultTagId];
+  try {
+    const { uid, aid } = creds();
+    const url = `https://api.juejin.cn/tag_api/v1/query_tag_list?aid=${aid}&uuid=${uid}&spider=0`;
+    const resp = await request(url, { method: 'GET', headers: jHeaders() });
+    const tags = (resp && resp.data) || [];
+    const ids = [];
+    for (const kw of keywords) {
+      const k = (kw || '').trim().toLowerCase();
+      if (!k) continue;
+      const hit = tags.find((t) => {
+        const n = (t.name || '').toLowerCase();
+        return n && (n.includes(k) || k.includes(n));
+      });
+      if (hit && hit.tag_id) ids.push(hit.tag_id);
+    }
+    // Juejin requires ≥1 tag; fall back to the configured default when nothing resolved.
+    return ids.length ? ids.slice(0, 5) : [defaultTagId];
+  } catch (e) {
+    return [defaultTagId];
+  }
+}
+
+// ----------------------------- 主发布流程 -----------------------------
 
 /**
- * Publish markdown to Juejin (creates a draft by default; --publish publishes
- * immediately)
- * Exit semantics identical to pre-sink-down: only a missing cookie throws (CLI exit
- * 1); file-read errors are thrown by readFileSync (caught by the CLI, naturally exits
- * 0); create/write/publish failures only print and return (no throw, process exits 0
- * naturally — matching each failure path's exit code pre-sink-down).
- * @param {{mdFile:string, title?:string|null, publish?:boolean}} opts
- * @returns {Promise<{draftId?:string, articleId?:string, failed?:boolean}>}
+ * Publish markdown to Juejin (creates a draft by default; --publish publishes).
+ * @param {{mdFile:string, title?:string|null, publish?:boolean, dryRun?:boolean, tags?:string[]}} opts
+ *   tags = article target_keywords (strings); resolved to tag_ids best-effort.
+ * @returns {Promise<{draftId?:string, articleId?:string, failed?:boolean, stage?:string, dryRun?:boolean, skipped?:boolean}>}
  */
-async function publishJuejin({ mdFile, title = null, publish = false }) {
-  const cookie = process.env.JUEJIN_COOKIE;
+async function publishJuejin({ mdFile, title = null, publish = false, dryRun = false, tags = [] }) {
+  const { cookie } = creds();
   if (!cookie) {
     console.log('❌ JUEJIN_COOKIE not found in .env');
     throw new Error('JUEJIN_COOKIE_MISSING');
   }
 
-  // Read markdown file
   const content = fs.readFileSync(mdFile, 'utf-8');
-
-  // Extract title from first H1 if not provided
   if (!title) {
     const match = content.match(/^# (.+)$/m);
     title = match ? match[1].trim() : path.basename(mdFile, '.md');
   }
-
-  // Strip front matter
   const cleanedContent = content.replace(/^---\n[\s\S]*?\n---\n?/, '');
 
   console.log(`📝 Title: ${title}`);
-  console.log(`📄 File: ${mdFile}`);
+
+  if (dryRun) {
+    console.log(`🔍 [dryRun] would create draft then ${publish ? 'publish' : 'save as draft'} on Juejin: ${title}`);
+    return { dryRun: true, title, skipped: false };
+  }
+
   console.log(`📤 Creating the Juejin draft...`);
-
-  // Step 1: Create empty draft
-  const createResult = await createDraft(cookie, title);
-
+  const createResult = await createDraft(title, []);
   if (createResult.err_no !== 0) {
     console.log(`❌ Create failed: ${JSON.stringify(createResult, null, 2)}`);
-    return { failed: true };
+    return { failed: true, stage: 'create' };
   }
   const draftId = createResult.data.id;
   const articleId = createResult.data.article_id;
   console.log(`✅ Draft created! Draft ID: ${draftId}`);
 
-  // Step 2: Update draft with content
   console.log(`✏️ Writing the body...`);
-  const updateResult = await updateDraft(cookie, draftId, title, cleanedContent);
-
-  if (updateResult.err_no === 0) {
-    console.log(`✅ Body written!`);
-    console.log(`🔗 Edit link: https://juejin.cn/editor/drafts/${draftId}`);
-  } else {
+  const tagIds = await resolveTagIds(tags);
+  const updateResult = await updateDraft(draftId, title, cleanedContent, tagIds);
+  if (updateResult.err_no !== 0) {
+    // fix: do NOT publish a draft whose body failed to save
     console.log(`❌ Body write failed: ${JSON.stringify(updateResult, null, 2)}`);
+    return { failed: true, stage: 'update', draftId, articleId };
   }
+  console.log(`✅ Body written!`);
+  console.log(`🔗 Edit link: https://juejin.cn/editor/drafts/${draftId}`);
 
+  let publishedArticleId = articleId;
   if (publish) {
     console.log(`📤 Publishing...`);
-    const pubResult = await publishArticle(cookie, draftId);
+    const pubResult = await publishArticle(draftId, null, tagIds);
     if (pubResult.err_no === 0) {
       console.log(`✅ Published!`);
-      console.log(`🔗 Article link: https://juejin.cn/post/${articleId}`);
+      if (pubResult.data && pubResult.data.article_id) publishedArticleId = pubResult.data.article_id;
+      console.log(`🔗 Article link: https://juejin.cn/post/${publishedArticleId}`);
     } else {
       console.log(`❌ Publish failed: ${JSON.stringify(pubResult, null, 2)}`);
+      return { failed: true, stage: 'publish', draftId, articleId };
     }
   }
 
-  return { draftId, articleId };
+  return { draftId, articleId: publishedArticleId };
 }
 
-module.exports = { publishJuejin, extractBrief };
+module.exports = {
+  publishJuejin,
+  extractBrief,
+  createDraft,
+  updateDraft,
+  publishArticle,
+  listDrafts,
+  listPublished,
+  getDraft,
+  deleteDraft,
+  deleteArticle,
+  isDuplicate,
+  resolveTagIds,
+};

@@ -927,7 +927,9 @@ const tools = [
       'List all external content platforms in the syndicate registry: API type (official|cookie|none), status (ready|pending|manual), ' +
       'capabilities (multi-article merge, per-platform limits, draft/cover/tags) and the full platform rewrite rules (styles). ' +
       'The rewrite rules are the HARNESS rewriting guide — the server never rewrites content: read the original via article_export, ' +
-      'apply these rules yourself, then channel_publish to land the draft/export.',
+      'apply these rules yourself, then channel_publish to land the draft/export. ' +
+      'READY PLATFORMS: wechat (微信公众号, official API) and juejin (掘金, cookie — can publish article drafts). ' +
+      'To publish to Juejin pass platform="juejin" to channel_publish / channel_plan_*; this server is multi-channel.',
     inputSchema: z.object({
       platform: z.string().optional().describe('filter to one platform key'),
     }),
@@ -947,10 +949,13 @@ const tools = [
     name: 'channel_publish',
     description:
       'Publish/export to one external platform. Mode A: pass slugs[] and the server reads the DB and runs the platform pipeline ' +
-      '(wechat drafts box — preview in mp.weixin.qq.com before mass-sending; juejin draft; devto publish). Mode B: pass pre-written ' +
+      '(wechat drafts box — preview in mp.weixin.qq.com before mass-sending; juejin draft → publish; devto publish). Mode B: pass pre-written ' +
       'articles[] ({slug,title,contentMd,summary,tags,sourceUrl,cover}) — the harness-rewritten draft — and the server exports a publish ' +
       'package to <site>/data/channel-export/<platform>/<slug>.md with full front matter (manual publishing on every platform; ' +
-      'required for api:none platforms). asDraft defaults true (never mass-sends).',
+      'required for api:none platforms). asDraft defaults true (never mass-sends). ' +
+      'PLATFORMS: wechat, juejin (cookie — 原文直发 via juejin draft), devto. ' +
+      'Juejin pipeline: reads DB article → creates draft → writes body (tags best-effort) → publishes; dryRun=true previews with no external calls; ' +
+      'idempotent — skips a slug already on Juejin (draft or published). This server is multi-channel; choose by platform=.',
     inputSchema: z.object({
       platform: z.string().describe('platform key (see channel_list)'),
       slugs: z.array(z.string()).optional().describe('Mode A: article slugs to publish through the platform pipeline'),
@@ -987,6 +992,26 @@ const tools = [
           dryRun: !!args.dryRun,
           siteKey: site.siteKey,
         });
+        // juejin: record each attempt into the channel_plan publish log (success + failure).
+        // dryRun never touches the platform, so nothing is logged.
+        if (args.platform === 'juejin' && !args.dryRun) {
+          const ch = t.plan.channel;
+          for (const r of result.results || []) {
+            try {
+              await ch.recordPublish({
+                platform: 'juejin',
+                slug: r.slug,
+                title: r.title || (r.detail && r.detail.title),
+                status: r.ok ? 'published' : 'failed',
+                draftId: r.draftId || (r.detail && r.detail.draftId),
+                error: r.ok ? null : r.error || (r.detail && (r.detail.err || r.detail.message)) || r.stage,
+              });
+            } catch (logErr) {
+              // logging failure must not mask the publish result
+              console.error('[channel_publish] recordPublish failed:', logErr.message);
+            }
+          }
+        }
         return ok({ ok: result.ok, ...result });
       } catch (e) {
         return fail(e);
@@ -996,8 +1021,13 @@ const tools = [
   {
     name: 'channel_plan_next',
     description:
-      'Per-platform publishing calendar: return the next due issue for a platform (earliest row not published) plus all calendar rows ' +
-      '(status/period/topic/weekday/slugs). The due issue slugs are what to prepare next (the wechat 12-period plan is already imported).',
+      'Per-platform publishing calendar: return the next article to publish for a platform plus all calendar rows ' +
+      '(status/period/topic/weekday/slugs). Each platform has its OWN rows in the same channel_plan table. ' +
+      'wechat keeps a real per-issue calendar (returns the earliest row still todo). juejin (and other api platforms) treat the ' +
+      'table as a PUBLISH LOG — nextDue is DERIVED from the blog article_plan: it returns the next blog-published article (by ' +
+      'publish_order) that is NOT yet recorded as published here, so the juejin queue follows the blog order and resumes right ' +
+      'after the last article published to Juejin (failed rows retry). Seed already-published articles with channel_plan_reconcile ' +
+      '(e.g. the 2 already on Juejin) before the first nextDue.',
     inputSchema: z.object({
       platform: z.string().optional().describe('filter rows to one platform (default: all platforms)'),
     }),
@@ -1031,6 +1061,113 @@ const tools = [
         const updated = await ch.markStatus(args.id, args.status, args.draftIds);
         const row = await ch.get(args.id);
         return ok({ ok: true, updated, row });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'juejin_status',
+    description:
+      'Read the Juejin (掘金) backend for this site: the draft box (article_draft/list_by_user) and the published list ' +
+      '(article/list_by_user). Read-only. Requires JUEJIN_COOKIE + JUEJIN_UID in the site .env. Use it to verify before ' +
+      'publishing (idempotency) and to see what is already on Juejin. page defaults to 0 (50 per page).',
+    inputSchema: z.object({
+      page: z.number().optional().describe('page index (default 0)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        withSite(args);
+        const page = args.page || 0;
+        const jj = t.syndicate.juejin;
+        const [drafts, published] = await Promise.all([jj.listDrafts(page, 50), jj.listPublished(page, 50)]);
+        const mapItems = (resp) => {
+          const data = resp && resp.data;
+          const items = Array.isArray(data) ? data : data && Array.isArray(data.data) ? data.data : [];
+          return items.map((it) => ({ id: it.id || it.article_id, title: it.title || (it.article_info && it.article_info.title) || '' }));
+        };
+        return ok({
+          ok: true,
+          drafts: mapItems(drafts),
+          published: mapItems(published),
+          drafts_err: drafts && drafts.err_no !== 0 ? drafts.err_msg : null,
+          published_err: published && published.err_no !== 0 ? published.err_msg : null,
+        });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'juejin_draft_delete',
+    description:
+      'Delete a Juejin draft (article_draft/delete). IRREVERSIBLE — pass confirm=true only after verifying the draft id via ' +
+      'juejin_status. Requires JUEJIN_COOKIE + JUEJIN_UID in the site .env.',
+    inputSchema: z.object({
+      draftId: z.string().describe('draft id from juejin_status drafts[].id'),
+      confirm: z.boolean().describe('must be true to actually delete'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        if (!args.confirm) return fail(new Error('Refusing to delete without confirm=true'));
+        withSite(args);
+        const res = await t.syndicate.juejin.deleteDraft(args.draftId);
+        return ok({ ok: res && res.err_no === 0, result: res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'juejin_article_delete',
+    description:
+      'Delete a published Juejin article (article/delete). IRREVERSIBLE — pass confirm=true only after verifying the article id ' +
+      'via juejin_status. Requires JUEJIN_COOKIE + JUEJIN_UID in the site .env.',
+    inputSchema: z.object({
+      articleId: z.string().describe('article id from juejin_status published[].id'),
+      confirm: z.boolean().describe('must be true to actually delete'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        if (!args.confirm) return fail(new Error('Refusing to delete without confirm=true'));
+        withSite(args);
+        const res = await t.syndicate.juejin.deleteArticle(args.articleId);
+        return ok({ ok: res && res.err_no === 0, result: res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_plan_reconcile',
+    description:
+      'Reconcile a platform channel_plan with what is ACTUALLY published on that platform. For juejin this SEEDS the publish ' +
+      'log with already-published articles — we do NOT bulk-import the blog plan (the table only logs real outcomes). Pass map[] ' +
+      'of {slug, title?, blogOrder?} for the explicitly-known published articles (recommended — avoids API rate ' +
+      'limits), or omit map to live-read the platform published list and match titles back to blog slugs. Idempotent (upsert by ' +
+      'slug). Run this once before the first channel_plan_next so the 2 already-on-Juejin articles are skipped.',
+    inputSchema: z.object({
+      platform: z.string().describe('platform key, e.g. juejin'),
+      map: z
+        .array(
+          z.object({
+            slug: z.string(),
+            title: z.string().optional(),
+            blogOrder: z.number().optional(),
+          })
+        )
+        .optional()
+        .describe('explicit known published articles; omit to live-read the platform'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        withSite(args);
+        const res = await t.plan.channel.reconcileFromJuejin({ map: args.map });
+        return ok({ ok: true, ...res });
       } catch (e) {
         return fail(e);
       }

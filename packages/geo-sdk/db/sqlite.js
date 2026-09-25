@@ -31,7 +31,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 
-const { createSqliteTablesSQL, SCHEMA_VERSION } = require('./sqlite-schema');
+const { createSqliteTablesSQL, SCHEMA_VERSION, CHANNEL_PLAN } = require('./sqlite-schema');
 
 let _db = null;
 let _dbPath = null;
@@ -62,7 +62,7 @@ function ensureSchema(db) {
   const version = Number(db.pragma('user_version', { simple: true }));
   if (version >= SCHEMA_VERSION) return { applied: false, version };
 
-  db.exec('BEGIN');
+    db.exec('BEGIN');
   try {
     db.exec(createSqliteTablesSQL);
     db.pragma(`user_version = ${SCHEMA_VERSION}`);

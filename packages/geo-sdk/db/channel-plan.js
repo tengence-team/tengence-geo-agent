@@ -131,6 +131,70 @@ async function getByPeriod(conn, appId, platform, period) {
   return normalizeRow(rows[0] || null);
 }
 
+/** Lookup one row by the single slug it carries in article_slugs (json array). */
+async function findBySlug(conn, appId, platform, slug) {
+  const [rows] = await conn.query(
+    `SELECT * FROM ${CHANNEL_PLAN}
+      WHERE app_id = ? AND platform = ?
+        AND EXISTS (SELECT 1 FROM json_each(article_slugs) WHERE json_each.value = ?)
+      LIMIT 1`,
+    [appId, platform, slug]
+  );
+  return normalizeRow(rows[0] || null);
+}
+
+/** Delete every row for a platform (used to drop a stale bulk-import). */
+async function removeAll(conn, appId, platform) {
+  const [result] = await conn.query(
+    `DELETE FROM ${CHANNEL_PLAN} WHERE app_id = ? AND platform = ?`,
+    [appId, platform]
+  );
+  return result.affectedRows || 0;
+}
+
+/**
+ * Upsert a row keyed by (app_id, platform, slug-in-article_slugs). Used by the
+ * publish log: a re-run updates the prior row (failed → published) instead of
+ * creating a duplicate. The slug is the unique key — no per-platform article id is
+ * stored (consistent with the wechat rows, which rely on article_slugs only).
+ */
+async function upsertBySlug(conn, appId, row) {
+  const existing = await findBySlug(conn, appId, row.platform, row.slug);
+  const slugsJson = JSON.stringify([row.slug]);
+  const draftJson = JSON.stringify(row.draftId ? [row.draftId] : []);
+  if (existing) {
+    await conn.query(
+      `UPDATE ${CHANNEL_PLAN}
+         SET topic = ?, status = ?, draft_ids = ?, notes = ?, updated_at = NOW()
+       WHERE id = ?`,
+      [
+        row.topic || existing.topic || null,
+        row.status || existing.status || 'todo',
+        draftJson,
+        row.notes !== undefined ? row.notes : existing.notes,
+        existing.id,
+      ]
+    );
+    return { id: existing.id, action: 'update' };
+  }
+  const [result] = await conn.query(
+    `INSERT INTO ${CHANNEL_PLAN}
+       (app_id, platform, period, topic, article_slugs, status, draft_ids, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      appId,
+      row.platform,
+      row.period || `P${row.blogOrder != null ? row.blogOrder : 'x'}`,
+      row.topic || null,
+      slugsJson,
+      row.status || 'todo',
+      draftJson,
+      row.notes || null,
+    ]
+  );
+  return { id: Number(result.insertId), action: 'insert' };
+}
+
 /**
  * Transition a row's status (todo → draft → published; paused for holds).
  * Optionally records draft ids (e.g. wechat media_id) in the same write —
@@ -178,7 +242,10 @@ module.exports = {
   list,
   get,
   getByPeriod,
+  findBySlug,
+  removeAll,
   upsert,
+  upsertBySlug,
   markStatus,
   nextDue,
 };

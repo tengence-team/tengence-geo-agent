@@ -4,9 +4,10 @@
  * ============================================================================
  * Usage:
  *   tengence-geo channel-plan.js list [--platform=wechat] [--status=todo]
- *   tengence-geo channel-plan.js next [--platform=wechat]
- *   tengence-geo channel-plan.js mark <id> <status>       # todo|draft|published|paused
- *   tengence-geo channel-plan.js import-wechat <plan.md>  # import 《微信公众号发布计划.md》
+ *   tengence-geo channel-plan.js next [--platform=juejin]   # derived from blog publish_order
+ *   tengence-geo channel-plan.js mark <id> <status>         # todo|draft|published|paused
+ *   tengence-geo channel-plan.js import-wechat <plan.md>    # import 《微信公众号发布计划.md》
+ *   tengence-geo channel-plan.js reconcile <platform> [--published=slug1,slug2]
  * ============================================================================
  */
 const path = require('path');
@@ -16,7 +17,7 @@ const t = require('@tengence/geo-sdk');
 
 async function main() {
   const { positionals, flags } = t.cli.args.parse(
-    { platform: { type: 'string' }, status: { type: 'string' } },
+    { platform: { type: 'string' }, status: { type: 'string' }, published: { type: 'string' }, all: { type: 'boolean' } },
     process.argv.slice(2)
   );
   t.site.loadSite(t.site.readSiteArg());
@@ -47,7 +48,8 @@ async function main() {
       console.log(`No due issue for ${platform} (all rows published/paused).`);
       return;
     }
-    console.log(`Next due for ${platform}: #${next.id} ${next.period} [${next.status}] ${next.topic || ''} (${next.weekday || '—'})`);
+    console.log(`Next due for ${platform}: #${next.id ?? '—'} ${next.period || ''} [${next.status}] ${next.topic || ''} (${next.weekday || '—'})` +
+      (next.source ? `  source=${next.source}` : ''));
     console.log(`Slugs (${next.article_slugs.length}): ${next.article_slugs.join(', ')}`);
     return;
   }
@@ -75,7 +77,22 @@ async function main() {
     return;
   }
 
-  console.error(`Unknown command "${cmd}" (list | next | mark | import-wechat)`);
+  if (cmd === 'reconcile') {
+    const platform = flags.platform || positionals[1];
+    if (!platform) {
+      console.error('Usage: channel-plan.js reconcile <platform> [--published=slug1,slug2]');
+      process.exit(1);
+    }
+    let map;
+    if (flags.published) {
+      map = flags.published.split(',').map((s) => ({ slug: s.trim() }));
+    }
+    const res = await ch.reconcileFromJuejin({ map });
+    console.log(`✅ Reconciled ${platform}: ${JSON.stringify(res)}`);
+    return;
+  }
+
+  console.error(`Unknown command "${cmd}" (list | next | mark | import-wechat | reconcile)`);
   process.exit(1);
 }
 

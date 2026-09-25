@@ -28,7 +28,7 @@ const yaml = require('js-yaml');
 const t = require('../index');
 const registry = require('./registry');
 const { syncWechat } = require('./wechat');
-const { publishJuejin } = require('./juejin');
+const juejin = require('./juejin');
 const { publishDevto } = require('./devto');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
@@ -134,11 +134,52 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
         const mdPath = path.join(dir, `${slug}.md`);
 
         if (platform === 'juejin') {
-          fs.writeFileSync(mdPath, `# ${article.title}\n\n${article.contentMd.trim()}\n`, 'utf8');
-          const res = await publishJuejin({ mdFile: mdPath, title: article.title, publish: !asDraft });
+          // juejin title hard limit (the editor rejects > ~40 chars)
+          const TITLE_MAX = 40;
+          let title = article.title || '';
+          let titleTrimmed = false;
+          if (title.length > TITLE_MAX) {
+            title = title.slice(0, TITLE_MAX);
+            titleTrimmed = true;
+          }
+          fs.writeFileSync(mdPath, `# ${title}\n\n${article.contentMd.trim()}\n`, 'utf8');
+
+          // dryRun: no external calls — just preview the plan
+          if (dryRun) {
+            appendLog(site.siteDir, {
+              action: 'dry-run',
+              platform,
+              slug,
+              ok: true,
+              detail: { title, trimmed: titleTrimmed, tags: (article.targetKeywords || '').split(',').map((s) => s.trim()).filter(Boolean) },
+            });
+            results.push({ slug, ok: true, dryRun: true, title, trimmed: titleTrimmed });
+            continue;
+          }
+
+          // idempotency: skip if this title is already on juejin (draft or published)
+          if (process.env.JUEJIN_COOKIE && process.env.JUEJIN_UID) {
+            const dup = await juejin.isDuplicate(title);
+            if (dup) {
+              appendLog(site.siteDir, { action: 'skip-duplicate', platform, slug, ok: true, detail: { title } });
+              results.push({ slug, ok: true, skipped: true, reason: 'already on juejin', title });
+              continue;
+            }
+          }
+
+          const tagKws = (article.targetKeywords || '')
+            .split(',')
+            .map((s) => s.trim())
+            .filter(Boolean);
+          const res = await juejin.publishJuejin({ mdFile: mdPath, title, publish: !asDraft, tags: tagKws });
           appendLog(site.siteDir, { action: asDraft ? 'draft' : 'publish', platform, slug, ok: !res.failed, detail: res });
-          results.push({ slug, ok: !res.failed, detail: res.failed ? res : undefined });
-          if (res.failed) failed += 1;
+          if (res.failed) {
+            failed += 1;
+            results.push({ slug, ok: false, stage: res.stage, detail: res, title });
+          } else {
+            // expose articleId so the caller can record it in channel_plan.draft_ids
+            results.push({ slug, ok: true, draftId: res.draftId, articleId: res.articleId, title, trimmed: titleTrimmed });
+          }
         } else if (platform === 'devto') {
           const fm = {
             title: article.title,
@@ -151,11 +192,11 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
         } else {
           throw new Error(`channel mode A not implemented for platform "${platform}"`);
         }
-      } catch (e) {
-        failed += 1;
-        results.push({ slug, ok: false, error: e.message });
-        appendLog(site.siteDir, { action: 'error', platform, slug, ok: false, detail: { error: e.message } });
-      }
+    } catch (e) {
+      failed += 1;
+      results.push({ slug, ok: false, error: e.message, title: typeof article !== 'undefined' ? article.title : undefined });
+      appendLog(site.siteDir, { action: 'error', platform, slug, ok: false, detail: { error: e.message } });
+    }
     }
   });
 
