@@ -32,9 +32,24 @@ const tls = require('tls');
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
-/** Read the proxy address (HTTPS targets use HTTPS_PROXY; both cases supported) */
-function pickProxy() {
-  return process.env.HTTPS_PROXY || process.env.https_proxy || null;
+/**
+ * Read the proxy address.
+ *
+ * Why an `override` exists: the site's .env carries its own HTTPS_PROXY (e.g.
+ * 127.0.0.1:7990), but <site>/.env is never merged into process.env. So when the
+ * process happens to inherit a different proxy from its launcher (CI/sandbox shells
+ * commonly inject HTTPS_PROXY=127.0.0.1:<random>), GSC calls tunnel through the
+ * wrong proxy and die with "Proxy CONNECT timeout" even though the configured one
+ * is alive. Callers pass the site's own value explicitly.
+ */
+function pickProxy(override) {
+  return override || process.env.HTTPS_PROXY || process.env.https_proxy || null;
+}
+
+/** Pick HTTPS_PROXY out of a site's parsed .env object (site.env) */
+function envProxy(env) {
+  if (!env) return null;
+  return env.HTTPS_PROXY || env.https_proxy || null;
 }
 
 /** Only GSC (Google) domains may use the proxy: *.googleapis.com / *.google.com */
@@ -73,10 +88,11 @@ function makeResponse(res, chunks) {
 }
 
 /** Issue an HTTPS request through an HTTP-proxy CONNECT tunnel */
-function tunnelFetch(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
+function tunnelFetch(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS, proxyOverride = null) {
   return new Promise((resolve, reject) => {
     const u = new URL(url);
-    const pu = new URL(pickProxy());
+    const pu = new URL(pickProxy(proxyOverride));
+    if (!pu.hostname) throw new Error(`Invalid proxy address: ${proxyOverride}`);
     const isHttps = u.protocol === 'https:';
     if (!isHttps) {
       // non-HTTPS target (basically never in GSC scenarios): plain http request
@@ -143,12 +159,14 @@ function tunnelFetch(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
 /** Unified GSC request entry: only GSC domains with a proxy go through the tunnel;
  * everything else uses native fetch directly, all with a timeout */
 async function gFetch(url, options = {}, timeoutMs = DEFAULT_TIMEOUT_MS) {
-  const proxy = pickProxy();
+  // `proxy` is a transport hint for this module, not a fetch option
+  const { proxy = null, ...fetchOptions } = options || {};
   const host = new URL(url).hostname;
-  if (proxy && isGscHost(host) && !inNoProxy(host)) {
-    return tunnelFetch(url, options, timeoutMs);
+  const resolved = pickProxy(proxy);
+  if (resolved && isGscHost(host) && !inNoProxy(host)) {
+    return tunnelFetch(url, fetchOptions, timeoutMs, resolved);
   }
-  return fetch(url, { ...options, signal: AbortSignal.timeout(timeoutMs) });
+  return fetch(url, { ...fetchOptions, signal: AbortSignal.timeout(timeoutMs) });
 }
 
-module.exports = { gFetch, pickProxy, isGscHost, inNoProxy, DEFAULT_TIMEOUT_MS };
+module.exports = { gFetch, pickProxy, envProxy, isGscHost, inNoProxy, DEFAULT_TIMEOUT_MS };

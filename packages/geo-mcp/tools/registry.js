@@ -566,6 +566,60 @@ const tools = [
 
   // ---------- search / inclusion submission ----------
   {
+    name: 'search_gsc_stats',
+    description:
+      'Read Google Search Console Search Analytics data: clicks / impressions / CTR / average position, ' +
+      'grouped by query (default), page, date, country or device. This is the ONLY Google source for ' +
+      'search performance — and the only source at all for page-level data (Bing dropped its page/traffic ' +
+      'endpoints on 2026-08-31). GSC data is finalised 2–3 days late: the default window is the 28 days ' +
+      'ending 3 days ago. Requires the GSC service account (secrets/gsc-service-account.json or GOOGLE_SA_JSON).',
+    inputSchema: z.object({
+      site: siteField,
+      dimensions: z
+        .array(z.enum(['query', 'page', 'date', 'country', 'device']))
+        .optional()
+        .describe('group-by dimensions; default ["query"]. Use ["page"] for per-URL clicks/impressions, ["date"] for a daily trend, ["query","page"] for both.'),
+      start_date: z.string().optional().describe('YYYY-MM-DD (default: 27 days before end_date)'),
+      end_date: z.string().optional().describe('YYYY-MM-DD (default: 3 days ago)'),
+      row_limit: z.number().optional().describe('max rows to return (default 100)'),
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const res = await t.search.searchAnalytics(S, {
+          dimensions: args.dimensions,
+          startDate: args.start_date,
+          endDate: args.end_date,
+          rowLimit: args.row_limit,
+        });
+        return ok({ ok: true, ...res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'search_gsc_inspect',
+    description:
+      'Query one URL\'s Google indexing status (URL Inspection API, read-only): verdict, coverageState, ' +
+      'indexingState, lastCrawlTime, googleCanonical. Use it to check whether a specific article page is ' +
+      'indexed. Quota: 2000 calls/day.',
+    inputSchema: z.object({
+      url: z.string().describe('fully-qualified URL to inspect, e.g. https://www.tengence.com/blog/article/<slug>/'),
+      site: siteField,
+    }),
+    async run(args) {
+      if (!args.url) return fail(new Error('search_gsc_inspect requires url'));
+      try {
+        const S = withSite(args);
+        const res = await t.search.inspectUrl(S, args.url);
+        return ok({ ok: true, url: args.url, inspection: res.inspectionResult || res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
     name: 'search_submit_gsc',
     description: 'Submit the sitemap to Google Search Console (soft-fail)',
     inputSchema: z.object({
@@ -997,6 +1051,47 @@ const tools = [
         const drafts = await wechat.listDrafts();
         const published = await wechat.listPublished();
         return ok({ ok: true, drafts, published });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wechat_stats',
+    description:
+      'Read official-account statistics from the WeChat backend (cgi-bin/datacube/*): user growth, cumulative users, ' +
+      'per-article totals (送达/阅读/分享/收藏), reading trends, shares, upstream messages and interface quality. ' +
+      'Read-only. Constraints: the date span must be <= 7 days and data is T+1, so end_date defaults to yesterday. ' +
+      'Requires the 用户分析/图文分析 permission (认证公众号); otherwise WeChat returns errcode 48001.',
+    inputSchema: z.object({
+      action: z
+        .enum([
+          'overview',
+          'user_summary',
+          'user_cumulate',
+          'article_total',
+          'user_read',
+          'user_share',
+          'upstream_msg',
+          'interface_summary',
+        ])
+        .optional()
+        .describe(
+          'report to read; default overview = user_summary + user_cumulate + article_total + user_read in one window'
+        ),
+      begin_date: z.string().optional().describe('YYYY-MM-DD; default = 6 days before end_date'),
+      end_date: z.string().optional().describe('YYYY-MM-DD; default = yesterday (data is T+1, today is never available)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const wechat = t.syndicate.wechat;
+        const range = { beginDate: args.begin_date, endDate: args.end_date };
+        if (!args.action || args.action === 'overview') {
+          return ok({ ok: true, ...(await wechat.getStatsOverview(range)) });
+        }
+        return ok({ ok: true, ...(await wechat.getStats(args.action, range)) });
       } catch (e) {
         return fail(e);
       }

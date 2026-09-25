@@ -894,6 +894,111 @@ async function deletePublished(articleId, { index, dryRun = false, request = htt
   return { dryRun: false, response: json };
 }
 
+// ==================== 数据统计 (datacube) ====================
+/**
+ * Official-account statistics (cgi-bin/datacube/*), read-only.
+ *
+ * Constraints enforced by WeChat (verified against the official docs):
+ *   - every endpoint is POST with { begin_date, end_date } in the JSON body;
+ *   - the span between begin_date and end_date must be <= 7 days;
+ *   - data is T+1: the latest usable end_date is yesterday (Beijing time),
+ *     so the default window is the 7 days ending yesterday;
+ *   - requires 用户分析 / 图文分析 permissions (认证公众号). An unauthorised
+ *     account returns errcode 48001 (api unauthorized) — surfaced verbatim.
+ *
+ * Raw rows are returned untouched (field names differ per endpoint); only the
+ * resolved window and endpoint are added as metadata.
+ */
+const STATS_ENDPOINTS = {
+  user_summary: 'datacube/getusersummary',
+  user_cumulate: 'datacube/getusercumulate',
+  article_total: 'datacube/getarticletotal',
+  user_read: 'datacube/getuserread',
+  user_share: 'datacube/getusershare',
+  upstream_msg: 'datacube/getupstreammsg',
+  interface_summary: 'datacube/getinterfacesummary',
+};
+/** Max allowed span between begin_date and end_date (WeChat limit). */
+const STATS_MAX_SPAN_DAYS = 7;
+
+/** Beijing-time (UTC+8) calendar day of an ISO timestamp, as YYYY-MM-DD. */
+function beijingDay(iso) {
+  return new Date(new Date(iso).getTime() + 8 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+/** Calendar-day difference b - a, both YYYY-MM-DD (pure date math, no ICU). */
+function dayDiff(a, b) {
+  return Math.round((Date.parse(`${b}T00:00:00Z`) - Date.parse(`${a}T00:00:00Z`)) / 86400000);
+}
+
+/** Shift a YYYY-MM-DD by n days (n negative = backwards). */
+function shiftDay(day, n) {
+  return new Date(Date.parse(`${day}T00:00:00Z`) + n * 86400000).toISOString().slice(0, 10);
+}
+
+/**
+ * Resolve the query window: defaults to the 7 days ending yesterday (Beijing),
+ * because datacube data is T+1 and never includes today.
+ * @returns {{begin_date:string, end_date:string}}
+ */
+function resolveStatsRange(beginDate, endDate) {
+  const end = endDate || shiftDay(beijingDay(new Date().toISOString()), -1);
+  const begin = beginDate || shiftDay(end, -(STATS_MAX_SPAN_DAYS - 1));
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(begin) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
+    throw new Error('Invalid date format: begin_date / end_date must be YYYY-MM-DD');
+  }
+  if (dayDiff(begin, end) < 0) {
+    throw new Error(`begin_date (${begin}) must not be later than end_date (${end})`);
+  }
+  if (dayDiff(begin, end) + 1 > STATS_MAX_SPAN_DAYS) {
+    throw new Error(`Date span must be <= ${STATS_MAX_SPAN_DAYS} days (got ${dayDiff(begin, end) + 1}: ${begin} → ${end})`);
+  }
+  return { begin_date: begin, end_date: end };
+}
+
+/**
+ * Read one statistics report from the official-account backend.
+ * @param {string} action one of STATS_ENDPOINTS keys
+ * @param {{beginDate?:string, endDate?:string}} [range]
+ * @returns {Promise<{action:string, endpoint:string, begin_date:string, end_date:string, list:Array}>}
+ */
+async function getStats(action, { beginDate, endDate } = {}) {
+  const endpoint = STATS_ENDPOINTS[action];
+  if (!endpoint) {
+    throw new Error(`Unknown stats action: ${action}. Available: ${Object.keys(STATS_ENDPOINTS).join(', ')}`);
+  }
+  const { begin_date, end_date } = resolveStatsRange(beginDate, endDate);
+  const accessToken = await getAccessToken();
+  const url = `https://api.weixin.qq.com/cgi-bin/${endpoint}?access_token=${accessToken}`;
+  const body = JSON.stringify({ begin_date, end_date });
+  const { json } = await httpsRequest(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, body);
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`${endpoint} failed: ${json.errcode} ${json.errmsg}`);
+  }
+  return { action, endpoint, begin_date, end_date, list: json.list || [] };
+}
+
+/**
+ * Overview bundle: user growth + cumulative users + article totals + reading
+ * stats for one window (4 datacube calls). Individual failures are collected per
+ * key instead of aborting, so a partially-permissioned account still returns data.
+ * @returns {Promise<{begin_date:string, end_date:string, data:Object, errors:Object}>}
+ */
+async function getStatsOverview({ beginDate, endDate } = {}) {
+  const { begin_date, end_date } = resolveStatsRange(beginDate, endDate);
+  const wanted = ['user_summary', 'user_cumulate', 'article_total', 'user_read'];
+  const data = {};
+  const errors = {};
+  for (const action of wanted) {
+    try {
+      data[action] = (await getStats(action, { beginDate: begin_date, endDate: end_date })).list;
+    } catch (e) {
+      errors[action] = e.message;
+    }
+  }
+  return { begin_date, end_date, data, errors };
+}
+
 module.exports = {
   syncWechat,
   cleanWechatHtml,
@@ -907,4 +1012,8 @@ module.exports = {
   massDelete,
   deletePublished,
   publishDraftByMediaId,
+  getStats,
+  getStatsOverview,
+  STATS_ENDPOINTS,
+  resolveStatsRange,
 };

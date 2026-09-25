@@ -16,13 +16,14 @@ const API = 'https://searchconsole.googleapis.com/v1/urlInspection/index:inspect
 const { gFetch } = require('./http');
 
 /** Query a single URL's inclusion/indexing status */
-async function inspectUrl({ siteUrl, inspectionUrl, token, languageCode = 'zh-CN' }) {
+async function inspectUrl({ siteUrl, inspectionUrl, token, languageCode = 'zh-CN', proxy = null }) {
   const res = await gFetch(API, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
+    proxy,
     body: JSON.stringify({ inspectionUrl, siteUrl, languageCode }),
   });
   const text = await res.text();

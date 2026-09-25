@@ -15,7 +15,7 @@ const enc = (s) => encodeURIComponent(s);
 const { gFetch } = require('./http');
 
 /** Submit (or refresh) a sitemap */
-async function submitSitemap({ siteUrl, sitemapUrl, token }) {
+async function submitSitemap({ siteUrl, sitemapUrl, token, proxy = null }) {
   const url = `${API}/sites/${enc(siteUrl)}/sitemaps/${enc(sitemapUrl)}`;
   const res = await gFetch(url, {
     method: 'PUT',
@@ -23,6 +23,7 @@ async function submitSitemap({ siteUrl, sitemapUrl, token }) {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
+    proxy,
   });
   const text = await res.text();
   if (!res.ok) {
@@ -32,10 +33,11 @@ async function submitSitemap({ siteUrl, sitemapUrl, token }) {
 }
 
 /** List the site's submitted sitemaps and their status */
-async function listSitemaps({ siteUrl, token }) {
+async function listSitemaps({ siteUrl, token, proxy = null }) {
   const url = `${API}/sites/${enc(siteUrl)}/sitemaps`;
   const res = await gFetch(url, {
     headers: { Authorization: `Bearer ${token}` },
+    proxy,
   });
   const text = await res.text();
   if (!res.ok) {

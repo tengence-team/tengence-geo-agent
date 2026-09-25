@@ -17,13 +17,26 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const siteConfig = require('../site/config');
-const { gFetch } = require('./http');
+const { gFetch, envProxy } = require('./http');
 
-/** Resolve the service-account JSON path (relative paths are relative to SITES_ROOT) */
+/**
+ * Resolve the service-account JSON path.
+ *
+ * GOOGLE_SA_JSON is documented as relative to SITES_ROOT, but in practice it is
+ * written inside a site's .env as "secrets/gsc-service-account.json" (site-relative,
+ * i.e. <SITES_ROOT>/<site>/secrets/...). Resolving that against SITES_ROOT points at a
+ * non-existent path and breaks every GSC call with "the file pointed to by
+ * GOOGLE_SA_JSON does not exist". So: keep the SITES_ROOT-relative path when the file
+ * is really there, otherwise fall back to the site directory before giving up.
+ */
 function resolveSaPath(site) {
   const fromEnv = process.env.GOOGLE_SA_JSON;
   if (fromEnv) {
-    return path.isAbsolute(fromEnv) ? fromEnv : path.resolve(siteConfig.requireSitesRoot(), fromEnv);
+    const p = path.isAbsolute(fromEnv) ? fromEnv : path.resolve(siteConfig.requireSitesRoot(), fromEnv);
+    if (fs.existsSync(p)) return p;
+    const siteRelative = path.resolve(site.siteDir, fromEnv);
+    if (fs.existsSync(siteRelative)) return siteRelative;
+    return p; // unchanged behaviour: the caller's error message stays accurate
   }
   return path.join(site.siteDir, 'secrets', 'gsc-service-account.json');
 }
@@ -74,6 +87,7 @@ async function getAccessToken(site, scope) {
   const res = await gFetch(sa.token_uri, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    proxy: envProxy(site && site.env),
     body:
       'grant_type=' +
       encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer') +

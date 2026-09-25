@@ -20,12 +20,22 @@ const { loadSite } = require('../site');
 const auth = require('./auth');
 const sitemap = require('./sitemap');
 const inspect = require('./inspect');
+const analytics = require('./analytics');
 const indexing = require('./indexing');
 const indexnow = require('./indexnow');
 const baidu = require('./baidu');
-const { gFetch } = require('./http');
+const { gFetch, envProxy } = require('./http');
 
 const SCOPE = 'https://www.googleapis.com/auth/webmasters';
+
+/**
+ * The site's own outbound proxy (from <site>/.env), which is never merged into
+ * process.env. GSC calls pass it explicitly so they don't fall back to whatever
+ * proxy the current process happened to inherit from its launcher.
+ */
+function siteProxy(site) {
+  return envProxy(site && site.env);
+}
 
 let siteUrlCache = null;
 function resetCache() {
@@ -39,6 +49,7 @@ async function discoverSiteUrl(site) {
   const token = await auth.getAccessToken(site, SCOPE);
   const res = await gFetch('https://www.googleapis.com/webmasters/v3/sites', {
     headers: { Authorization: `Bearer ${token}` },
+    proxy: siteProxy(site),
   });
   const text = await res.text();
   if (!res.ok) {
@@ -68,21 +79,61 @@ async function discoverSiteUrl(site) {
 async function submitSitemap(site, sitemapUrl) {
   const siteUrl = await discoverSiteUrl(site);
   const token = await auth.getAccessToken(site, SCOPE);
-  return sitemap.submitSitemap({ siteUrl, sitemapUrl, token });
+  return sitemap.submitSitemap({ siteUrl, sitemapUrl, token, proxy: siteProxy(site) });
 }
 
 /** List submitted sitemaps and their status */
 async function listSitemaps(site) {
   const siteUrl = await discoverSiteUrl(site);
   const token = await auth.getAccessToken(site, SCOPE);
-  return sitemap.listSitemaps({ siteUrl, token });
+  return sitemap.listSitemaps({ siteUrl, token, proxy: siteProxy(site) });
 }
 
 /** Single-URL inclusion/indexing status (URL Inspection API) */
 async function inspectUrl(site, inspectionUrl) {
   const siteUrl = await discoverSiteUrl(site);
   const token = await auth.getAccessToken(site, SCOPE);
-  return inspect.inspectUrl({ siteUrl, inspectionUrl, token });
+  return inspect.inspectUrl({ siteUrl, inspectionUrl, token, proxy: siteProxy(site) });
+}
+
+/**
+ * Search Analytics query (read-only): clicks / impressions / CTR / average position
+ * grouped by query / page / date / country / device.
+ * opts: { dimensions[], startDate, endDate, rowLimit, startRow, type, dataState, days, lagDays }
+ * Defaults: dimensions=['query'], rowLimit=100, window = defaultRange(days ?? 28, lagDays ?? 3)
+ * (GSC data is finalised 2–3 days late, so the window ends in the past by default).
+ * Returns { siteUrl, startDate, endDate, dimensions, rows[], totalRows }
+ */
+async function searchAnalytics(site, opts = {}) {
+  const siteUrl = await discoverSiteUrl(site);
+  const token = await auth.getAccessToken(site, SCOPE);
+  const range = analytics.defaultRange(opts.days, opts.lagDays);
+  const startDate = opts.startDate || range.startDate;
+  const endDate = opts.endDate || range.endDate;
+  const dimensions =
+    Array.isArray(opts.dimensions) && opts.dimensions.length ? opts.dimensions : ['query'];
+  const raw = await analytics.searchAnalytics({
+    siteUrl,
+    token,
+    startDate,
+    endDate,
+    dimensions,
+    rowLimit: opts.rowLimit == null ? 100 : opts.rowLimit,
+    startRow: opts.startRow || 0,
+    type: opts.type || 'web',
+    dataState: opts.dataState || 'all',
+    dimensionFilterGroups: opts.dimensionFilterGroups,
+    proxy: siteProxy(site),
+  });
+  return {
+    siteUrl,
+    startDate,
+    endDate,
+    dimensions,
+    rows: analytics.normalizeRows(raw, dimensions),
+    totalRows: (raw.rows || []).length,
+    responseAggregationType: raw.responseAggregationType || null,
+  };
 }
 
 /** Fetch a sitemap XML and extract the <loc> list (sunk into sitemap.js 2026-09-20;
@@ -97,7 +148,7 @@ const fetchAllSitemapUrls = (sitemapUrl, seen, out) => sitemap.fetchAllSitemapUr
 async function collectSampleUrls(site, limit = 50) {
   const siteUrl = await discoverSiteUrl(site);
   const token = await auth.getAccessToken(site, SCOPE);
-  const maps = await sitemap.listSitemaps({ siteUrl, token });
+  const maps = await sitemap.listSitemaps({ siteUrl, token, proxy: siteProxy(site) });
   const urls = [];
   for (const m of maps) {
     const feed = m.path || m.sitemapUrl || m.url;
@@ -132,6 +183,8 @@ module.exports = {
   submitSitemap,
   listSitemaps,
   inspectUrl,
+  searchAnalytics,
+  analytics,
   fetchSitemapUrls,
   fetchAllSitemapUrls,
   collectSampleUrls,
