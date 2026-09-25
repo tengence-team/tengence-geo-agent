@@ -46,11 +46,13 @@ Options:
   --dry-run              convert only, no update (HTML written to /tmp/converted-article.html)
   --no-upload            skip image upload
   --site <key>           site key (default ${DEFAULT_SITE})
-  --meta-only            update ONLY SEO meta (DB seo JSON + WP meta via the plugin API);
-                         requires --slug or --post-id plus --meta-title and/or --meta-desc;
-                         body/title/status untouched
+  --meta-only            update ONLY SEO meta / title (DB seo JSON + WP meta + post title
+                         via the plugin API); requires --slug or --post-id plus at least one of
+                         --meta-title / --meta-desc / --post-title; body/status untouched
   --meta-title=<text>    the new SEO title (written to DB seo.title + WP seo_meta_title)
-  --meta-desc=<text>     the new meta_description value (165-175 chars, hard gate)`);
+  --meta-desc=<text>     the new meta_description value (165-175 chars, hard gate)
+  --post-title=<text>    the new WordPress post title itself (written to DB title + WP post_title,
+                         also used as the fallback when no meta-title is given)`);
   process.exit(1);
 }
 
@@ -65,6 +67,7 @@ function parseArgs(argv) {
       'meta-only': { type: 'boolean' },
       'meta-title': { type: 'string' },
       'meta-desc': { type: 'string' },
+      'post-title': { type: 'string' },
       site: { type: 'string', default: DEFAULT_SITE },
     },
     argv
@@ -80,6 +83,7 @@ function parseArgs(argv) {
     metaOnly: Boolean(flags['meta-only']),
     metaTitle: flags['meta-title'] || '',
     metaDesc: flags['meta-desc'] || '',
+    postTitle: flags['post-title'] || '',
     site: flags.site,
     markdownFile: positionals.length ? path.resolve(positionals[0]) : null,
   };
@@ -207,13 +211,14 @@ async function metaOnlyUpdate(options) {
   const appId = Number(process.env.APP_ID || 1);
   const desc = String(options.metaDesc || '').trim();
   const title = String(options.metaTitle || '').trim();
+  const postTitle = String(options.postTitle || '').trim();
 
   if (!options.slug && !options.postId) {
     console.error('Error: meta-only mode requires --slug (or --post-id)');
     process.exit(1);
   }
-  if (!desc && !title) {
-    console.error('Error: meta-only mode requires --meta-title and/or --meta-desc');
+  if (!desc && !title && !postTitle) {
+    console.error('Error: meta-only mode requires --meta-title, --meta-desc and/or --post-title');
     process.exit(1);
   }
   if (desc && (desc.length < 165 || desc.length > 175)) {
@@ -224,18 +229,24 @@ async function metaOnlyUpdate(options) {
     console.error(`Error: meta_title must be ≤200 characters (got ${title.length})`);
     process.exit(1);
   }
+  if (postTitle.length > 200) {
+    console.error(`Error: post_title must be ≤200 characters (got ${postTitle.length})`);
+    process.exit(1);
+  }
 
   console.log('='.repeat(70));
   console.log('Article meta-only update (SEO title / description)');
   console.log('='.repeat(70));
   console.log(`  slug: ${options.slug || '(by post-id)'}`);
-  if (title) console.log(`  title len: ${title.length}`);
+  if (title) console.log(`  meta-title len: ${title.length}`);
   if (desc) console.log(`  desc len: ${desc.length}`);
+  if (postTitle) console.log(`  post-title len: ${postTitle.length}`);
 
   if (options.dryRun) {
     console.log('\n[ Dry Run mode - skipping update ]');
     if (title) console.log(`  Would write meta_title (${title.length} chars) to DB seo.title + WP seo_meta_title`);
     if (desc) console.log(`  Would write meta_description (${desc.length} chars) to DB seo + WP seo_meta_description`);
+    if (postTitle) console.log(`  Would write post_title (${postTitle.length} chars) to DB title + WP post_title`);
     return;
   }
 
@@ -252,9 +263,11 @@ async function metaOnlyUpdate(options) {
     const seo = JSON.parse(dbRow.seo || '{}');
     if (title) seo.title = title;
     if (desc) seo.meta_description = desc;
-    dbAffected = await t.db.articles.saveContent(conn, dbRow.id, appId, { seo: JSON.stringify(seo) });
+    const saveFields = { seo: JSON.stringify(seo) };
+    if (postTitle) saveFields.title = postTitle;
+    dbAffected = await t.db.articles.saveContent(conn, dbRow.id, appId, saveFields);
   });
-  console.log(`  ✓ DB seo updated (affected rows: ${dbAffected}); body/title/status untouched`);
+  console.log(`  ✓ DB seo/title updated (affected rows: ${dbAffected}); body/status untouched`);
 
   // step 2: update WP meta only
   let postId = options.postId ? Number(options.postId) : (dbRow.wp_post_id || null);
@@ -270,9 +283,15 @@ async function metaOnlyUpdate(options) {
   const metaPatch = {};
   if (title) metaPatch.seo_meta_title = title;
   if (desc) metaPatch.seo_meta_description = desc;
-  const saved = await t.wp.posts.saveMeta(postId, metaPatch);
-  console.log(`  ✓ WP meta written via plugin API (post ${postId})`);
-  if (saved && typeof saved === 'object') console.log(`    keys written: ${Object.keys(saved).join(', ')}`);
+  if (Object.keys(metaPatch).length) {
+    const saved = await t.wp.posts.saveMeta(postId, metaPatch);
+    console.log(`  ✓ WP meta written via plugin API (post ${postId})`);
+    if (saved && typeof saved === 'object') console.log(`    keys written: ${Object.keys(saved).join(', ')}`);
+  }
+  if (postTitle) {
+    await t.wp.posts.update(postId, { title: postTitle });
+    console.log(`  ✓ WP post title updated (post ${postId})`);
+  }
 
   // step 3: verify
   const meta = await t.wp.posts.getMeta(postId);
@@ -283,6 +302,11 @@ async function metaOnlyUpdate(options) {
   if (desc) {
     const readD = (meta && meta.seo_meta_description) || '';
     console.log(`  ✓ Verify: WP meta description len=${readD.length} ${readD === desc ? '(match)' : '(MISMATCH!)'}`);
+  }
+  if (postTitle) {
+    const readPost = await t.wp.posts.get(postId);
+    const readPT = (readPost && readPost.title && readPost.title.rendered) || '';
+    console.log(`  ✓ Verify: WP post title len=${readPT.length} ${readPT === postTitle ? '(match)' : '(MISMATCH!)'}`);
   }
 
   console.log('\n' + '='.repeat(70));
