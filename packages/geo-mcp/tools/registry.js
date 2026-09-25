@@ -349,11 +349,12 @@ const tools = [
   {
     name: 'publish_update_article',
     description: 'Bypass update of an existing article (title/content/status + sync SEO/GEO meta). ' +
-      'When meta_description is provided, runs meta-only mode: updates ONLY the article meta_description ' +
-      '(DB seo.meta_description + WP seo_meta_description via the plugin API, 165–175 chars hard gate); ' +
-      'body/title/status/excerpt are left untouched.',
+      'When meta_title and/or meta_description is provided, runs meta-only mode: updates ONLY those SEO meta fields ' +
+      '(DB seo.title / seo.meta_description + WP seo_meta_title / seo_meta_description via the plugin API; ' +
+      'meta_description has a 165–175 chars hard gate); body/title/status/excerpt are left untouched.',
     inputSchema: z.object({
       md_path: z.string().optional().describe('absolute path to the body Markdown (required for full update; omit in meta-only mode)'),
+      meta_title: z.string().optional().describe('new SEO title (≤200 characters). Providing it switches to meta-only mode'),
       meta_description: z.string().optional().describe('new meta_description (165–175 characters). Providing it switches to meta-only mode'),
       site: siteField,
       slug: z.string().optional().describe('target slug'),
@@ -361,11 +362,13 @@ const tools = [
     }),
     async run(args) {
       const cliArgs = [];
-      if (args.meta_description) {
+      if (args.meta_title || args.meta_description) {
         if (!args.slug && !args.post_id) return fail(new Error('meta-only mode requires slug or post_id'));
-        cliArgs.push('--meta-only', '--meta-desc', args.meta_description);
+        cliArgs.push('--meta-only');
+        if (args.meta_title) cliArgs.push('--meta-title', args.meta_title);
+        if (args.meta_description) cliArgs.push('--meta-desc', args.meta_description);
       } else {
-        if (!args.md_path) return fail(new Error('publish_update_article requires md_path (or meta_description for meta-only mode)'));
+        if (!args.md_path) return fail(new Error('publish_update_article requires md_path (or meta_title/meta_description for meta-only mode)'));
         cliArgs.push(args.md_path);
       }
       cliArgs.push('--site', cliSite(args));

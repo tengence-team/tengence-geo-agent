@@ -37,7 +37,7 @@ const DEFAULT_SITE = t.site.DEFAULT_SITE;
 
 function usage() {
   console.log(`Usage: tengence-geo publish-update-article.js <markdown_file> [options]
-       tengence-geo publish-update-article.js --meta-only --meta-desc <desc> --slug <slug>
+       tengence-geo publish-update-article.js --meta-only --meta-title <title> [--meta-desc <desc>] --slug <slug>
 
 Options:
   --slug=<slug>          target article slug (either --slug or --post-id)
@@ -46,9 +46,10 @@ Options:
   --dry-run              convert only, no update (HTML written to /tmp/converted-article.html)
   --no-upload            skip image upload
   --site <key>           site key (default ${DEFAULT_SITE})
-  --meta-only            update ONLY meta_description (DB seo.meta_description +
-                         WP seo_meta_description via the plugin API); requires --slug
-                         or --post-id plus --meta-desc; body/title/status untouched
+  --meta-only            update ONLY SEO meta (DB seo JSON + WP meta via the plugin API);
+                         requires --slug or --post-id plus --meta-title and/or --meta-desc;
+                         body/title/status untouched
+  --meta-title=<text>    the new SEO title (written to DB seo.title + WP seo_meta_title)
   --meta-desc=<text>     the new meta_description value (165-175 chars, hard gate)`);
   process.exit(1);
 }
@@ -62,6 +63,7 @@ function parseArgs(argv) {
       'dry-run': { type: 'boolean' },
       'no-upload': { type: 'boolean' },
       'meta-only': { type: 'boolean' },
+      'meta-title': { type: 'string' },
       'meta-desc': { type: 'string' },
       site: { type: 'string', default: DEFAULT_SITE },
     },
@@ -76,6 +78,7 @@ function parseArgs(argv) {
     dryRun: flags['dry-run'],
     noUpload: flags['no-upload'],
     metaOnly: Boolean(flags['meta-only']),
+    metaTitle: flags['meta-title'] || '',
     metaDesc: flags['meta-desc'] || '',
     site: flags.site,
     markdownFile: positionals.length ? path.resolve(positionals[0]) : null,
@@ -190,41 +193,53 @@ function line() {
 }
 
 /**
- * Meta-only mode: update ONLY the meta_description of an existing article.
- *   - DB: read the row by slug (app_id from APP_ID), replace seo.meta_description
+ * Meta-only mode: update ONLY SEO meta (title and/or description) of an existing article.
+ *   - DB: read the row by slug (app_id from APP_ID), replace seo.title / seo.meta_description
  *     inside the existing seo JSON, write back via db.articles.saveContent with
  *     { seo } only → body/title/status/excerpt untouched (saveContent merges fields).
  *   - WP: locate the post via the DB row's wp_post_id (fallback: wp.posts.findBySlug),
- *     then wp.posts.saveMeta(postId, { seo_meta_description }) through the plugin API —
- *     only the meta key changes, article content/title/status stay live.
- *   - Hard gate: meta_description must be 165–175 characters.
+ *     then wp.posts.saveMeta(postId, { seo_meta_title?, seo_meta_description? }) through
+ *     the plugin API — only the provided meta keys change, body/title/status stay live.
+ *   - Hard gates: meta_title non-empty (≤200 chars per plugin schema);
+ *     meta_description must be 165–175 characters when provided.
  */
 async function metaOnlyUpdate(options) {
   const appId = Number(process.env.APP_ID || 1);
   const desc = String(options.metaDesc || '').trim();
-  const len = desc.length;
+  const title = String(options.metaTitle || '').trim();
 
-  if (len < 165 || len > 175) {
-    console.error(`Error: meta_description must be 165–175 characters (got ${len})`);
-    process.exit(1);
-  }
   if (!options.slug && !options.postId) {
     console.error('Error: meta-only mode requires --slug (or --post-id)');
     process.exit(1);
   }
+  if (!desc && !title) {
+    console.error('Error: meta-only mode requires --meta-title and/or --meta-desc');
+    process.exit(1);
+  }
+  if (desc && (desc.length < 165 || desc.length > 175)) {
+    console.error(`Error: meta_description must be 165–175 characters (got ${desc.length})`);
+    process.exit(1);
+  }
+  if (title.length > 200) {
+    console.error(`Error: meta_title must be ≤200 characters (got ${title.length})`);
+    process.exit(1);
+  }
 
   console.log('='.repeat(70));
-  console.log('Article meta-only update (meta_description)');
+  console.log('Article meta-only update (SEO title / description)');
   console.log('='.repeat(70));
-  console.log(`  slug: ${options.slug || '(by post-id)'}  len: ${len}`);
+  console.log(`  slug: ${options.slug || '(by post-id)'}`);
+  if (title) console.log(`  title len: ${title.length}`);
+  if (desc) console.log(`  desc len: ${desc.length}`);
 
   if (options.dryRun) {
     console.log('\n[ Dry Run mode - skipping update ]');
-    console.log(`  Would write meta_description (${len} chars) to DB seo + WP seo_meta_description`);
+    if (title) console.log(`  Would write meta_title (${title.length} chars) to DB seo.title + WP seo_meta_title`);
+    if (desc) console.log(`  Would write meta_description (${desc.length} chars) to DB seo + WP seo_meta_description`);
     return;
   }
 
-  // step 1: locate the DB row and update seo.meta_description
+  // step 1: locate the DB row and update seo.title / seo.meta_description
   let dbRow = null;
   let dbAffected = 0;
   await t.db.withConn(async (conn) => {
@@ -235,10 +250,11 @@ async function metaOnlyUpdate(options) {
     if (!rows.length) throw new Error(`Article not found in the DB: slug=${options.slug} app_id=${appId}`);
     dbRow = rows[0];
     const seo = JSON.parse(dbRow.seo || '{}');
-    seo.meta_description = desc;
+    if (title) seo.title = title;
+    if (desc) seo.meta_description = desc;
     dbAffected = await t.db.articles.saveContent(conn, dbRow.id, appId, { seo: JSON.stringify(seo) });
   });
-  console.log(`  ✓ DB seo.meta_description updated (affected rows: ${dbAffected}); body/title/status untouched`);
+  console.log(`  ✓ DB seo updated (affected rows: ${dbAffected}); body/title/status untouched`);
 
   // step 2: update WP meta only
   let postId = options.postId ? Number(options.postId) : (dbRow.wp_post_id || null);
@@ -251,14 +267,23 @@ async function metaOnlyUpdate(options) {
     process.exit(1);
   }
 
-  const saved = await t.wp.posts.saveMeta(postId, { seo_meta_description: desc });
-  console.log(`  ✓ WP meta seo_meta_description written via plugin API (post ${postId})`);
+  const metaPatch = {};
+  if (title) metaPatch.seo_meta_title = title;
+  if (desc) metaPatch.seo_meta_description = desc;
+  const saved = await t.wp.posts.saveMeta(postId, metaPatch);
+  console.log(`  ✓ WP meta written via plugin API (post ${postId})`);
   if (saved && typeof saved === 'object') console.log(`    keys written: ${Object.keys(saved).join(', ')}`);
 
   // step 3: verify
   const meta = await t.wp.posts.getMeta(postId);
-  const read = (meta && meta.seo_meta_description) || '';
-  console.log(`  ✓ Verify: WP meta description len=${read.length} ${read === desc ? '(match)' : '(MISMATCH!)'}`);
+  if (title) {
+    const readT = (meta && meta.seo_meta_title) || '';
+    console.log(`  ✓ Verify: WP meta title len=${readT.length} ${readT === title ? '(match)' : '(MISMATCH!)'}`);
+  }
+  if (desc) {
+    const readD = (meta && meta.seo_meta_description) || '';
+    console.log(`  ✓ Verify: WP meta description len=${readD.length} ${readD === desc ? '(match)' : '(MISMATCH!)'}`);
+  }
 
   console.log('\n' + '='.repeat(70));
   console.log('Meta-only update complete!');
