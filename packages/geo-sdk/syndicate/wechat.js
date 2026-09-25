@@ -31,7 +31,7 @@ const { renderMarkdownToWechat } = require('@rbbtsn0w/wechat-markdown');
 let cachedToken = null;
 let tokenExpireAt = 0;
 
-function httpsRequest(url, options = {}, body = null) {
+function httpsRequest(url, options = {}, body = null, attempt = 0) {
   return new Promise((resolve, reject) => {
     const urlObj = new URL(url);
     const mod = urlObj.protocol === 'https:' ? https : http;
@@ -53,10 +53,27 @@ function httpsRequest(url, options = {}, body = null) {
         }
       });
     });
-    req.on('error', reject);
+    // Retry only on transient network/socket errors (the egress proxy in this
+    // environment occasionally drops rapid sequential TLS connections). HTTP
+    // error responses (e.g. 4xx/5xx) are NOT retried — they are real outcomes.
+    req.on('error', (err) => {
+      const transient = ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'EPIPE', 'ENOTFOUND', 'Client network socket disconnected before secure TLS connection was established'];
+      const isTransient = transient.some((t) => err.message.includes(t) || err.code === t);
+      if (isTransient && attempt < 2) {
+        setTimeout(() => resolve(httpsRequest(url, options, body, attempt + 1)), 400 * (attempt + 1));
+      } else {
+        reject(err);
+      }
+    });
     req.setTimeout(60000, () => {
       req.destroy();
-      reject(new Error('Request timeout: ' + url));
+      const err = new Error('Request timeout: ' + url);
+      err.code = 'ETIMEDOUT';
+      if (attempt < 2) {
+        setTimeout(() => resolve(httpsRequest(url, options, body, attempt + 1)), 400 * (attempt + 1));
+      } else {
+        reject(err);
+      }
     });
     if (body) { req.setHeader('Content-Length', Buffer.byteLength(body)); req.write(body); }
     req.end();
@@ -67,15 +84,31 @@ async function getAccessToken() {
   if (cachedToken && Date.now() < tokenExpireAt - 60000) return cachedToken;
   const WECHAT_APP_ID = process.env.WECHAT_APP_ID;
   const WECHAT_APP_SECRET = process.env.WECHAT_APP_SECRET;
-  const url = `https://api.weixin.qq.com/cgi-bin/token?grant_type=client_credential&appid=${WECHAT_APP_ID}&secret=${WECHAT_APP_SECRET}`;
-  const { json } = await httpsRequest(url);
+  // Use the stable token endpoint (POST). It is idempotent across all callers when
+  // force_refresh=false, so independent processes fetching a token never revoke each
+  // other's token — unlike the legacy /cgi-bin/token GET, which rotates and invalidates
+  // the prior token on every call (observed live: 40001 after a second caller fetched).
+  const url = 'https://api.weixin.qq.com/cgi-bin/stable_token';
+  const body = JSON.stringify({
+    grant_type: 'client_credential',
+    appid: WECHAT_APP_ID,
+    secret: WECHAT_APP_SECRET,
+    force_refresh: false,
+  });
+  const { json } = await httpsRequest(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, body);
   if (json.errcode && json.errcode !== 0) {
     throw new Error(`access_token fetch failed: ${json.errcode} ${json.errmsg}`);
   }
   cachedToken = json.access_token;
-  tokenExpireAt = Date.now() + json.expires_in * 1000;
-  console.log(`  ✅ access_token obtained (valid ${json.expires_in}s)`);
+  tokenExpireAt = Date.now() + (json.expires_in || 7200) * 1000;
+  console.log(`  ✅ access_token obtained (valid ${json.expires_in || 7200}s)`);
   return cachedToken;
+}
+
+/** Force the next getAccessToken() call to refetch (used after an auth error). */
+function clearTokenCache() {
+  cachedToken = null;
+  tokenExpireAt = 0;
 }
 
 function downloadImage(url) {
@@ -909,16 +942,38 @@ async function deletePublished(articleId, { index, dryRun = false, request = htt
  * Raw rows are returned untouched (field names differ per endpoint); only the
  * resolved window and endpoint are added as metadata.
  */
+// WeChat's datacube family is served at api.weixin.qq.com/datacube/* WITHOUT the
+// /cgi-bin/ prefix. The /cgi-bin/datacube/* variant is rejected (HTTP 404, empty
+// body) by the egress proxy in this environment, so getStats deliberately omits
+// it. The legacy article/user-read/share endpoints (getarticletotal / getuserread
+// / getusershare) now return errcode 47009 "api offline" — replaced below by the
+// new "发表内容" APIs (getbizsummary / getarticleread / getarticleshare /
+// getarticletotaldetail). Verified live on 2026-09-25.
 const STATS_ENDPOINTS = {
   user_summary: 'datacube/getusersummary',
   user_cumulate: 'datacube/getusercumulate',
-  article_total: 'datacube/getarticletotal',
-  user_read: 'datacube/getuserread',
-  user_share: 'datacube/getusershare',
   upstream_msg: 'datacube/getupstreammsg',
   interface_summary: 'datacube/getinterfacesummary',
+  biz_summary: 'datacube/getbizsummary',
+  article_read: 'datacube/getarticleread',
+  article_share: 'datacube/getarticleshare',
+  article_detail: 'datacube/getarticletotaldetail',
 };
-/** Max allowed span between begin_date and end_date (WeChat limit). */
+/** Per-action query constraints (verified against WeChat docs + live probes):
+ *  - maxSpan: max allowed (end - begin + 1) days;
+ *  - singleDay: if true, begin_date must equal end_date (the new per-article
+ *    "发表内容" APIs accept only a single day per call). */
+const STATS_CONSTRAINTS = {
+  user_summary: { maxSpan: 7 },
+  user_cumulate: { maxSpan: 7 },
+  upstream_msg: { maxSpan: 7 },
+  interface_summary: { maxSpan: 30 },
+  biz_summary: { maxSpan: 30 },
+  article_read: { maxSpan: 1, singleDay: true },
+  article_share: { maxSpan: 1, singleDay: true },
+  article_detail: { maxSpan: 1, singleDay: true },
+};
+/** Max allowed span between begin_date and end_date (WeChat limit, fallback). */
 const STATS_MAX_SPAN_DAYS = 7;
 
 /** Beijing-time (UTC+8) calendar day of an ISO timestamp, as YYYY-MM-DD. */
@@ -938,20 +993,29 @@ function shiftDay(day, n) {
 
 /**
  * Resolve the query window: defaults to the 7 days ending yesterday (Beijing),
- * because datacube data is T+1 and never includes today.
+ * because datacube data is T+1 and never includes today. Honors per-action
+ * constraints (maxSpan / singleDay) from STATS_CONSTRAINTS.
+ * @param {string} [beginDate]
+ * @param {string} [endDate]
+ * @param {{maxSpan?:number, singleDay?:boolean}} [constraint]
  * @returns {{begin_date:string, end_date:string}}
  */
-function resolveStatsRange(beginDate, endDate) {
+function resolveStatsRange(beginDate, endDate, constraint = {}) {
+  const maxSpan = constraint.maxSpan || STATS_MAX_SPAN_DAYS;
+  const singleDay = !!constraint.singleDay;
   const end = endDate || shiftDay(beijingDay(new Date().toISOString()), -1);
-  const begin = beginDate || shiftDay(end, -(STATS_MAX_SPAN_DAYS - 1));
+  let begin = beginDate || shiftDay(end, -(maxSpan - 1));
   if (!/^\d{4}-\d{2}-\d{2}$/.test(begin) || !/^\d{4}-\d{2}-\d{2}$/.test(end)) {
     throw new Error('Invalid date format: begin_date / end_date must be YYYY-MM-DD');
   }
   if (dayDiff(begin, end) < 0) {
     throw new Error(`begin_date (${begin}) must not be later than end_date (${end})`);
   }
-  if (dayDiff(begin, end) + 1 > STATS_MAX_SPAN_DAYS) {
-    throw new Error(`Date span must be <= ${STATS_MAX_SPAN_DAYS} days (got ${dayDiff(begin, end) + 1}: ${begin} → ${end})`);
+  if (singleDay) {
+    // New per-article APIs accept only begin_date === end_date.
+    begin = end;
+  } else if (dayDiff(begin, end) + 1 > maxSpan) {
+    throw new Error(`Date span must be <= ${maxSpan} days (got ${dayDiff(begin, end) + 1}: ${begin} → ${end})`);
   }
   return { begin_date: begin, end_date: end };
 }
@@ -960,33 +1024,54 @@ function resolveStatsRange(beginDate, endDate) {
  * Read one statistics report from the official-account backend.
  * @param {string} action one of STATS_ENDPOINTS keys
  * @param {{beginDate?:string, endDate?:string}} [range]
- * @returns {Promise<{action:string, endpoint:string, begin_date:string, end_date:string, list:Array}>}
+ * @returns {Promise<{action:string, endpoint:string, begin_date:string, end_date:string, list:Array, is_delay?:boolean}>}
  */
 async function getStats(action, { beginDate, endDate } = {}) {
   const endpoint = STATS_ENDPOINTS[action];
   if (!endpoint) {
     throw new Error(`Unknown stats action: ${action}. Available: ${Object.keys(STATS_ENDPOINTS).join(', ')}`);
   }
-  const { begin_date, end_date } = resolveStatsRange(beginDate, endDate);
+  const constraint = STATS_CONSTRAINTS[action] || {};
+  const { begin_date, end_date } = resolveStatsRange(beginDate, endDate, constraint);
   const accessToken = await getAccessToken();
-  const url = `https://api.weixin.qq.com/cgi-bin/${endpoint}?access_token=${accessToken}`;
+  // datacube is served at api.weixin.qq.com/<endpoint> (NO /cgi-bin/ prefix —
+  // the /cgi-bin/datacube/* variant is blocked by the egress proxy here).
+  const url = `https://api.weixin.qq.com/${endpoint}?access_token=${accessToken}`;
   const body = JSON.stringify({ begin_date, end_date });
-  const { json } = await httpsRequest(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, body);
+  const res = await httpsRequest(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, body);
+  if (res.statusCode !== 200) {
+    const hint = res.raw ? `: ${String(res.raw).slice(0, 200)}` : ' (empty response body — likely blocked by the egress proxy; use the non-/cgi-bin/ datacube path)';
+    throw new Error(`${endpoint} HTTP ${res.statusCode}${hint}`);
+  }
+  const json = res.json || {};
+  // 40001/42001 = token invalid/expired. Clear the cache and retry exactly once,
+  // in case a concurrent caller rotated the token (defense-in-depth on top of stable_token).
+  if (json.errcode === 40001 || json.errcode === 42001) {
+    clearTokenCache();
+    const token2 = await getAccessToken();
+    const res2 = await httpsRequest(url.replace(accessToken, token2), { method: 'POST', headers: { 'Content-Type': 'application/json' } }, body);
+    const json2 = res2.json || {};
+    if (json2.errcode && json2.errcode !== 0) {
+      throw new Error(`${endpoint} failed: ${json2.errcode} ${json2.errmsg}`);
+    }
+    return { action, endpoint, begin_date, end_date, list: json2.list || [], is_delay: json2.is_delay, retried: true };
+  }
   if (json.errcode && json.errcode !== 0) {
     throw new Error(`${endpoint} failed: ${json.errcode} ${json.errmsg}`);
   }
-  return { action, endpoint, begin_date, end_date, list: json.list || [] };
+  return { action, endpoint, begin_date, end_date, list: json.list || [], is_delay: json.is_delay };
 }
 
 /**
- * Overview bundle: user growth + cumulative users + article totals + reading
- * stats for one window (4 datacube calls). Individual failures are collected per
- * key instead of aborting, so a partially-permissioned account still returns data.
+ * Overview bundle: user growth + cumulative users + account biz summary +
+ * message stats for one 7-day window (4 datacube calls). Individual failures are
+ * collected per key instead of aborting, so a partially-permissioned account
+ * still returns data.
  * @returns {Promise<{begin_date:string, end_date:string, data:Object, errors:Object}>}
  */
 async function getStatsOverview({ beginDate, endDate } = {}) {
   const { begin_date, end_date } = resolveStatsRange(beginDate, endDate);
-  const wanted = ['user_summary', 'user_cumulate', 'article_total', 'user_read'];
+  const wanted = ['user_summary', 'user_cumulate', 'biz_summary', 'upstream_msg'];
   const data = {};
   const errors = {};
   for (const action of wanted) {
@@ -1016,4 +1101,5 @@ module.exports = {
   getStatsOverview,
   STATS_ENDPOINTS,
   resolveStatsRange,
+  clearTokenCache,
 };

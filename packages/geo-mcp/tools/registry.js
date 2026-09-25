@@ -1059,25 +1059,32 @@ const tools = [
   {
     name: 'wechat_stats',
     description:
-      'Read official-account statistics from the WeChat backend (cgi-bin/datacube/*): user growth, cumulative users, ' +
-      'per-article totals (送达/阅读/分享/收藏), reading trends, shares, upstream messages and interface quality. ' +
-      'Read-only. Constraints: the date span must be <= 7 days and data is T+1, so end_date defaults to yesterday. ' +
-      'Requires the 用户分析/图文分析 permission (认证公众号); otherwise WeChat returns errcode 48001.',
+      'Read official-account statistics from the WeChat backend (datacube/*, served WITHOUT the /cgi-bin/ prefix — ' +
+      'the /cgi-bin/datacube/* variant is blocked by the egress proxy in this environment). Returns: user growth ' +
+      '(user_summary), cumulative users (user_cumulate), upstream/interactive messages (upstream_msg, maxSpan 30d), ' +
+      'interface quality (interface_summary, 30d), account biz summary (biz_summary, 30d), daily article reads ' +
+      '(article_read, single-day), shares (article_share, single-day) and per-article detail incl. 送达率/读完率/平均' +
+      '阅读时长/跳出 (article_detail, single-day). Read-only. Constraints: data is T+1 (end_date defaults to ' +
+      'yesterday); most endpoints allow a <=7d window, the *_read/_share/_detail ones require begin_date === end_date. ' +
+      'Requires 用户分析/图文分析 permissions (认证公众号); an unauthorised account returns errcode 48001. Legacy ' +
+      'endpoints getarticletotal/getuserread/getusershare are OFFLINE (47009) and have been replaced by the new ' +
+      '“发表内容” APIs above.',
     inputSchema: z.object({
       action: z
         .enum([
           'overview',
           'user_summary',
           'user_cumulate',
-          'article_total',
-          'user_read',
-          'user_share',
           'upstream_msg',
           'interface_summary',
+          'biz_summary',
+          'article_read',
+          'article_share',
+          'article_detail',
         ])
         .optional()
         .describe(
-          'report to read; default overview = user_summary + user_cumulate + article_total + user_read in one window'
+          'report to read; default overview = user_summary + user_cumulate + biz_summary + upstream_msg in one 7-day window'
         ),
       begin_date: z.string().optional().describe('YYYY-MM-DD; default = 6 days before end_date'),
       end_date: z.string().optional().describe('YYYY-MM-DD; default = yesterday (data is T+1, today is never available)'),
