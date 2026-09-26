@@ -335,21 +335,29 @@ async function listAllTags() {
  * function always sends at least the env default for each — it can never publish
  * an article without them.
  *
- * @param {{mdFile:string, title?:string|null, publish?:boolean, dryRun?:boolean,
+ * @param {{mdFile?:string, contentMd?:string, title?:string|null, publish?:boolean, dryRun?:boolean,
  *          tags?:string[], tagIds?:string[], categoryId?:string|null}} opts
+ *   mdFile  = path of a markdown file to read the body from (mutually exclusive-ish
+ *             with contentMd; contentMd wins when both are given).
+ *   contentMd = the body AS A STRING. This is the harness-rewritten (Mode B) path:
+ *             pass the rewritten article straight through without touching the DB
+ *             or a file, so a platform-adapted draft can actually be published.
  *   tags    = article target_keywords (strings); resolved to tag_ids best-effort.
  *   tagIds  = already-resolved juejin tag_ids (bypasses resolution; takes priority).
  *   categoryId = already-resolved juejin category_id (overrides the env default).
  * @returns {Promise<{draftId?:string, articleId?:string, failed?:boolean, stage?:string, dryRun?:boolean, skipped?:boolean, taxonomy?:object}>}
  */
-async function publishJuejin({ mdFile, title = null, publish = false, dryRun = false, tags = [], tagIds = null, categoryId = null }) {
+async function publishJuejin({ mdFile = null, contentMd = null, title = null, publish = false, dryRun = false, tags = [], tagIds = null, categoryId = null }) {
   const { cookie, categoryId: envCategoryId, defaultTagId } = creds();
   if (!cookie) {
     console.log('❌ JUEJIN_COOKIE not found in .env');
     throw new Error('JUEJIN_COOKIE_MISSING');
   }
+  if (contentMd == null && !mdFile) {
+    throw new Error('publishJuejin requires either mdFile or contentMd');
+  }
 
-  const content = fs.readFileSync(mdFile, 'utf-8');
+  const content = contentMd != null ? contentMd : fs.readFileSync(mdFile, 'utf-8');
   if (!title) {
     const match = content.match(/^# (.+)$/m);
     title = match ? match[1].trim() : path.basename(mdFile, '.md');

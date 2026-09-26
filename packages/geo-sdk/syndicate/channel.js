@@ -314,7 +314,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
  * Mode B: export pre-written (harness-rewritten) articles as publish packages.
  * Works for every platform — api:none platforms publish manually from these files.
  */
-async function exportArticles({ platform, articles, dryRun, siteKey }) {
+async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = true }) {
   const site = t.site.loadSite(siteKey);
   const dir = exportDir(site.siteDir, platform);
   fs.mkdirSync(dir, { recursive: true });
@@ -359,12 +359,97 @@ async function exportArticles({ platform, articles, dryRun, siteKey }) {
     }
   }
 
+  // ---- juejin: Mode B ALSO pushes the rewritten draft through the real pipeline ----
+  // Without this the platform-adapted draft only ever lands on disk, and the only
+  // way onto Juejin was Mode A (the untouched DB original) — which carries the
+  // brand/CTA blocks Juejin's own rules forbid. Same rationale as wechat above.
+  const juejinResults = [];
+  if (platform === 'juejin' && !dryRun) {
+    const taxoCtx = await juejinTaxonomy.prepareJuejinTaxonomy({ siteDir: site.siteDir, autoSync: true });
+    const TITLE_MAX = 40;
+    for (const article of articles) {
+      if (!article.slug || !article.title || !article.contentMd) continue;
+      try {
+        let title = String(article.title || '');
+        const trimmed = title.length > TITLE_MAX;
+        if (trimmed) title = title.slice(0, TITLE_MAX);
+
+        // taxonomy: prefer the DB plan row (single source of truth, as in Mode A);
+        // fall back to whatever tags the harness passed in.
+        let category = null;
+        let tags = Array.isArray(article.tags) && article.tags.length ? article.tags : [];
+        try {
+          await t.db.withConn(async (conn) => {
+            const row = await planRepo.getBySlug(conn, DEFAULT_APP_ID(), article.slug);
+            if (!row) return;
+            category = row.category || category;
+            if (Array.isArray(row.tags) && row.tags.length) tags = row.tags;
+          });
+        } catch (e) {
+          // a missing plan row must not block publishing
+        }
+
+        const taxo = taxoCtx
+          ? juejinTaxonomy.resolveFromContext(taxoCtx, { category, tags, keywords: tags })
+          : null;
+        const taxoSummary = taxo
+          ? {
+              category: taxo.categoryName || taxo.categoryId,
+              categoryOrigin: taxo.categoryOrigin,
+              tags: taxo.tagNames.length ? taxo.tagNames : taxo.tagIds,
+              tagOrigins: taxo.origins,
+              dictEmpty: taxo.dictEmpty,
+            }
+          : null;
+
+        const res = await juejin.publishJuejin({
+          contentMd: `# ${title}\n\n${article.contentMd.trim()}\n`,
+          title,
+          publish: !asDraft,
+          tags,
+          categoryId: taxo ? taxo.categoryId : null,
+          tagIds: taxo ? taxo.tagIds : null,
+        });
+
+        appendLog(site.siteDir, {
+          action: asDraft ? 'draft' : 'publish',
+          platform,
+          slug: article.slug,
+          ok: !res.failed,
+          detail: { ...res, taxonomy: taxoSummary, rewrite: article.rewrite || 'harness' },
+        });
+
+        if (res.failed) {
+          failed += 1;
+          juejinResults.push({ slug: article.slug, ok: false, stage: res.stage, detail: res, title });
+        } else {
+          juejinResults.push({
+            slug: article.slug,
+            ok: true,
+            published: !asDraft,
+            draftId: res.draftId,
+            articleId: res.articleId,
+            title,
+            trimmed,
+            taxonomy: taxoSummary,
+          });
+        }
+      } catch (e) {
+        failed += 1;
+        juejinResults.push({ slug: article.slug, ok: false, error: e.message, title: article.title });
+        appendLog(site.siteDir, { action: 'error', platform, slug: article.slug, ok: false, detail: { error: e.message } });
+      }
+    }
+  }
+
   return {
     ok: failed === 0,
     platform,
-    action: pushResult ? 'draft' : 'manual',
+    action: juejinResults.length ? (asDraft ? 'draft' : 'publish') : pushResult ? 'draft' : 'manual',
     refs: { mdDir: dir, mediaId: pushResult && pushResult.mediaId },
     exported,
+    // mirror Mode A's shape so the MCP publish log (channel_plan) can record it
+    results: juejinResults.length ? juejinResults : undefined,
     logPath: logFile(site.siteDir),
   };
 }
@@ -404,7 +489,7 @@ async function publishToChannel({ platform, slugs = [], articles = [], asDraft =
   if (hasSlugs) {
     return publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, siteKey });
   }
-  return exportArticles({ platform, articles, dryRun, siteKey });
+  return exportArticles({ platform, articles, dryRun, siteKey, asDraft });
 }
 
 module.exports = {
