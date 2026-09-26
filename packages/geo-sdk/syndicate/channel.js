@@ -33,7 +33,7 @@ const yaml = require('js-yaml');
 const t = require('../index');
 const registry = require('./registry');
 const planRepo = require('../db/plan');
-const { syncWechat } = require('./wechat');
+const { syncWechat, publishRewrittenToWechat } = require('./wechat');
 const juejin = require('./juejin');
 const juejinTaxonomy = require('./juejin-taxonomy');
 const { publishDevto } = require('./devto');
@@ -317,11 +317,25 @@ async function exportArticles({ platform, articles, dryRun, siteKey }) {
     }
   }
 
+  // ---- api:official platforms (wechat) actually push the rewritten draft ----
+  // Mode B's contract: the harness already rewrote the article; here we land it in
+  // the platform draft box (createDraft) instead of only exporting a local package.
+  let pushResult = null;
+  const plat = registry.getPlatform(platform);
+  if (plat && plat.api === 'official' && platform === 'wechat' && !dryRun) {
+    try {
+      pushResult = await publishRewrittenToWechat({ articles, siteKey });
+    } catch (e) {
+      failed += 1;
+      appendLog(site.siteDir, { action: 'push-error', platform, ok: false, detail: { error: e.message } });
+    }
+  }
+
   return {
     ok: failed === 0,
     platform,
-    action: 'manual',
-    refs: { mdDir: dir },
+    action: pushResult ? 'draft' : 'manual',
+    refs: { mdDir: dir, mediaId: pushResult && pushResult.mediaId },
     exported,
     logPath: logFile(site.siteDir),
   };

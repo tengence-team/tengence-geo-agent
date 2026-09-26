@@ -352,7 +352,7 @@ function cleanWechatHtml(html) {
   return out;
 }
 
-async function prepareArticle(conn, slug, siteDomain) {
+async function prepareArticle(conn, slug, siteDomain, overrides = {}) {
   const APP_ID = process.env.APP_ID || '1';
 
   console.log(`\n📄 Processing article: ${slug}`);
@@ -361,8 +361,8 @@ async function prepareArticle(conn, slug, siteDomain) {
   if (!detail) throw new Error(`Article not found: ${slug}`);
 
   const articleId = detail.id;
-  const title = detail.title;
-  let mdContent = detail.content_longtext || detail.content || '';
+  const title = overrides.titleOverride || detail.title;
+  let mdContent = overrides.contentMdOverride != null ? overrides.contentMdOverride : (detail.content_longtext || detail.content || '');
 
   // Since 2026-09-20: the DB is the single source of truth (local md moved to data/
   // and no longer participates); the body is guaranteed non-empty
@@ -1084,8 +1084,67 @@ async function getStatsOverview({ beginDate, endDate } = {}) {
   return { begin_date, end_date, data, errors };
 }
 
+/**
+ * Push harness-rewritten articles to the WeChat draft box (Mode B publish path).
+ * ---------------------------------------------------------------------------
+ * Unlike syncWechat (Mode A — reads the DB ORIGINAL and publishes it verbatim),
+ * this takes the ALREADY-REWRITTEN title/body from the caller (the Skill / harness
+ * did the semantic rewrite per styles/*.yaml) and pushes them as ONE multi-article
+ * draft. The server never rewrites content; it only adapts (md→WeChat HTML),
+ * uploads images, and calls draft/add.
+ *
+ * @param {{articles:Array<{slug:string,title:string,contentMd:string}>, siteKey?:string, dryRun?:boolean}} opts
+ * @returns {Promise<{mediaId?:string, action:'draft'|'dry-run'}>}
+ */
+async function publishRewrittenToWechat({ articles, siteKey, dryRun = false }) {
+  const SITE = t.site.loadSite(siteKey);
+  const SITE_DOMAIN = (process.env.SITE_DOMAIN || (SITE.site && SITE.site.site && SITE.site.site.domain) || 'www.tengence.com')
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, 'www.');
+  const LOG_DIR = path.join(SITE.siteDir, 'data');
+  const LOG_FILE = path.join(LOG_DIR, 'wechat-log.jsonl');
+
+  const slugs = articles.map((a) => a.slug);
+  console.log('='.repeat(60));
+  console.log(`WeChat draft (rewritten) sync (${articles.length} articles)`);
+  console.log('='.repeat(60));
+
+  if (dryRun) {
+    for (const a of articles) console.log(`  - ${a.slug} | ${a.title}`);
+    console.log('\n[dry-run] done');
+    return { mediaId: null, action: 'dry-run' };
+  }
+
+  let mediaId = null;
+  await t.db.withConn(async (conn) => {
+    const draftArticles = [];
+    for (const a of articles) {
+      // reuse the full md→HTML + image-upload + cover pipeline, but feed the
+      // harness-rewritten title/body instead of the DB original
+      const article = await prepareArticle(conn, a.slug, SITE_DOMAIN, {
+        titleOverride: a.title,
+        contentMdOverride: a.contentMd,
+      });
+      article._slug = a.slug;
+      draftArticles.push(article);
+    }
+    const accessToken = await getAccessToken();
+    const cleanArticles = draftArticles.map(({ _slug, ...rest }) => rest);
+    mediaId = await createDraft(accessToken, cleanArticles);
+    console.log(`\n✅ Draft created! media_id: ${mediaId}`);
+    appendLog(
+      { time: new Date().toISOString(), action: 'draft', slugs, mediaId, rewritten: true },
+      LOG_DIR,
+      LOG_FILE
+    );
+  });
+
+  return { mediaId, action: 'draft' };
+}
+
 module.exports = {
   syncWechat,
+  publishRewrittenToWechat,
   cleanWechatHtml,
   prepareArticle,
   listDrafts,
