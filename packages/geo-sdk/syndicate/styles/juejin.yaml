@@ -98,7 +98,7 @@ rewrite:
     - "首段交代背景与解决的问题"
     - "保留代码块/表格/数据来源"
     - "删除品牌营销块与 CTA（removeBlocks / forbiddenPhrases 全清空）"
-    - "本站链接仅限 /blog/article/ 文章页（条数不限，建议集中在文末）；转化链接（首页/产品/定价/注册/控制台）为 0"
+    - "本站链接仅限 /blog/article/ 文章页；相关阅读与第三方引用条数不限，转化链接（首页/产品/定价/注册/控制台）为 0"
     - "标签 3-5 个精准"
     - "人工改写痕迹充分（见 compliance.aigc），避免被判 AIGC"
   # 审核红线：来自掘金官方《如何使用掘金社区》小册
@@ -145,6 +145,19 @@ rewrite:
     - 本站链接只保留指向文章正文的相关阅读（/blog/article/），**条数不限**，建议集中在文末；
       首页、产品页、定价、注册、控制台等转化链接一律删除
     - 第三方权威引用同样不限条数（『数据来源』块内或正文行内引用均可）
+    - 链接判定（**看落点，不看数量**）：
+      | 类别 | 示例 | 判定 | 处置 |
+      | 文章正文页 | /blog/article/<slug>/ | 允许 | 条数不限，建议集中在文末『相关阅读』 |
+      | 转化/营销落点 | 首页、/product、/price、/signup、/demo、/contact、/about、console.、app. | 禁止 | 一律删除（channel_check 硬拦截） |
+      | 其它本站路径 | 非 /blog/article/ 的任意本站 URL | 禁止 | 一律删除（未知路径按营销页对待） |
+      | 第三方权威引用 | elastic.co / nngroup.com / baymard.com | 允许 | 条数不限 |
+      链接落在正文中间不阻断发布，仅报 warnings；锚文本要有信息增量，勿堆链接墙。
+    - 发布通道差异（重要）：
+      Mode B（`channel_publish` 传 `articles[{slug,title,contentMd}]`）会**真正调用发布接口**；
+      `asDraft` 默认 true，真实发布必须显式 `asDraft:false`。
+      Mode A（`slugs[]`）发的是**数据库原文、未经改写**，必然带着品牌块与 CTA 上平台，
+      直接触发 §5『发布广告内容』——改写后**务必走 Mode B**。
+      幂等：同一 slug 本地 status=published 会被跳过；重发改写稿需先 `juejin_article_delete` 撤掉旧文。
     - 发布走 cookie API：建草稿（draft）→ 后台确认后可发布
     - 原创首发（多平台同时发会掉权重）；参与官方征文有加权
     - AIGC 内容会被判不推荐并纳入笔记，改写必须留下人工痕迹（见 compliance.aigc）
