@@ -46,9 +46,9 @@ after(() => {
 
 // ==================== registry ====================
 
-test('registry: 8 platforms with api/status declared', () => {
+test('registry: 9 platforms with api/status declared', () => {
   const platforms = t.syndicate.registry.listPlatforms();
-  assert.equal(platforms.length, 8);
+  assert.equal(platforms.length, 9);
   const byKey = Object.fromEntries(platforms.map((p) => [p.key, p]));
   assert.equal(byKey.wechat.api, 'official');
   assert.equal(byKey.wechat.status, 'ready');

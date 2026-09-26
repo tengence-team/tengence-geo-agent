@@ -22,5 +22,6 @@ const juejinTaxonomy = require('./juejin-taxonomy');
 const wechat = require('./wechat');
 const registry = require('./registry');
 const channel = require('./channel');
+const styleCheck = require('./styleCheck');
 
-module.exports = { devto, juejin, juejinTaxonomy, wechat, registry, channel };
+module.exports = { devto, juejin, juejinTaxonomy, wechat, registry, channel, styleCheck };

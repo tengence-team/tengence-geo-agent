@@ -30,6 +30,7 @@ const STYLES_DIR = path.join(__dirname, 'styles');
 const PLATFORM_KEYS = [
   'wechat',
   'juejin',
+  'blog', // 官方博客（Tengence Blog）：内容的『源』，api:none（落 CMS 手动发）
   'devto',
   'baijiahao',
   'zhihu',

@@ -12,23 +12,46 @@ capabilities:
   draft: true
   schedule: false
 rewrite:
+  # 掘金是纯算法推荐流，标题与正文都需按技术社区调性改写
+  strategy: both
   title:
     max: 40
-    style: "技术向、可直接作搜索标题；可用问句或数字（如『XX怎么做？7 个步骤』）"
+    style: "技术向、可作搜索标题；问句或数字更吸睛"
+    hooks:
+      - "数字清单：『XX 怎么做？7 个步骤』"
+      - "对比反差：『我为什么放弃了 X，改用 Y』"
+      - "实战复盘：『上线 3 个月，我们的 GEO 涨了 N 倍』"
+    forbidden: ["最", "第一", "震惊", "速速", "史上", "必看"]
   removeBlocks: ["<品牌简介块>", "立即行动"]
   keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
   body:
     minChars: 800
     maxChars: 15000
-    firstPara: "一句话交代背景 + 本文解决什么问题，适合技术读者"
-  tags:
-    max: 5
-    note: "掘金支持标签，用技术标签（如 GEO、SEO、搜索）"
+    firstPara: "一句话背景 + 本文解决什么问题，面向技术读者"
+    style: "技术严谨、保留代码/表格/数据；步骤清晰、可复现"
+    structure: ["背景与问题", "方案/步骤", "关键要点", "FAQ", "参考来源"]
+  internalLinks:
+    required: false
+    note: "可保留指向官网原文的链接，但避免硬广"
+  cta:
+    required: false
+    note: "掘金社区排斥硬广，文末轻量引导关注即可"
   cover:
     required: false
-    note: "掘金自动取首图，无图时不强制"
+    note: "掘金自动取首图"
+  tags:
+    max: 5
+    note: "技术标签（GEO、SEO、搜索、AI）；精准 3-5 个"
+  checklist:
+    - "标题 ≤40 字且技术向"
+    - "无 forbidden 词"
+    - "首段交代背景与解决的问题"
+    - "保留代码块/表格/数据来源"
+    - "删除品牌营销块"
+    - "标签 3-5 个精准"
   notes: |
     - 技术教程结构：背景 → 方案/步骤 → 要点 → FAQ → 参考来源
     - 保留代码块、表格、数据来源以增强可信
     - 删除品牌营销块（掘金社区排斥硬广）
     - 发布走 cookie API：建草稿（draft）→ 后台确认后可发布
+    - 原创首发（多平台同时发会掉权重）；参与官方征文有加权

@@ -1,0 +1,61 @@
+platform: blog
+name: 官方博客 (Tengence Blog)
+api: none
+status: manual
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 60
+  maxBodyLen: 20000
+  tags: true
+  cover: true
+  draft: true
+  schedule: false
+rewrite:
+  # 官方博客是内容的『源』：公众号/掘金从中改编。本平台只做轻量 SEO/GEO 优化，
+  # 一般不重结构，重在长尾词、可引用摘要、内链与结构化数据。
+  strategy: source
+  title:
+    max: 60
+    style: "长尾疑问/主题词；含核心关键词；利于搜索与 AI 引用(SGE/GEO)"
+    hooks:
+      - "长尾疑问：『什么是 GEO？企业为什么要做 GEO？』"
+      - "主题词：『企业 GEO 实战指南：从 0 到 1』"
+      - "对比：『GEO 与 SEO 的区别（2026 版）』"
+    forbidden: ["最", "第一", "100%", "绝对", "国家级"]
+  removeBlocks: ["立即行动", "<品牌简介块(弱相关)>"]
+  keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读(内链)"]
+  body:
+    minChars: 1500
+    maxChars: 20000
+    firstPara: "前 2 段给出可直接引用的结论摘要（answer snippet），再展开"
+    style: "专业、结构化、结论前置；段落短、多用小标题；可被 AI 直接引用"
+    structure: ["结论摘要(可直接引用的答案)", "分点展开(配小标题)", "FAQ(问答对)", "相关阅读/内链(主题集群)", "数据来源/作者"]
+  internalLinks:
+    required: true
+    note: "每篇至少 2-3 个内链，构成 Hub & Spoke 主题集群（GEO/搜索主题互相链接）"
+  schema:
+    - "FAQPage"
+    - "HowTo"
+    - "Article"
+  cta:
+    required: false
+    note: "可放置『订阅/咨询』但保持克制；重点是内链与答案质量"
+  cover:
+    required: true
+    note: "特色图利于社交分享与点击"
+  tags:
+    max: 6
+    note: "SEO 标签，映射站点 taxonomy"
+  checklist:
+    - "标题 ≤60 含长尾关键词"
+    - "首段为可引用答案摘要"
+    - "含 FAQ 且带结构化数据"
+    - "至少 2 个内链(主题集群)"
+    - "小标题清晰、段落短"
+    - "无 forbidden 词"
+  notes: |
+    - 官方博客是『源』，先写好博客再分发到公众号/掘金
+    - 长尾词主题集群 + 内链闭环是 GEO/SEO 长期复利（你们自己的方法论，要拿自己站点证明）
+    - 加 FAQ/HowTo 结构化数据、定期提交 sitemap（工具已具备）
+    - 每篇平台内容同步一份到博客，沉淀搜索资产

@@ -946,6 +946,52 @@ const tools = [
     },
   },
   {
+    name: 'channel_style_get',
+    description:
+      'Return the FULL platform style / rewrite rules for ONE platform (wechat / juejin / blog / …). ' +
+      'This is the RULES half of the rewrite surface: the server only serves the rules, the harness/Skill does the actual rewriting. ' +
+      'Covers rewrite.strategy (source|title|body|both — what to change), title hooks + forbidden words, body structure + style, ' +
+      'internalLinks requirement, cta and the acceptance checklist. ALWAYS call this BEFORE rewriting an article for a platform ' +
+      'so the latest rules are used (never hardcode rules in the client). Multi-channel: pick by platform=.',
+    inputSchema: z.object({
+      platform: z.string().describe('platform key, e.g. wechat / juejin / blog'),
+    }),
+    async run(args) {
+      try {
+        const p = t.syndicate.registry.getPlatform(args.platform);
+        if (!p) return fail(new Error(`Unknown platform: ${args.platform}`));
+        return ok({ ok: true, platform: p.key, name: p.name, capabilities: p.capabilities, rewrite: p.rewrite });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_check',
+    description:
+      'Validate a title/body against a platform\'s style rules — the 校验 (validation) half. Deterministic, no content generation. ' +
+      'Returns errors (HARD: title length / forbidden words / body length / removeBlocks) and warnings ' +
+      '(SOFT: CTA presence / internal links / keepBlocks) plus the platform checklist and rewrite.strategy. ' +
+      'Run AFTER rewriting to confirm it passes before channel_publish. Platform-scoped (wechat / juejin / blog / any registry platform).',
+    inputSchema: z.object({
+      platform: z.string().describe('platform key, e.g. wechat / juejin / blog'),
+      title: z.string().optional().describe('article title to validate'),
+      body: z.string().optional().describe('article body (markdown) to validate'),
+    }),
+    async run(args) {
+      try {
+        const res = t.syndicate.styleCheck.check({
+          platform: args.platform,
+          title: args.title,
+          body: args.body,
+        });
+        return ok(res);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
     name: 'channel_publish',
     description:
       'Publish/export to one external platform. Mode A: pass slugs[] and the server reads the DB and runs the platform pipeline ' +
