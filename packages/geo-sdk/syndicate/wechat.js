@@ -186,6 +186,11 @@ async function uploadPermanentMaterial(accessToken, buffer) {
 }
 
 async function createDraft(accessToken, articles) {
+  if (process.env.GEO_DEBUG_DRAFT) {
+    try {
+      fs.writeFileSync('/tmp/wechat-createDraft-last.json', JSON.stringify({ time: new Date().toISOString(), articles }, null, 2));
+    } catch (_) { /* debug dump only */ }
+  }
   const body = JSON.stringify({ articles });
   const url = `https://api.weixin.qq.com/cgi-bin/draft/add?access_token=${accessToken}`;
   const res = await httpsRequest(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, body);
@@ -238,6 +243,37 @@ async function publishDraftByMediaId(mediaId, { dryRun = false, request = httpsR
  * etc.). These are functional anchors and reader-facing content of the Chinese
  * official account, and must stay as-is.
  */
+/**
+ * Inject WeChat draft-level flags for the official-account draft.
+ *
+ * Per WeChat official docs (cgi-bin/draft/add), the ONLY article-level flags the
+ * API can set are the comment controls:
+ *   - need_open_comment:    0 = comments off, 1 = comments on
+ *   - only_fans_can_comment: 0 = everyone can comment, 1 = fans only
+ *
+ * Flags that are NOT settable via API (silently dropped by WeChat, confirmed by
+ * the user's mp backend inspection) and MUST be toggled in the
+ * mp.weixin.qq.com editor instead:
+ *   - 原创 (original)   → no original_article_type field exists
+ *   - 赞赏 (reward)     → no reward_wording field exists
+ *   - 广告 (ads)        → auto-inserted for 流量主 accounts on send, no field
+ *   - 推荐 (recommend)  → algorithm-controlled, no field
+ *
+ * This function runs ONLY in wechat.js, so juejin/blog are never affected.
+ *
+ * @param {object} article base article object for draft/add
+ * @param {object} [fm]    article front matter; supports fm.fansOnlyComment
+ * @returns {object} article with comment flags applied (and NO unsupported fields)
+ */
+function applyDraftFlags(article, fm) {
+  const flags = fm || {}; // parseFrontMatter returns data:null when no front matter
+  const out = { ...article };
+  // Comments: open by default — the only real, API-controllable draft flag.
+  out.need_open_comment = 1;
+  out.only_fans_can_comment = flags.fansOnlyComment ? 1 : 0;
+  return out;
+}
+
 function cleanWechatHtml(html) {
   let out = String(html || '');
 
@@ -562,7 +598,7 @@ async function prepareArticle(conn, slug, siteDomain, overrides = {}) {
 
   const sourceUrl = `https://${siteDomain}/blog/article/${slug}/`;
 
-  return {
+  const articleBase = {
     title: title,
     author: 'Tengence',
     digest: digest,
@@ -570,9 +606,8 @@ async function prepareArticle(conn, slug, siteDomain, overrides = {}) {
     content_source_url: sourceUrl,
     thumb_media_id: thumbMediaId,
     show_cover_pic: 1,
-    need_open_comment: 0,
-    only_fans_can_comment: 0,
   };
+  return applyDraftFlags(articleBase, fm);
 }
 
 // ==================== Logging ====================
@@ -1147,6 +1182,7 @@ module.exports = {
   publishRewrittenToWechat,
   cleanWechatHtml,
   prepareArticle,
+  applyDraftFlags,
   listDrafts,
   listPublished,
   syncProgressFromWechat,
