@@ -1044,9 +1044,17 @@ const tools = [
         });
         // juejin: record each attempt into the channel_plan publish log (success + failure).
         // dryRun never touches the platform, so nothing is logged.
+        //
+        // The log is what the slug-based dedup reads, so its status must be truthful:
+        //   skipped  → already published locally; do NOT re-write (would churn updated_at)
+        //   draft-only creation → status "draft"  (NOT published)
+        //   article went live   → status "published"
+        //   attempt failed      → status "failed" (leaves the slug eligible for a retry)
         if (args.platform === 'juejin' && !args.dryRun) {
           const ch = t.plan.channel;
+          const wentLive = args.asDraft === false;
           for (const r of result.results || []) {
+            if (r.skipped || r.dryRun) continue;
             try {
               // leave an audit trail of the taxonomy actually used (channel_plan stores
               // no category/tag columns on purpose — article_plan stays the single source)
@@ -1054,13 +1062,14 @@ const tools = [
               const taxNote = tax
                 ? `tax: ${tax.category} [${tax.categoryOrigin}] / ${(tax.tags || []).join(', ')}`
                 : null;
+              const status = !r.ok ? 'failed' : wentLive ? 'published' : 'draft';
               await ch.recordPublish({
                 platform: 'juejin',
                 slug: r.slug,
                 title: r.title || (r.detail && r.detail.title),
-                status: r.ok ? 'published' : 'failed',
+                status,
                 draftId: r.draftId || (r.detail && r.detail.draftId),
-                notes: r.ok ? taxNote : null,
+                notes: status === 'published' ? taxNote : null,
                 error: r.ok ? null : r.error || (r.detail && (r.detail.err || r.detail.message)) || r.stage,
               });
             } catch (logErr) {

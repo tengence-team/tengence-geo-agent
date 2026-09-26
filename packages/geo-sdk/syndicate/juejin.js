@@ -17,7 +17,10 @@
  *   - 删: deleteDraft / deleteArticle  (IRREVERSIBLE — caller must confirm)
  *   - 定时: publishArticle accepts optional publish_time (server-side schedule;
  *           the MCP server itself never schedules — an external harness triggers it)
- *   - 幂等: isDuplicate(title) checks juejin drafts+published before publishing
+ *   - isDuplicate(title): title-based platform check. NOTE — the publish pipeline NO
+ *     LONGER calls it: its title match broke whenever a >40-char title got truncated,
+ *     and it only ever scanned page 1 (50 items). Idempotency is now enforced locally
+ *     by slug against channel_plan (see syndicate/channel.js). Kept as a utility.
  *   - 去硬编码: user_id / aid read from env, no longer hard-coded
  *   - 标签: best-effort tag_ids resolution from article target_keywords
  *

@@ -33,6 +33,7 @@ const yaml = require('js-yaml');
 const t = require('../index');
 const registry = require('./registry');
 const planRepo = require('../db/plan');
+const channelPlanRepo = require('../db/channel-plan');
 const { syncWechat, publishRewrittenToWechat } = require('./wechat');
 const juejin = require('./juejin');
 const juejinTaxonomy = require('./juejin-taxonomy');
@@ -173,6 +174,38 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             title = title.slice(0, TITLE_MAX);
             titleTrimmed = true;
           }
+
+          // ---- dedup layer 1: OUR publish log, keyed by SLUG (no external call) ----
+          // channel_plan is a publish log: one row per slug recording the real outcome
+          // (published / failed). A slug already recorded as published is NEVER
+          // re-published — even if its title changed or got trimmed since. This runs
+          // before anything is written, and it also covers dryRun (it is a local read).
+          let priorRow = null;
+          try {
+            priorRow = await channelPlanRepo.findBySlug(conn, appId, platform, slug);
+          } catch (e) {
+            // a read failure must not block publishing
+            priorRow = null;
+          }
+          if (priorRow && priorRow.status === 'published') {
+            appendLog(site.siteDir, {
+              action: 'skip-published',
+              platform,
+              slug,
+              ok: true,
+              detail: { title, reason: 'already published per channel_plan publish log', rowId: priorRow.id },
+            });
+            results.push({
+              slug,
+              ok: true,
+              skipped: true,
+              reason: 'already published (channel_plan)',
+              rowId: priorRow.id,
+              title,
+            });
+            continue;
+          }
+
           fs.writeFileSync(mdPath, `# ${title}\n\n${article.contentMd.trim()}\n`, 'utf8');
 
           const tagKws = (article.targetKeywords || '')
@@ -212,16 +245,6 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             continue;
           }
 
-          // idempotency: skip if this title is already on juejin (draft or published)
-          if (process.env.JUEJIN_COOKIE && process.env.JUEJIN_UID) {
-            const dup = await juejin.isDuplicate(title);
-            if (dup) {
-              appendLog(site.siteDir, { action: 'skip-duplicate', platform, slug, ok: true, detail: { title } });
-              results.push({ slug, ok: true, skipped: true, reason: 'already on juejin', title });
-              continue;
-            }
-          }
-
           const res = await juejin.publishJuejin({
             mdFile: mdPath,
             title,
@@ -241,10 +264,15 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             failed += 1;
             results.push({ slug, ok: false, stage: res.stage, detail: res, title });
           } else {
-            // expose articleId so the caller can record it in channel_plan.draft_ids
+            // expose articleId so the caller can record it in channel_plan.draft_ids.
+            // `published` distinguishes a LIVE article from a mere draft — the publish
+            // log must only ever mark "published" when it actually went out, otherwise
+            // the slug-based dedup below would permanently skip an article that is
+            // still sitting in the draft box.
             results.push({
               slug,
               ok: true,
+              published: !asDraft,
               draftId: res.draftId,
               articleId: res.articleId,
               title,
