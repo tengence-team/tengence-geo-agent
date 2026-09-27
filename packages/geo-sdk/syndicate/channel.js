@@ -37,6 +37,7 @@ const { syncWechat, publishRewrittenToWechat } = require('./wechat');
 const juejin = require('./juejin');
 const juejinTaxonomy = require('./juejin-taxonomy');
 const csdn = require('./csdn');
+const aliyun = require('./aliyun');
 const { publishDevto } = require('./devto');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
@@ -366,6 +367,50 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
               tags: res.tags,
             });
           }
+        } else if (platform === 'aliyun') {
+          // Reuses the SAME upstream dedup as every other platform (filterUnpublished,
+          // run once at the top of publishFromSlugs) — no platform-local re-check.
+          // ⚠️ Aliyun publishing is human-gated: the editor always shows an Aliyun
+          // Captcha before publishing, so a token-less server call is refused with
+          // 50002 (see syndicate/aliyun.js header). The pipeline can therefore only
+          // reach the DRAFT box — `published` stays false and the slug remains
+          // eligible in the publish log until a human publishes it, which is exactly
+          // the WeChat channel's "draft box + human send" contract.
+          fs.writeFileSync(mdPath, `# ${article.title}\n\n${article.contentMd.trim()}\n`, 'utf8');
+
+          if (dryRun) {
+            appendLog(site.siteDir, {
+              action: 'dry-run', platform, slug, ok: true,
+              detail: { title: article.title },
+            });
+            results.push({ slug, ok: true, dryRun: true, title: article.title });
+            continue;
+          }
+
+          const res = await aliyun.publishAliyun({
+            mdFile: mdPath,
+            title: article.title,
+            publish: false, // live publish is human-gated on this platform
+          });
+          appendLog(site.siteDir, {
+            action: 'draft', platform, slug, ok: !res.failed, detail: res,
+          });
+          if (res.failed) {
+            failed += 1;
+            results.push({ slug, ok: false, stage: res.stage, detail: res, title: article.title });
+          } else {
+            // identical shape to the csdn branch so channel_plan logging is uniform
+            results.push({
+              slug,
+              ok: true,
+              published: false,
+              draftId: res.draftId,
+              articleId: null,
+              url: res.url,
+              title: article.title,
+              publishGated: true,
+            });
+          }
         } else {
           throw new Error(`channel mode A not implemented for platform "${platform}"`);
         }
@@ -607,7 +652,53 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
     }
   }
 
-  const pushResults = [...juejinResults, ...csdnResults];
+  // ---- aliyun: Mode B ALSO pushes the rewritten draft through the real pipeline ----
+  // Same rationale as csdn: without this a platform-adapted draft would only ever land
+  // on disk. Aliyun takes Markdown directly (no HTML conversion) and has no free-text
+  // tags. Publish stays human-gated, so this always lands in the draft box.
+  const aliyunResults = [];
+  if (platform === 'aliyun' && !dryRun) {
+    for (const article of activeArticles) {
+      if (!article.slug || !article.title || !article.contentMd) continue;
+      try {
+        const res = await aliyun.publishAliyun({
+          contentMd: `# ${article.title}\n\n${article.contentMd.trim()}\n`,
+          title: article.title,
+          publish: false, // live publish is human-gated on this platform
+        });
+
+        appendLog(site.siteDir, {
+          action: 'draft',
+          platform,
+          slug: article.slug,
+          ok: !res.failed,
+          detail: { ...res, rewrite: article.rewrite || 'harness' },
+        });
+
+        if (res.failed) {
+          failed += 1;
+          aliyunResults.push({ slug: article.slug, ok: false, stage: res.stage, detail: res, title: article.title });
+        } else {
+          aliyunResults.push({
+            slug: article.slug,
+            ok: true,
+            published: false,
+            draftId: res.draftId,
+            articleId: null,
+            url: res.url,
+            title: article.title,
+            publishGated: true,
+          });
+        }
+      } catch (e) {
+        failed += 1;
+        aliyunResults.push({ slug: article.slug, ok: false, error: e.message, title: article.title });
+        appendLog(site.siteDir, { action: 'error', platform, slug: article.slug, ok: false, detail: { error: e.message } });
+      }
+    }
+  }
+
+  const pushResults = [...juejinResults, ...csdnResults, ...aliyunResults];
 
   return {
     ok: failed === 0,

@@ -33,7 +33,10 @@ const t = require('@tengence/geo-sdk');
  * INDEPENDENT publishing calendar and drives the shared slug-based dedup.
  * wechat is excluded: it keeps a real per-issue calendar imported from its plan doc.
  */
-const PUBLISH_LOG_PLATFORMS = ['juejin', 'csdn'];
+// 'aliyun' is included even though its publish is human-gated: the log is what the
+// slug-based dedup reads, so a draft-only run must still be recorded as "draft"
+// (never "published") — otherwise every run would create another draft.
+const PUBLISH_LOG_PLATFORMS = ['juejin', 'csdn', 'aliyun'];
 
 /**
  * Resolve the user workspace for a call.
@@ -1082,7 +1085,9 @@ const tools = [
                 : Array.isArray(r.tags) && r.tags.length
                   ? `tags: ${r.tags.join(', ')}`
                   : null;
-              const status = !r.ok ? 'failed' : wentLive ? 'published' : 'draft';
+              // publishGated (aliyun): the platform refused/never attempted a live
+              // publish, so even with asDraft=false the truthful status is "draft".
+              const status = !r.ok ? 'failed' : wentLive && !r.publishGated ? 'published' : 'draft';
               await ch.recordPublish({
                 platform: args.platform,
                 slug: r.slug,

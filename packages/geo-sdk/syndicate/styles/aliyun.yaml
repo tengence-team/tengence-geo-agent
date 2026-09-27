@@ -1,0 +1,139 @@
+platform: aliyun
+name: 阿里云开发者社区
+api: cookie
+status: ready
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 100
+  maxBodyLen: 20000
+  maxAbstractLen: 300
+  tags: false
+  cover: true
+  draft: true
+  schedule: false
+  list: true
+  delete: true
+  # ⚠️ 发布（草稿→公开）需要人工在编辑器点「发布文章」：
+  #    编辑器页 GLOBAL_CONFIG.skipSlider 为 falsy，发布按钮前必过阿里云人机验证（Captcha），
+  #    服务端缺少 token 时 publishArticle 一律返回 50002「内部错误」（与控制组短文对照验证：
+  #    极简测试文章同样 50002，证明与内容无关）。
+  #    因此本渠道的自动化边界 = 自动建草稿 + 人工发布，与微信「只到草稿箱、人工群发」同构。
+  publishGated: true
+  publishGatedCode: "50002"
+rewrite:
+  # 改写策略：阿里云主要管正文（低质/推广会被判违规）
+  # source = 仅做轻量优化(博客源)；title = 主要改标题；body = 主要改正文；both = 二者都改
+  strategy: body
+  title:
+    max: 100
+    style: "技术向陈述式，含核心关键词；建议『主题：方法/结论』结构，避免夸张与标题党"
+    forbidden: ["最", "第一", "震惊", "速速", "史上", "必看", "曝光", "免费领"]
+  # 字面匹配（styleCheck 用 substring 判定），必须写具体块名/文案，不要写抽象占位
+  removeBlocks:
+    - "关于通智云"
+    - "关于我们"
+    - "立即行动"
+    - "免费试用"
+    - "免费预约"
+    - "预约专家咨询"
+    - "了解通智搜索"
+    - "了解通智 GEO"
+  # 正文禁用的营销短语（命中即 errors）
+  # 来源：阿里云《发表内容规则》——禁止「软文推广、单纯向站外引流」
+  forbiddenPhrases:
+    - "免费试用"
+    - "免费预约"
+    - "预约咨询"
+    - "预约诊断"
+    - "立即咨询"
+    - "联系我们"
+    - "扫码"
+    - "加群"
+    - "添加微信"
+    - "关注公众号"
+    - "商务合作"
+    - "点击购买"
+  keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
+  # 站外品牌链接控制
+  # 原则：区分「编辑性延伸阅读」与「营销转化导流」——
+  #   前者（指向本站已发布文章正文）允许，后者（首页/产品页/定价/注册/控制台/CTA 落地页）一律禁止。
+  #   阿里云规范要求「引用需链接到原文」，故编辑性引用不仅允许、且被鼓励。
+  externalLinks:
+    # -1 = 不限制条数（『相关阅读』与引用皆不限）；≥0 则为上限
+    maxBrandLinks: -1
+    brandDomainPatterns: ["tengence.com"]
+    allowCitations: true
+    brandLinkAllowedPatterns:
+      - "tengence.com/blog/article/"
+    brandLinkDeniedPatterns:
+      - "console."
+      - "app."
+      - "/pricing"
+      - "/price"
+      - "/signup"
+      - "/register"
+      - "/login"
+      - "/demo"
+      - "/contact"
+      - "/trial"
+      - "/product"
+      - "/solution"
+      - "/about"
+    brandLinkTailOnly: true
+    note: "本站文章链接（/blog/article/）条数不限，建议集中在文末『相关阅读』；首页/产品/定价/注册/控制台等转化链接一律删除；第三方权威引用保留并标注来源"
+  body:
+    minChars: 800
+    maxChars: 20000
+    firstPara: "背景 + 问题 + 本文结构，技术读者可快速判断是否值得读"
+    style: "技术严谨、保留代码/表格/数据；步骤清晰、可复现；避免过度口语化与营销腔"
+    structure: ["背景与问题", "方案/步骤", "关键要点", "FAQ", "参考来源"]
+  cover:
+    required: false
+    note: "文章图片建议 200*120；可用 image/getImageUploadUrl 取凭证后 PUT 上传（非必填，不传则无封面）"
+  tags:
+    max: 0
+    note: "阿里云无自由文本标签；仅有『云产品标签』(productTags)，由发布表单选择，正文改写不涉及"
+  abstract:
+    max: 300
+    required: true
+    note: "编辑器校验：摘要超过 300 字会提示『请修改摘要，字数控制在300字以内』"
+  checklist:
+    - "标题 ≤100 字且技术向，无 forbidden 词"
+    - "摘要 ≤300 字"
+    - "首段交代背景与解决的问题"
+    - "保留代码块/表格/数据来源"
+    - "删除品牌营销块与 CTA（removeBlocks / forbiddenPhrases 全清空）"
+    - "本站链接仅限 /blog/article/ 文章页；相关阅读与第三方引用条数不限，转化链接为 0"
+    - "内容需充分人工化，避免『机器人生成』痕迹（低质，会被严肃处理）"
+  # 审核红线：来自阿里云《发表内容规则》（社区规范 / 博文规范）
+  compliance:
+    hardRules:
+      - id: "promo-drainage"
+        clause: "软文推广、单纯向站外引流"
+        text: "文章含营销推广、站外引流（转化类外链、CTA 引导）违反《发表内容规则》"
+        penalty: "判定为低质/违规内容，严肃处理"
+        do: "删除品牌营销块与立即行动 CTA；移除 console./contact/product 等转化外链；仅保留 /blog/article/ 文章页与第三方权威引用"
+      - id: "robot-generated"
+        clause: "机器人生成内容"
+        text: "机器批量生成、缺乏人工加工的内容被明确列为低质内容"
+        penalty: "判定为低质内容，严肃处理"
+        do: "稿件需充分人工化改写：补真实案例/数据/工程细节，避免模板化句式与空洞排比"
+      - id: "realname"
+        clause: "发文前提"
+        text: "需在阿里云官网完成实名认证；未认证时发布接口返回 40002（前端提示去实名）"
+        penalty: "无法发布（40002）"
+        do: "先在 account.console.aliyun.com 完成实名认证；当前账号实测非此原因（返回 50002）"
+    citationRule: "规范要求『引用需链接到原文』——canonical 回链被允许且鼓励，与 GEO 回链硬规则不冲突"
+  notes: |
+    - api: cookie —— 非官方 OpenAPI。走的是社区编辑器自身的 /developer/api/* 接口。
+    - 鉴权三件套：Cookie + `?p_csrf=` + 请求头 `X-XSRF-TOKEN`；另需 Origin/Referer。
+      c_csrf 由服务端 Set-Cookie 下发（任意页面请求即可换取），无需人工粘贴。
+    - 正文直接吃 Markdown（草稿回读 format=2），无需 md→HTML 转换，与 CSDN 不同。
+    - putDraft 载荷只接受 {title, content, abstractContent, contentRender, productTags, freeTierVOS}
+      （+aid 表示更新）；带 format / ext / coverUrl / isNoComment 会返回 40000「请求参数有误」。
+    - publishArticle 载荷已破解：{title, abstractContent, content, contentRender, type, draftId}，
+      type 必填且必须是字符串（'1'原创/'2'翻译/'3'转载），groupCode 走 URL 参数。
+      但发布被风控拦截（50002），需人工在编辑器发布。
+    - 发布后 articleAuditSwitch=false → 直接上线，无审核等待期。
+    - 编辑器路由：`/article/new` 无 edit 参数时会 302 到 `/rule` 规则页；带 `?edit=<aid>` 才 200。
