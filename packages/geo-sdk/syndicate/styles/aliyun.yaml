@@ -21,6 +21,27 @@ capabilities:
   #    因此本渠道的自动化边界 = 自动建草稿 + 人工发布，与微信「只到草稿箱、人工群发」同构。
   publishGated: true
   publishGatedCode: "50002"
+
+# ── 主图（文章图片）────────────────────────────────────────────
+# 已实测（2026-09-27）：平台支持文章主图，但必须落在自家 CDN（ucc.alicdn.com），
+# 外链图片不会被保存 —— 与 CSDN「封面须转存」同一条规则。
+images:
+  supported: true
+  # 后端只校验**扩展名**，webp 会被拒：30001「只支持后缀为jpg、jpeg、png、g...」
+  supportedExtensions: [jpg, jpeg, png, gif]
+  # 编辑器上传按钮文案：「图片建议尺寸为200*120」（列表缩略图）；实测 1600x900 亦可上传
+  suggestedSize: "200*120"
+  # OSS 直传两步：getImageUploadUrl 取签名 → PUT 上传 → 取 imageUrl
+  uploadFlow:
+    - "POST /image/getImageUploadUrl  {imageName, imageSize}"
+    - "→ {imageUrl, uploadUrl, header:{x-oss-meta-author, content-type}}"
+    - "PUT <uploadUrl> 携带上述两个 header 发送原始字节 → 200"
+  # 存储字段：草稿用 coverUrl（实测可持久化，draftDetail 可回读）；发布用 firstImg
+  coverFieldDraft: "coverUrl"
+  coverFieldPublish: "firstImg"
+  # 若源图为 webp，需先转换（例：sips -s format jpeg in.webp --out out.jpg）
+  convertBeforeUpload: true
+
 rewrite:
   # 改写策略：阿里云主要管正文（低质/推广会被判违规）
   # source = 仅做轻量优化(博客源)；title = 主要改标题；body = 主要改正文；both = 二者都改

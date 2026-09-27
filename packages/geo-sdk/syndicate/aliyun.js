@@ -52,6 +52,20 @@
  *
  * Unlike CSDN, Aliyun accepts Markdown directly as the article body (the draft we
  * created comes back with `format: 2`), so there is no md→HTML step here.
+ *
+ * 🖼️ MAIN IMAGE (cover) — verified 2026-09-27
+ *   The platform does support an article main image, and it must live on Aliyun's own
+ *   CDN (`ucc.alicdn.com`) — same rule as CSDN. Two-step OSS direct transfer:
+ *     1. POST `/image/getImageUploadUrl` `{imageName, imageSize}`
+ *        → `{imageUrl, uploadUrl, header:{x-oss-meta-author, content-type}}`
+ *     2. PUT the raw bytes to `uploadUrl` with those two headers → 200
+ *   Then store `imageUrl` as:
+ *     - `coverUrl` on `articleDraft/putDraft`   (persisted; reads back on draftDetail)
+ *     - `firstImg` on `article/publishArticle`  (what the editor actually sends)
+ *   ⚠️ The backend validates the EXTENSION ONLY and refuses webp:
+ *      30001 「只支持后缀为jpg、jpeg、png、g...」. Convert before calling
+ *      (`sips -s format jpeg in.webp --out out.jpg`). The upload button's own hint is
+ *      「图片建议尺寸为200*120」 (list thumbnail), though 1600x900 uploads fine.
  */
 const fs = require('fs');
 const path = require('path');
@@ -77,6 +91,19 @@ const ALIYUN_ABSTRACT_MAX = 300;
 
 /** 文章类型（发布表单必填，required: true） */
 const ARTICLE_TYPE = { original: '1', translation: '2', reprint: '3' };
+
+/**
+ * Image upload is OSS direct-transfer and the backend validates by FILE EXTENSION
+ * only — a .webp name is refused with 30001 「只支持后缀为jpg、jpeg、png、g...」.
+ * Convert (e.g. `sips -s format jpeg`) before handing an image to this module.
+ */
+const IMAGE_EXT_OK = /^\.(jpe?g|png|gif)$/i;
+
+/** Host that serves images already stored on Aliyun — those need no re-upload. */
+const IMAGE_CDN_HOST = 'ucc.alicdn.com';
+
+/** UI hint on the upload button: 「图片建议尺寸为200*120」. */
+const IMAGE_HINT_SIZE = '200*120';
 
 /**
  * Returned by publishArticle when the platform's risk control blocks the call.
@@ -262,16 +289,100 @@ async function getArticle(articleId) {
 }
 
 // ---------------------------------------------------------------------------
+// Images
+// ---------------------------------------------------------------------------
+
+/** GET a binary URL (follows redirects). Used to pull a remote cover before upload. */
+function downloadBinary(url) {
+  return new Promise((resolve, reject) => {
+    https
+      .get(url, { headers: { 'user-agent': UA } }, (res) => {
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          downloadBinary(res.headers.location).then(resolve, reject);
+          return;
+        }
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () =>
+          resolve({ status: res.statusCode, buffer: Buffer.concat(chunks), type: res.headers['content-type'] || '' })
+        );
+      })
+      .on('error', reject);
+  });
+}
+
+/** Bare PUT of bytes (OSS signed URL). No Aliyun Origin/Referer — that would break CORS. */
+function putBinary(url, buffer, headers) {
+  return new Promise((resolve, reject) => {
+    const req = https.request(url, { method: 'PUT', headers: { ...headers, 'content-length': buffer.length } }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8').slice(0, 300) }));
+    });
+    req.on('error', reject);
+    req.write(buffer);
+    req.end();
+  });
+}
+
+/**
+ * Upload an image to Aliyun's OSS-backed image store.
+ *
+ * Two-step: `image/getImageUploadUrl` returns a signed OSS PUT url plus the headers
+ * OSS expects; the bytes then go straight to OSS. The returned `imageUrl` is the
+ * permanent CDN address to store on the article.
+ *
+ * @param {object} opts
+ * @param {string} [opts.filePath] local file (its name decides the extension check)
+ * @param {Buffer} [opts.buffer]   or raw bytes
+ * @param {string} [opts.imageName] file name to send (required when passing `buffer`)
+ * @returns {Promise<string>} the CDN image URL
+ */
+async function uploadImage({ filePath = null, buffer = null, imageName = null } = {}) {
+  const name = imageName || (filePath ? path.basename(filePath) : '');
+  if (!name) throw new Error('uploadImage requires filePath or imageName');
+  if (!IMAGE_EXT_OK.test(path.extname(name) || '')) {
+    throw new Error(
+      `ALIYUN_IMAGE_FORMAT_UNSUPPORTED: "${name}" — only jpg/jpeg/png/gif are accepted ` +
+        `(the backend validates the extension, webp is refused with 30001). Convert first, e.g. ` +
+        `\`sips -s format jpeg in.webp --out out.jpg\`.`
+    );
+  }
+  const bytes = buffer != null ? buffer : fs.readFileSync(filePath);
+  if (!bytes.length) throw new Error('uploadImage: empty image');
+
+  const u = unwrap(
+    await request('/image/getImageUploadUrl', { method: 'POST', body: { imageName: name, imageSize: bytes.length } })
+  );
+  if (!u.ok) throw new Error(`Aliyun getImageUploadUrl failed: ${u.code} ${u.msg}`);
+  const { imageUrl, uploadUrl, header } = u.data || {};
+  if (!imageUrl || !uploadUrl) throw new Error('Aliyun getImageUploadUrl: missing imageUrl/uploadUrl');
+
+  // The signed url comes back protocol-relative or http; OSS speaks https.
+  const target = String(uploadUrl).replace(/^https?:/, 'https:');
+  const put = await putBinary(target, bytes, {
+    'x-oss-meta-author': header['x-oss-meta-author'],
+    'content-type': header['content-type'],
+  });
+  if (put.status >= 300) throw new Error(`Aliyun OSS upload failed: HTTP ${put.status} ${put.body}`);
+  return imageUrl;
+}
+
+// ---------------------------------------------------------------------------
 // Write
 // ---------------------------------------------------------------------------
 
 /**
  * Create or update a draft.
- * NOTE: only these fields survive validation — adding `format` / `ext` / `coverUrl` /
- * `isNoComment` makes the endpoint answer 40000 「请求参数有误」.
+ *
+ * `coverUrl` IS accepted and persisted (verified: it reads back on draftDetail) even
+ * though the editor never sends it. Adding `format` / `ext` / `isNoComment` however
+ * makes the endpoint answer 40000 「请求参数有误」 — don't.
+ *
+ * @param {string} [opts.coverUrl] CDN image URL for the article's main image
  * @returns {Promise<object>} the raw envelope data (contains `aid`)
  */
-async function putDraft({ title, content, abstractContent = '', aid = null } = {}) {
+async function putDraft({ title, content, abstractContent = '', aid = null, coverUrl = null } = {}) {
   const body = {
     title,
     content,
@@ -281,6 +392,7 @@ async function putDraft({ title, content, abstractContent = '', aid = null } = {
     freeTierVOS: [],
   };
   if (aid) body.aid = aid;
+  if (coverUrl) body.coverUrl = coverUrl;
   const res = await request('/articleDraft/putDraft', { method: 'POST', body });
   const u = unwrap(res);
   if (!u.ok) throw new Error(`Aliyun putDraft failed: ${u.code} ${u.msg}`);
@@ -295,7 +407,15 @@ async function putDraft({ title, content, abstractContent = '', aid = null } = {
  * token-less server call answers 50002 内部错误. Callers should treat a non-ok result
  * with code 50002 as "human action required" and keep the draft.
  */
-async function publishArticle({ title, content, abstractContent = '', draftId = null, articleId = null, type = null } = {}) {
+async function publishArticle({
+  title,
+  content,
+  abstractContent = '',
+  draftId = null,
+  articleId = null,
+  type = null,
+  firstImg = null,
+} = {}) {
   const { type: envType } = creds();
   const body = {
     title,
@@ -306,6 +426,8 @@ async function publishArticle({ title, content, abstractContent = '', draftId = 
   };
   if (draftId) body.draftId = draftId;
   if (articleId) body.articleId = articleId;
+  // The editor sends `firstImg: <imgURL>|null` — this is the article's main image.
+  if (firstImg) body.firstImg = firstImg;
   const res = await request('/article/publishArticle?groupCode=notPublishSpecialGroup', {
     method: 'POST',
     body,
@@ -351,6 +473,10 @@ async function deleteArticle(articleId) {
  * @param {boolean} [opts.dryRun]     validate without calling the API
  * @param {string} [opts.abstract]    override abstract
  * @param {string|null} [opts.draftId] update an existing draft
+ * @param {string} [opts.coverUrl]    main image. Accepts an Aliyun CDN url (used as
+ *   is), or any remote http(s) url — which is downloaded and re-uploaded, because
+ *   the platform stores images on its own OSS.
+ * @param {string} [opts.coverImagePath] local image file, uploaded then used as cover
  */
 async function publishAliyun({
   mdFile = null,
@@ -360,6 +486,8 @@ async function publishAliyun({
   dryRun = false,
   abstract = '',
   draftId = null,
+  coverUrl = null,
+  coverImagePath = null,
 } = {}) {
   const { cookie } = creds();
   if (!cookie) {
@@ -394,12 +522,38 @@ async function publishAliyun({
     return { dryRun: true, title, titleTrimmed, skipped: false };
   }
 
+  // ---- main image (cover) -------------------------------------------------
+  // The platform serves images from its own OSS/CDN, so any foreign url has to be
+  // downloaded and re-uploaded. An image already on the CDN is reused as is.
+  // Failure here is non-fatal: the article still lands in the draft box, just with
+  // no main image, and the caller sees the warning.
+  let resolvedCover = null;
+  try {
+    if (coverImagePath) {
+      resolvedCover = await uploadImage({ filePath: coverImagePath });
+      console.log(`🖼  Cover uploaded: ${resolvedCover}`);
+    } else if (coverUrl) {
+      if (String(coverUrl).includes(IMAGE_CDN_HOST)) {
+        resolvedCover = coverUrl;
+      } else {
+        const dl = await downloadBinary(coverUrl);
+        if (dl.status !== 200) throw new Error(`download HTTP ${dl.status}`);
+        const imageName = path.basename(new URL(coverUrl).pathname) || 'cover.jpg';
+        resolvedCover = await uploadImage({ buffer: dl.buffer, imageName });
+      }
+      console.log(`🖼  Cover set: ${resolvedCover}`);
+    }
+  } catch (e) {
+    console.log(`⚠️  Cover image skipped (article is still saved): ${e.message}`);
+  }
+
   console.log(`📤 ${draftId ? 'Updating' : 'Creating'} draft on Aliyun…`);
   const data = await putDraft({
     title,
     content: bodyMd,
     abstractContent: resolvedAbstract,
     aid: draftId,
+    coverUrl: resolvedCover,
   });
   const aid = String(data.aid || draftId || '');
   console.log(`✅ Aliyun draft saved! Draft ID: ${aid}`);
@@ -413,6 +567,7 @@ async function publishAliyun({
     title,
     titleTrimmed,
     abstract: resolvedAbstract,
+    coverUrl: resolvedCover,
   };
 
   if (!publish) return result;
@@ -425,6 +580,7 @@ async function publishAliyun({
     content: bodyMd,
     abstractContent: resolvedAbstract,
     draftId: aid,
+    firstImg: resolvedCover,
   });
   if (!pub.ok) {
     const gated = pub.code === PUBLISH_GATED_CODE;
@@ -460,6 +616,9 @@ module.exports = {
   listDrafts,
   draftDetail,
   getArticle,
+  // images
+  uploadImage,
+  downloadBinary,
   // write
   putDraft,
   publishArticle,
@@ -472,4 +631,6 @@ module.exports = {
   ALIYUN_ABSTRACT_MAX,
   ARTICLE_TYPE,
   PUBLISH_GATED_CODE,
+  IMAGE_CDN_HOST,
+  IMAGE_HINT_SIZE,
 };
