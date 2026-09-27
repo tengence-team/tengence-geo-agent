@@ -14,8 +14,10 @@
  *   node scripts/release.js 0.2.0 --dry-run  # show the plan, write nothing
  *   node scripts/release.js 0.2.0 --tag      # also create a local git tag v0.2.0
  *
- * NOTE: this script never pushes to a remote and never runs `npm publish`. Run those
- * yourself after reviewing the diff (and after `npm ci` + `npm test` are green).
+ * NOTE: this script never pushes to a remote and never runs `npm publish`. With `--tag`
+ * it will also create a release commit for the version-bump files (pass `--no-commit`
+ * to keep the manual flow). Run publish yourself after reviewing the diff (and after
+ * `npm ci` + `npm test` are green).
  * ============================================================================
  */
 
@@ -36,11 +38,12 @@ const PACKAGES = [
 const INTERNAL = new Set(PACKAGES.map((p) => p.name));
 
 function parseArgs(argv) {
-  const out = { version: null, bump: null, dryRun: false, tag: false };
+  const out = { version: null, bump: null, dryRun: false, tag: false, noCommit: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--dry-run') out.dryRun = true;
     else if (a === '--tag') out.tag = true;
+    else if (a === '--no-commit') out.noCommit = true;
     else if (a === '--bump') out.bump = argv[++i];
     else if (/^\d+\.\d+\.\d+/.test(a)) out.version = a;
     else throw new Error(`unknown argument: ${a}`);
@@ -104,8 +107,30 @@ function main() {
   writeJson('server.json', srv, args.dryRun);
 
   // 3) Optional local git tag (never push).
+  //    IMPORTANT: a tag created BEFORE the version bump is committed would point at the
+  //    pre-bump HEAD and break the CI publish (seen on v0.1.1). So we commit the
+  //    version-bump files first, then tag — guaranteeing the tag lands on a commit that
+  //    actually contains version ${next}. Use --no-commit to keep the old manual flow.
   if (args.tag && !args.dryRun) {
     const tag = `v${next}`;
+    const touched = [...PACKAGES.map((p) => p.file), 'server.json'];
+    if (!args.noCommit) {
+      execFileSync('git', ['add', ...touched], { cwd: ROOT });
+      let hasStagedChanges = false;
+      try {
+        execFileSync('git', ['diff', '--cached', '--quiet', '--', ...touched], { cwd: ROOT, stdio: 'ignore' });
+      } catch (e) {
+        hasStagedChanges = true; // exit 1 = there are staged changes to commit
+      }
+      if (hasStagedChanges) {
+        execFileSync('git', ['commit', '-m', `release: ${tag}`], { cwd: ROOT, stdio: 'inherit' });
+        console.log(`  committed version bump as "release: ${tag}"`);
+      } else {
+        console.log('  (no staged version changes to commit — tagging current HEAD)');
+      }
+    } else {
+      console.log('  (--no-commit: skipping the automatic release commit)');
+    }
     execFileSync('git', ['tag', tag], { cwd: ROOT, stdio: 'inherit' });
     console.log(`  created local tag ${tag} (push with: git push origin ${tag})`);
   } else if (args.tag) {
