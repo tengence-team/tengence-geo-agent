@@ -227,7 +227,10 @@ function mdToCsdnHtml(md) {
  */
 function stripLeadingTitleHeading(md) {
   if (!md) return md;
-  return md.replace(/^\s*#\s+[^\n]*(?:\r?\n)+/, '');
+  // Drop ONE OR MORE leading ATX H1 lines. Some export pipelines duplicate the
+  // title as two consecutive `# Title` lines; CSDN renders the title in its own
+  // slot, so none of them belong in the body.
+  return md.replace(/^(?:#\s+[^\n]*\r?\n)+/, '');
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +257,8 @@ async function saveArticle({
   categories = '',
   type = 'original',
   readType = 'public',
+  coverImages = [],
+  coverType = 1,
 } = {}) {
   const { source, creationStatement } = creds();
   const isNew = articleId ? 0 : 1;
@@ -275,8 +280,8 @@ async function saveArticle({
     not_auto_saved: 1,
     authorized_status: false,
     check_original: false,
-    cover_type: 1,
-    cover_images: [],
+    cover_type: coverType,
+    cover_images: Array.isArray(coverImages) ? coverImages : [],
     vote_id: 0,
     resource_id: '',
     scheduled_time: 0,
@@ -435,6 +440,8 @@ async function publishCsdn({
   articleId = null,
   description = '',
   categories = '',
+  coverImages = [],
+  coverType = 1,
 } = {}) {
   const { cookie, defaultTags } = creds();
   if (!cookie) {
@@ -497,6 +504,8 @@ async function publishCsdn({
     publish,
     articleId,
     categories,
+    coverImages,
+    coverType,
   });
   const u = unwrap(resp);
   if (!u.ok) {
