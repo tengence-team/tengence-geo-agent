@@ -1,6 +1,6 @@
 {
   "name": "@tengence/geo-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "GEO content engine MCP server: 56 tools across content, publishing, search-inclusion and AI-monitoring domains; stdio + Streamable HTTP transports, Bearer-token auth (the MCP bridge layer of @tengence/geo-sdk)",
   "bin": {
     "tengence-geo-mcp": "bin/geo-mcp.js",
@@ -13,7 +13,7 @@
     "README.md"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "keywords": [
     "geo",
@@ -38,8 +38,8 @@
     "access": "public"
   },
   "dependencies": {
-    "@tengence/geo-sdk": "0.1.0",
-    "@tengence/geo-cli": "0.1.0",
+    "@tengence/geo-sdk": "0.1.1",
+    "@tengence/geo-cli": "0.1.1",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "zod": "^3.25 || ^4.0"
   }

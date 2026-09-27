@@ -1,6 +1,6 @@
 {
   "name": "@tengence/geo-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "GEO content engine CLI: ingest, gates, publishing, inclusion submission, monitoring, image acquisition, planning (the CLI entry layer of @tengence/geo-sdk)",
   "bin": {
     "tengence-geo-article-export": "bin/article-export.js",
@@ -30,7 +30,7 @@
     "bin/"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "keywords": [
     "geo",
@@ -54,6 +54,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@tengence/geo-sdk": "0.1.0"
+    "@tengence/geo-sdk": "0.1.1"
   }
 }

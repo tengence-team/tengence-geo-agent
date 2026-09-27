@@ -6,12 +6,20 @@ GEO 内容引擎的 MCP 服务：**56 个工具**，覆盖内容生产、发布�
 
 > 命名空间：`io.github.tengence-team/geo` · 官方 Registry：`registry.modelcontextprotocol.io`
 
+## 环境要求
+
+- **Node.js ≥ 22.13.0**（内置 `node:sqlite` 驱动，零原生编译；推荐 24 LTS）。数据库默认走内置驱动，安装体积小、跨平台无编译风险。
+- 可选增强（默认不下载，按需手动安装）：
+  - `npm i better-sqlite3` —— 旧版 Node 回退驱动，或需要更完整 SQLite API（事务封装等）时的选择；
+  - `npm i sharp` —— 启用图片压缩/缩放等处理能力（未安装时相关工具会给出明确提示）。
+
 ## 安装与运行
 
 ### 方式一：npx 直装（推荐）
 ```bash
-npx -y @tengence/geo-mcp              # stdio 模式，无需本地仓库
+npx -y -p @tengence/geo-mcp tengence-geo-mcp        # stdio 模式，无需本地仓库
 ```
+> 本包含两个入口（stdio 与 HTTP），因此需用 `-p` 指定包名 + 完整 bin 名；HTTP 版为 `tengence-geo-mcp-http`。
 
 ### 方式二：作为客户端 MCP server 配置
 ```jsonc
@@ -19,7 +27,7 @@ npx -y @tengence/geo-mcp              # stdio 模式，无需本地仓库
   "mcpServers": {
     "tengence-geo": {
       "command": "npx",
-      "args": ["-y", "@tengence/geo-mcp"]
+      "args": ["-y", "-p", "@tengence/geo-mcp", "tengence-geo-mcp"]
       // 可选环境变量：
       // "env": { "SITES_ROOT": "~/tengence/sites", "DB_DRIVER": "sqlite" }
     }

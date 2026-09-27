@@ -1,6 +1,6 @@
 {
   "name": "@tengence/geo-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Tengence GEO Agent: pluggable run-loop launcher for DeepSeek Harness / opencode / Pi — set DEEPSEEK_API_KEY and it runs (MCP bridge to @tengence/geo-mcp)",
   "bin": {
     "tengence-geo-agent": "launcher.js"
@@ -10,7 +10,7 @@
     "presets/"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "keywords": [
     "geo",
@@ -34,6 +34,6 @@
     "access": "public"
   },
   "dependencies": {
-    "@tengence/geo-mcp": "0.1.0"
+    "@tengence/geo-mcp": "0.1.1"
   }
 }
