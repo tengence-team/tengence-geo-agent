@@ -5,11 +5,14 @@
  * Orchestration over the workspace-local channel_plan table (repo: db/channel-plan):
  *   - importWechatPlan() parses the site's 《微信公众号发布计划.md》 into calendar rows
  *     (wechat keeps a real per-issue calendar; nextDue returns the earliest todo row)
- *   - juejin / devto: the table is a PUBLISH LOG. We NEVER bulk-import the blog plan.
- *     recordPublish() writes one row per slug on each attempt (success → published,
- *     failure → failed) keyed by slug; reconcileFromJuejin() seeds already-published
- *     articles. nextDue() derives the next slug from the blog publish_order, skipping
- *     slugs already published on that platform (failed rows retry).
+ *   - juejin / csdn / devto (i.e. every non-wechat api platform): the table is a
+ *     PUBLISH LOG. We NEVER bulk-import the blog plan. recordPublish() writes one row
+ *     per slug on each attempt (success → published, failure → failed) keyed by slug;
+ *     reconcileFromPlatform() seeds already-published articles. nextDue() derives the
+ *     next slug from the blog publish_order, skipping slugs already published on that
+ *     platform (failed rows retry). Each platform therefore owns an INDEPENDENT
+ *     publishing calendar inside the shared table: only what was actually published
+ *     on that platform is ever recorded here.
  *   - list / markStatus / nextDue expose the calendar to CLIs and MCP tools
  *
  * Data flow:
@@ -211,6 +214,32 @@ async function publishedSlugs(platform) {
 }
 
 /**
+ * Channel-agnostic publish DEDUP — the SINGLE place every platform filters out
+ * slugs already published on THAT platform, BEFORE anything is sent. Every publish
+ * entry point (wechat / juejin / devto, Mode A and Mode B, MCP and CLI) must go
+ * through this exactly once, so the logic is never re-implemented per platform.
+ *
+ * Keyed STRICTLY by slug against the local channel_plan publish log — no external
+ * API calls, no title matching. Only `published` rows count; `draft` rows are NOT
+ * skipped (a draft may not have been mass-sent yet, and skipping it would produce
+ * an incomplete message on a re-run).
+ *
+ * @param {string} platform platform key
+ * @param {string[]} slugs ordered input slugs
+ * @returns {Promise<{toPublish:string[], skipped:string[]}>}
+ */
+async function filterUnpublished(platform, slugs) {
+  const published = await publishedSlugs(platform); // Set<string>
+  const toPublish = [];
+  const skipped = [];
+  for (const s of slugs || []) {
+    if (published.has(s)) skipped.push(s);
+    else toPublish.push(s);
+  }
+  return { toPublish, skipped };
+}
+
+/**
  * Record the OUTCOME of a publish attempt for one slug on a platform. Called by the
  * publish pipeline after each attempt (success OR failure). This is the ONLY writer
  * for non-wechat platforms: the channel_plan table is a publish LOG, NOT a mirror of
@@ -249,22 +278,27 @@ async function recordPublish(rec) {
 }
 
 /**
- * Reconcile a platform's channel_plan with what is ACTUALLY on the platform.
- * For juejin this is the seeding step — we NEVER bulk-import the blog plan; the
- * table only logs real outcomes. Two modes:
+ * Reconcile a platform's channel_plan with what is ACTUALLY on that platform.
+ * This is the SEEDING step — we NEVER bulk-import the blog plan; the table only logs
+ * real outcomes (every platform shares the same channel_plan table, each with its own
+ * `platform` rows, so juejin and csdn keep independent publishing calendars).
+ * Two modes:
  *   - map provided: insert the explicitly-known published articles (by slug).
  *   - no map: live-read the platform's published list and match back to blog slugs
- *     by title (useful later, once rate limits allow). Unmatched titles fall back to
- *     a synthetic slug so they are at least recorded.
+ *     by title. Unmatched titles fall back to a synthetic slug so they are recorded.
+ *
+ * @param {string} platform platform key (juejin / csdn / …)
+ * @param {{map?:Array<{slug:string,title?:string,blogOrder?:number,draftId?:string,notes?:string}>}} opts
  * @returns {Promise<{platform:string, source:string, inserted:number, matched:number, unmatched:number}>}
  */
-async function reconcileFromJuejin({ map } = {}) {
+async function reconcileFromPlatform(platform, { map } = {}) {
+  if (!platform) throw new Error('reconcileFromPlatform requires a platform key');
   const appId = DEFAULT_APP_ID();
   if (Array.isArray(map) && map.length) {
     await withConn(async (conn) => {
       for (const m of map) {
         await repo.upsertBySlug(conn, appId, {
-          platform: 'juejin',
+          platform,
           slug: m.slug,
           title: m.title || m.slug,
           topic: m.title || m.slug,
@@ -275,27 +309,43 @@ async function reconcileFromJuejin({ map } = {}) {
         });
       }
     });
-    return { platform: 'juejin', source: 'map', inserted: map.length, matched: map.length, unmatched: 0 };
+    return { platform, source: 'map', inserted: map.length, matched: map.length, unmatched: 0 };
   }
   // live mode: read the platform and match titles back to blog slugs
   const blog = (await t.plan.list({ limit: 5000 })).filter((r) => r.plan_status === 'published');
   const titleToSlug = new Map(blog.map((r) => [(r.title || '').trim().toLowerCase(), r.slug]));
-  const jj = t.syndicate.juejin;
-  const pub = await jj.listPublished(0, 50);
-  const data = pub && pub.data;
-  const items = Array.isArray(data) ? data : data && Array.isArray(data.data) ? data.data : [];
+
+  let items = []; // [{title, id}]
+  if (platform === 'juejin') {
+    const pub = await t.syndicate.juejin.listPublished(0, 50);
+    const data = pub && pub.data;
+    const arr = Array.isArray(data) ? data : data && Array.isArray(data.data) ? data.data : [];
+    items = arr.map((it) => ({
+      title: it.title || (it.article_info && it.article_info.title) || '',
+      id: it.article_id || it.id,
+    }));
+  } else if (platform === 'csdn') {
+    const pub = await t.syndicate.csdn.listPublished(1, 50);
+    if (pub && pub.cookieExpired) throw new Error('CSDN_COOKIE_EXPIRED');
+    items = (pub.items || []).map((it) => ({ title: it.title || '', id: it.id }));
+  } else {
+    throw new Error(
+      `reconcileFromPlatform: live mode not implemented for platform "${platform}" — pass an explicit map[] instead`
+    );
+  }
+
   let inserted = 0;
   let matched = 0;
   let unmatched = 0;
   await withConn(async (conn) => {
     for (const it of items) {
-      const title = it.title || (it.article_info && it.article_info.title) || '';
-      const articleId = it.article_id || it.id;
+      const title = it.title || '';
+      const articleId = it.id;
       const slug = titleToSlug.get(title.trim().toLowerCase());
       if (slug) {
         matched += 1;
         await repo.upsertBySlug(conn, appId, {
-          platform: 'juejin',
+          platform,
           slug,
           title: title || slug,
           topic: title || slug,
@@ -305,7 +355,7 @@ async function reconcileFromJuejin({ map } = {}) {
       } else {
         unmatched += 1;
         await repo.upsertBySlug(conn, appId, {
-          platform: 'juejin',
+          platform,
           slug: String(articleId),
           title: title || String(articleId),
           topic: title || String(articleId),
@@ -316,7 +366,12 @@ async function reconcileFromJuejin({ map } = {}) {
       inserted += 1;
     }
   });
-  return { platform: 'juejin', source: 'api', inserted, matched, unmatched };
+  return { platform, source: 'api', inserted, matched, unmatched };
+}
+
+/** Backwards-compatible juejin entry point (now a thin wrapper over the generic one). */
+async function reconcileFromJuejin({ map } = {}) {
+  return reconcileFromPlatform('juejin', { map });
 }
 
 /**
@@ -330,6 +385,9 @@ async function reconcileFromJuejin({ map } = {}) {
  */
 async function nextDue(platform) {
   const appId = DEFAULT_APP_ID();
+  // wechat keeps a real per-issue calendar imported from the plan doc; every other
+  // platform (juejin / csdn / devto / …) derives its queue from the blog article_plan
+  // and logs only real outcomes, so adding a new platform needs NO change here.
   if (platform === 'wechat') {
     let result;
     await withConn(async (conn) => {
@@ -363,7 +421,9 @@ module.exports = {
   importWechatPlan,
   clearPlatform,
   publishedSlugs,
+  filterUnpublished,
   recordPublish,
+  reconcileFromPlatform,
   reconcileFromJuejin,
   list,
   get,

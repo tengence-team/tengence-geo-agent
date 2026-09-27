@@ -128,6 +128,15 @@ function extractBrief(content) {
   return content.replace(/^#.+\n/, '').substring(0, 100).trim();
 }
 
+// Drop the leading "# Title" H1 from a body markdown.
+// Juejin renders the article title in its own slot (the `title` field of the
+// draft), so the body must NOT repeat it — otherwise the title shows up twice.
+// Applied uniformly with CSDN (see syndicate/csdn.js).
+function stripLeadingTitleHeading(md) {
+  if (!md) return md;
+  return md.replace(/^\s*#\s+[^\n]*(?:\r?\n)+/, '');
+}
+
 // Update draft with content. categoryId overrides the env default.
 async function updateDraft(draftId, title, content, tagIds = [], categoryId = null) {
   const { uid, categoryId: envCategoryId } = creds();
@@ -363,6 +372,9 @@ async function publishJuejin({ mdFile = null, contentMd = null, title = null, pu
     title = match ? match[1].trim() : path.basename(mdFile, '.md');
   }
   const cleanedContent = content.replace(/^---\n[\s\S]*?\n---\n?/, '');
+  // The article title is rendered by Juejin in its own slot, so drop the leading
+  // "# Title" H1 from the body to avoid showing the title twice.
+  const bodyContent = stripLeadingTitleHeading(cleanedContent);
 
   // ---- taxonomy: explicit override → resolved ids → keyword resolution → env ----
   const resolvedCategoryId = categoryId || envCategoryId;
@@ -393,7 +405,7 @@ async function publishJuejin({ mdFile = null, contentMd = null, title = null, pu
   console.log(`✅ Draft created! Draft ID: ${draftId}`);
 
   console.log(`✏️ Writing the body...`);
-  const updateResult = await updateDraft(draftId, title, cleanedContent, resolvedTagIds, resolvedCategoryId);
+  const updateResult = await updateDraft(draftId, title, bodyContent, resolvedTagIds, resolvedCategoryId);
   if (updateResult.err_no !== 0) {
     // fix: do NOT publish a draft whose body failed to save
     console.log(`❌ Body write failed: ${JSON.stringify(updateResult, null, 2)}`);

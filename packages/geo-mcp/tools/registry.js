@@ -28,6 +28,14 @@ const { z } = require('zod');
 const t = require('@tengence/geo-sdk');
 
 /**
+ * Platforms whose publish outcomes are logged per-platform into channel_plan
+ * (platform='juejin' / platform='csdn' / …), which is what gives each of them an
+ * INDEPENDENT publishing calendar and drives the shared slug-based dedup.
+ * wechat is excluded: it keeps a real per-issue calendar imported from its plan doc.
+ */
+const PUBLISH_LOG_PLATFORMS = ['juejin', 'csdn'];
+
+/**
  * Resolve the user workspace for a call.
  * `args.workspace` overrides everything for this one call; otherwise the already
  * bound / persisted value is used. Throws when unknown — nothing is invented here.
@@ -928,8 +936,9 @@ const tools = [
       'capabilities (multi-article merge, per-platform limits, draft/cover/tags) and the full platform rewrite rules (styles). ' +
       'The rewrite rules are the HARNESS rewriting guide — the server never rewrites content: read the original via article_export, ' +
       'apply these rules yourself, then channel_publish to land the draft/export. ' +
-      'READY PLATFORMS: wechat (微信公众号, official API) and juejin (掘金, cookie — can publish article drafts). ' +
-      'To publish to Juejin pass platform="juejin" to channel_publish / channel_plan_*; this server is multi-channel.',
+      'READY PLATFORMS: wechat (微信公众号, official API), juejin (掘金, cookie — can publish article drafts) and ' +
+      'csdn (CSDN, cookie — the creator-console gateway; needs CSDN_COOKIE before status becomes ready). ' +
+      'To publish to Juejin/CSDN pass platform="juejin"/"csdn" to channel_publish / channel_plan_*; this server is multi-channel.',
     inputSchema: z.object({
       platform: z.string().optional().describe('filter to one platform key'),
     }),
@@ -995,16 +1004,22 @@ const tools = [
     name: 'channel_publish',
     description:
       'Publish/export to one external platform. Mode A: pass slugs[] and the server reads the DB and runs the platform pipeline ' +
-      '(wechat drafts box — preview in mp.weixin.qq.com before mass-sending; juejin draft → publish; devto publish). Mode B: pass pre-written ' +
+      '(wechat drafts box — preview in mp.weixin.qq.com before mass-sending; juejin draft → publish; csdn draft → publish; ' +
+      'devto publish). Mode B: pass pre-written ' +
       'articles[] ({slug,title,contentMd,summary,tags,sourceUrl,cover}) — the harness-rewritten draft — and the server exports a publish ' +
       'package to <site>/data/channel-export/<platform>/<slug>.md with full front matter (manual publishing on every platform; ' +
       'required for api:none platforms). asDraft defaults true (never mass-sends). ' +
-      'PLATFORMS: wechat, juejin (cookie — 原文直发 via juejin draft), devto. ' +
+      'PLATFORMS: wechat, juejin (cookie — 原文直发 via juejin draft), csdn (cookie — 通过创作中心网关一步发文), devto. ' +
       'Juejin pipeline: reads DB article → resolves category/tags against the cached platform dictionary ' +
       '(channel_taxonomy; our article_plan.category/tags → the platform\'s category_id/tag_ids — see channel_taxonomy_resolve) ' +
       '→ creates draft → writes body → publishes; dryRun=true previews the plan AND the resolved taxonomy with no external ' +
       'calls; idempotent — skips a slug already on Juejin (draft or published). Category and tag are both required by Juejin, ' +
       'so a fallback chain (alias → dictionary → env → dictionary default) guarantees both are always sent. ' +
+      'CSDN pipeline: reads DB article → Markdown is converted to CSDN HTML locally (CSDN does NOT convert server-side) → ' +
+      'one saveArticle call (status 2=draft / 0=publish); tags come from article_plan.tags else target_keywords (1~5 required ' +
+      'to publish). Idempotent through the SAME slug-based dedup as juejin. ' +
+      'Every publish outcome is logged to channel_plan under its own platform, so each platform keeps an INDEPENDENT ' +
+      'publishing calendar (only real outcomes are recorded — the blog plan is never bulk-imported). ' +
       'This server is multi-channel; choose by platform=.',
     inputSchema: z.object({
       platform: z.string().describe('platform key (see channel_list)'),
@@ -1042,7 +1057,9 @@ const tools = [
           dryRun: !!args.dryRun,
           siteKey: site.siteKey,
         });
-        // juejin: record each attempt into the channel_plan publish log (success + failure).
+        // Record each attempt into the channel_plan publish log (success + failure),
+        // under ITS OWN platform key — this is what gives every cookie/api platform
+        // (juejin, csdn, …) an independent publishing calendar.
         // dryRun never touches the platform, so nothing is logged.
         //
         // The log is what the slug-based dedup reads, so its status must be truthful:
@@ -1050,21 +1067,24 @@ const tools = [
         //   draft-only creation → status "draft"  (NOT published)
         //   article went live   → status "published"
         //   attempt failed      → status "failed" (leaves the slug eligible for a retry)
-        if (args.platform === 'juejin' && !args.dryRun) {
+        if (PUBLISH_LOG_PLATFORMS.includes(args.platform) && !args.dryRun) {
           const ch = t.plan.channel;
           const wentLive = args.asDraft === false;
           for (const r of result.results || []) {
             if (r.skipped || r.dryRun) continue;
             try {
               // leave an audit trail of the taxonomy actually used (channel_plan stores
-              // no category/tag columns on purpose — article_plan stays the single source)
+              // no category/tag columns on purpose — article_plan stays the single source).
+              // juejin reports a resolved {category, tags}; csdn reports plain tags.
               const tax = r.taxonomy;
               const taxNote = tax
                 ? `tax: ${tax.category} [${tax.categoryOrigin}] / ${(tax.tags || []).join(', ')}`
-                : null;
+                : Array.isArray(r.tags) && r.tags.length
+                  ? `tags: ${r.tags.join(', ')}`
+                  : null;
               const status = !r.ok ? 'failed' : wentLive ? 'published' : 'draft';
               await ch.recordPublish({
-                platform: 'juejin',
+                platform: args.platform,
                 slug: r.slug,
                 title: r.title || (r.detail && r.detail.title),
                 status,
@@ -1089,11 +1109,13 @@ const tools = [
     description:
       'Per-platform publishing calendar: return the next article to publish for a platform plus all calendar rows ' +
       '(status/period/topic/weekday/slugs). Each platform has its OWN rows in the same channel_plan table. ' +
-      'wechat keeps a real per-issue calendar (returns the earliest row still todo). juejin (and other api platforms) treat the ' +
+      'wechat keeps a real per-issue calendar (returns the earliest row still todo). juejin / csdn (and other api platforms) treat the ' +
       'table as a PUBLISH LOG — nextDue is DERIVED from the blog article_plan: it returns the next blog-published article (by ' +
-      'publish_order) that is NOT yet recorded as published here, so the juejin queue follows the blog order and resumes right ' +
-      'after the last article published to Juejin (failed rows retry). Seed already-published articles with channel_plan_reconcile ' +
-      '(e.g. the 2 already on Juejin) before the first nextDue.',
+      'publish_order) that is NOT yet recorded as published on THAT platform, so each platform\'s queue follows the blog order and ' +
+      'resumes right after the last article published to it (failed rows retry). Nothing is ever bulk-copied from the blog plan: ' +
+      'only real outcomes are recorded, so juejin and csdn each keep their own independent calendar in the shared table. ' +
+      'Seed already-published articles with channel_plan_reconcile (platform=csdn) before the first nextDue, otherwise the ' +
+      'csdn queue starts from the very first blog article.',
     inputSchema: z.object({
       platform: z.string().optional().describe('filter rows to one platform (default: all platforms)'),
     }),
@@ -1208,15 +1230,78 @@ const tools = [
     },
   },
   {
+    name: 'csdn_status',
+    description:
+      'Read the CSDN blog backend for this site: the draft box and the published list ' +
+      '(blog/phoenix/console/v1/article/list with status=draft / all_v2). Read-only. Requires CSDN_COOKIE in the site .env. ' +
+      'Use it to verify before publishing (idempotency) and to see what is already on CSDN. page is 1-based (default 1). ' +
+      'An expired login is surfaced as cookieExpired=true + code 401 instead of an empty list — renew CSDN_COOKIE then. ' +
+      'This is the CSDN counterpart of juejin_status.',
+    inputSchema: z.object({
+      page: z.number().optional().describe('1-based page index (default 1)'),
+      pageSize: z.number().optional().describe('page size (default 20)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        withSite(args);
+        const page = args.page || 1;
+        const pageSize = args.pageSize || 20;
+        const c = t.syndicate.csdn;
+        const [drafts, published] = await Promise.all([c.listDrafts(page, pageSize), c.listPublished(page, pageSize)]);
+        const shape = (res) => ({
+          items: (res.items || []).map((it) => ({
+            id: it.id,
+            title: it.title,
+            status: it.status,
+            url: it.url,
+            postTime: it.postTime,
+            viewCount: it.viewCount,
+          })),
+          err: res.ok ? null : res.msg,
+          cookieExpired: !!res.cookieExpired,
+        });
+        return ok({ ok: true, drafts: shape(drafts), published: shape(published), counts: published.counts || {} });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'csdn_article_delete',
+    description:
+      'Delete a CSDN article (blog/phoenix/console/v1/article/del). IRREVERSIBLE — pass confirm=true only after verifying the ' +
+      'article id via csdn_status. Requires CSDN_COOKIE in the site .env. NOTE: this removes it from CSDN only; the local ' +
+      'channel_plan publish log (the CSDN publishing calendar) is not touched — re-run channel_plan_reconcile(platform=csdn) ' +
+      'afterwards if you want the log back in sync.',
+    inputSchema: z.object({
+      articleId: z.string().describe('article id from csdn_status items[].id'),
+      deep: z.boolean().optional().describe('also purge from the recycle bin (default false)'),
+      confirm: z.boolean().describe('must be true to actually delete'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        if (!args.confirm) return fail(new Error('Refusing to delete without confirm=true'));
+        withSite(args);
+        const res = await t.syndicate.csdn.deleteArticle(args.articleId, !!args.deep);
+        return ok({ ok: !!(res && (res.code === 200 || res.code === '200')), result: res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
     name: 'channel_plan_reconcile',
     description:
-      'Reconcile a platform channel_plan with what is ACTUALLY published on that platform. For juejin this SEEDS the publish ' +
-      'log with already-published articles — we do NOT bulk-import the blog plan (the table only logs real outcomes). Pass map[] ' +
-      'of {slug, title?, blogOrder?} for the explicitly-known published articles (recommended — avoids API rate ' +
-      'limits), or omit map to live-read the platform published list and match titles back to blog slugs. Idempotent (upsert by ' +
-      'slug). Run this once before the first channel_plan_next so the 2 already-on-Juejin articles are skipped.',
+      'Reconcile a platform channel_plan with what is ACTUALLY published on that platform (platform=juejin | csdn). ' +
+      'This SEEDS the publish log with already-published articles — we do NOT bulk-import the blog plan (the table only logs ' +
+      'real outcomes, so each platform keeps its own calendar). Pass map[] of {slug, title?, blogOrder?} for the ' +
+      'explicitly-known published articles (recommended — avoids API rate limits), or omit map to live-read the platform ' +
+      'published list and match titles back to blog slugs. Idempotent (upsert by slug). Run this once per platform before the ' +
+      'first channel_plan_next so the already-published articles are skipped instead of re-published.',
     inputSchema: z.object({
-      platform: z.string().describe('platform key, e.g. juejin'),
+      platform: z.string().describe('platform key, e.g. juejin or csdn'),
       map: z
         .array(
           z.object({
@@ -1232,7 +1317,7 @@ const tools = [
     async run(args) {
       try {
         withSite(args);
-        const res = await t.plan.channel.reconcileFromJuejin({ map: args.map });
+        const res = await t.plan.channel.reconcileFromPlatform(args.platform, { map: args.map });
         return ok({ ok: true, ...res });
       } catch (e) {
         return fail(e);

@@ -33,10 +33,10 @@ const yaml = require('js-yaml');
 const t = require('../index');
 const registry = require('./registry');
 const planRepo = require('../db/plan');
-const channelPlanRepo = require('../db/channel-plan');
 const { syncWechat, publishRewrittenToWechat } = require('./wechat');
 const juejin = require('./juejin');
 const juejinTaxonomy = require('./juejin-taxonomy');
+const csdn = require('./csdn');
 const { publishDevto } = require('./devto');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
@@ -104,6 +104,21 @@ async function articleFromDb(conn, appId, slug, siteDomain) {
 }
 
 /**
+ * CSDN tags for one article. The DB plan row wins (single source of truth, same
+ * policy as the juejin branch); otherwise fall back to the article's target_keywords.
+ * CSDN tags are free text, so no platform dictionary is involved — publishCsdn caps
+ * them at the platform maximum and applies the CSDN_TAGS env fallback when empty.
+ */
+function csdnTagsFor(article) {
+  const fromPlan = Array.isArray(article.planTags) ? article.planTags : [];
+  if (fromPlan.length) return fromPlan.map((s) => String(s || '').trim()).filter(Boolean);
+  return (article.targetKeywords || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
  * Mode A: publish original DB articles through the platform's own pipeline.
  */
 async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, siteKey }) {
@@ -113,15 +128,61 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
     .replace(/^https?:\/\//, '')
     .replace(/^www\./, 'www.');
 
+  // ---- channel-agnostic dedup: skip slugs already published on THIS platform ----
+  // Single source of truth = the local channel_plan publish log, keyed by slug.
+  // No external calls, no title matching. EVERY platform (wechat/juejin/devto/…)
+  // goes through this exactly once here — it is NOT re-implemented per platform,
+  // and it also covers the CLI (publish-wechat.js now routes through here too).
+  const { toPublish, skipped } = await t.plan.channel.filterUnpublished(platform, slugs);
+  if (skipped.length) {
+    appendLog(site.siteDir, {
+      action: 'skip-published',
+      platform,
+      slugs: skipped,
+      ok: true,
+      detail: { reason: 'already published on this platform (channel_plan publish log)' },
+    });
+  }
+  // Nothing left to publish → report and return (no draft / no external call).
+  if (toPublish.length === 0) {
+    appendLog(site.siteDir, {
+      action: 'skip-empty',
+      platform,
+      slugs,
+      ok: true,
+      detail: { reason: 'all slugs already published on this platform' },
+    });
+    return {
+      ok: true,
+      platform,
+      action: 'skip-empty',
+      skipped,
+      refs: {},
+      results: skipped.map((s) => ({ slug: s, ok: true, skipped: true, reason: 'already published' })),
+      logPath: logFile(site.siteDir),
+    };
+  }
+
   // ---- wechat: reuse the existing drafts-box pipeline (multi-article merge) ----
   if (platform === 'wechat') {
-    const { mediaId, action } = await syncWechat({ slugs, dryRun, shouldPublish: !asDraft, siteKey, keepOrder });
-    appendLog(site.siteDir, { action: dryRun ? 'dry-run' : action, platform, slugs, ok: true, detail: { mediaId } });
+    // WeChat caps a single send at 8 image-text articles; apply the cap to the
+    // post-dedup list so published slugs never waste a slot.
+    const WECHAT_MAX = 8;
+    let wechatSlugs = toPublish;
+    if (wechatSlugs.length > WECHAT_MAX) {
+      console.warn(
+        `⚠️  WeChat allows at most ${WECHAT_MAX} articles per send; sending the first ${WECHAT_MAX} of ${wechatSlugs.length} (after dedup).`
+      );
+      wechatSlugs = wechatSlugs.slice(0, WECHAT_MAX);
+    }
+    const { mediaId, action } = await syncWechat({ slugs: wechatSlugs, dryRun, shouldPublish: !asDraft, siteKey, keepOrder });
+    appendLog(site.siteDir, { action: dryRun ? 'dry-run' : action, platform, slugs: wechatSlugs, ok: true, detail: { mediaId } });
     return {
       ok: true,
       platform,
       action: dryRun ? 'dry-run' : action,
       refs: { mediaId },
+      skipped: skipped.length ? skipped : undefined,
       logPath: logFile(site.siteDir),
     };
   }
@@ -158,7 +219,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
   const results = [];
   let failed = 0;
   await t.db.withConn(async (conn) => {
-    for (const slug of slugs) {
+    for (const slug of toPublish) {
       try {
         const article = await articleFromDb(conn, appId, slug, SITE_DOMAIN);
         const dir = exportDir(site.siteDir, platform);
@@ -175,36 +236,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             titleTrimmed = true;
           }
 
-          // ---- dedup layer 1: OUR publish log, keyed by SLUG (no external call) ----
-          // channel_plan is a publish log: one row per slug recording the real outcome
-          // (published / failed). A slug already recorded as published is NEVER
-          // re-published — even if its title changed or got trimmed since. This runs
-          // before anything is written, and it also covers dryRun (it is a local read).
-          let priorRow = null;
-          try {
-            priorRow = await channelPlanRepo.findBySlug(conn, appId, platform, slug);
-          } catch (e) {
-            // a read failure must not block publishing
-            priorRow = null;
-          }
-          if (priorRow && priorRow.status === 'published') {
-            appendLog(site.siteDir, {
-              action: 'skip-published',
-              platform,
-              slug,
-              ok: true,
-              detail: { title, reason: 'already published per channel_plan publish log', rowId: priorRow.id },
-            });
-            results.push({
-              slug,
-              ok: true,
-              skipped: true,
-              reason: 'already published (channel_plan)',
-              rowId: priorRow.id,
-              title,
-            });
-            continue;
-          }
+          // NOTE: the channel-agnostic slug dedup (filterUnpublished) already ran
+          // once at the top of publishFromSlugs, so every slug here is guaranteed
+          // NOT yet published on this platform. No per-slug lookup needed.
 
           fs.writeFileSync(mdPath, `# ${title}\n\n${article.contentMd.trim()}\n`, 'utf8');
 
@@ -289,6 +323,49 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           const res = await publishDevto({ mdPath, dryRun });
           appendLog(site.siteDir, { action: dryRun ? 'dry-run' : 'publish', platform, slug, ok: true, detail: res });
           results.push({ slug, ok: true, detail: res });
+        } else if (platform === 'csdn') {
+          // Reuses the SAME upstream dedup as every other platform (filterUnpublished,
+          // run once at the top of publishFromSlugs) — no platform-local re-check.
+          // CSDN tags are free text: prefer the DB plan tags, fall back to the article
+          // target_keywords (publishCsdn trims to the platform maximum of 5 and applies
+          // the env fallback when there is none).
+          fs.writeFileSync(mdPath, `# ${article.title}\n\n${article.contentMd.trim()}\n`, 'utf8');
+          const tags = csdnTagsFor(article);
+
+          if (dryRun) {
+            appendLog(site.siteDir, {
+              action: 'dry-run', platform, slug, ok: true,
+              detail: { title: article.title, tags },
+            });
+            results.push({ slug, ok: true, dryRun: true, title: article.title, tags });
+            continue;
+          }
+
+          const res = await csdn.publishCsdn({
+            mdFile: mdPath,
+            title: article.title,
+            publish: !asDraft,
+            tags,
+          });
+          appendLog(site.siteDir, {
+            action: asDraft ? 'draft' : 'publish', platform, slug, ok: !res.failed, detail: res,
+          });
+          if (res.failed) {
+            failed += 1;
+            results.push({ slug, ok: false, stage: res.stage, detail: res, title: article.title });
+          } else {
+            // identical shape to the juejin branch so channel_plan logging is uniform
+            results.push({
+              slug,
+              ok: true,
+              published: !asDraft,
+              draftId: res.draftId,
+              articleId: res.articleId,
+              url: res.url,
+              title: article.title,
+              tags: res.tags,
+            });
+          }
         } else {
           throw new Error(`channel mode A not implemented for platform "${platform}"`);
         }
@@ -300,12 +377,18 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
     }
   });
 
+  // report slugs dropped by the channel-agnostic dedup (already published here)
+  for (const s of skipped) {
+    results.push({ slug: s, ok: true, skipped: true, reason: 'already published (channel_plan)' });
+  }
+
   return {
     ok: failed === 0,
     platform,
     action: asDraft ? 'draft' : 'publish',
     refs: { mdDir: exportDir(site.siteDir, platform) },
     results,
+    skipped: skipped.length ? skipped : undefined,
     logPath: logFile(site.siteDir),
   };
 }
@@ -319,9 +402,27 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
   const dir = exportDir(site.siteDir, platform);
   fs.mkdirSync(dir, { recursive: true });
 
+  // ---- channel-agnostic dedup on slug (Mode B) ----
+  // Same single filterUnpublished used by Mode A — only slugs NOT yet published on
+  // this platform are exported/pushed. Keeps a rewritten draft from re-landing an
+  // article that already went out.
+  const inSlugs = (articles || []).map((a) => (a && a.slug)).filter(Boolean);
+  const { toPublish: keepSlugs, skipped } = await t.plan.channel.filterUnpublished(platform, inSlugs);
+  const keepSet = new Set(keepSlugs);
+  if (skipped.length) {
+    appendLog(site.siteDir, {
+      action: 'skip-published',
+      platform,
+      slugs: skipped,
+      ok: true,
+      detail: { reason: 'already published on this platform (Mode B)', mode: 'export' },
+    });
+  }
+  const activeArticles = (articles || []).filter((a) => keepSet.has(a.slug));
+
   const exported = [];
   let failed = 0;
-  for (const article of articles) {
+  for (const article of activeArticles) {
     if (!article.slug || !article.title || !article.contentMd) {
       failed += 1;
       exported.push({ slug: article.slug || '(no slug)', ok: false, error: 'slug/title/contentMd are required' });
@@ -345,6 +446,11 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
     }
   }
 
+  // report Mode B slugs dropped by the channel-agnostic dedup
+  for (const s of skipped) {
+    exported.push({ slug: s, ok: true, skipped: true, reason: 'already published (channel_plan)' });
+  }
+
   // ---- api:official platforms (wechat) actually push the rewritten draft ----
   // Mode B's contract: the harness already rewrote the article; here we land it in
   // the platform draft box (createDraft) instead of only exporting a local package.
@@ -352,7 +458,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
   const plat = registry.getPlatform(platform);
   if (plat && plat.api === 'official' && platform === 'wechat' && !dryRun) {
     try {
-      pushResult = await publishRewrittenToWechat({ articles, siteKey });
+      pushResult = await publishRewrittenToWechat({ articles: activeArticles, siteKey });
     } catch (e) {
       failed += 1;
       appendLog(site.siteDir, { action: 'push-error', platform, ok: false, detail: { error: e.message } });
@@ -367,7 +473,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
   if (platform === 'juejin' && !dryRun) {
     const taxoCtx = await juejinTaxonomy.prepareJuejinTaxonomy({ siteDir: site.siteDir, autoSync: true });
     const TITLE_MAX = 40;
-    for (const article of articles) {
+    for (const article of activeArticles) {
       if (!article.slug || !article.title || !article.contentMd) continue;
       try {
         let title = String(article.title || '');
@@ -442,14 +548,75 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
     }
   }
 
+  // ---- csdn: Mode B ALSO pushes the rewritten draft through the real pipeline ----
+  // Same rationale as juejin: without this a platform-adapted draft would only ever
+  // land on disk. CSDN needs no taxonomy dictionary (free-text tags), but it DOES
+  // need the HTML conversion, which publishCsdn does internally (mdToCsdnHtml).
+  const csdnResults = [];
+  if (platform === 'csdn' && !dryRun) {
+    for (const article of activeArticles) {
+      if (!article.slug || !article.title || !article.contentMd) continue;
+      try {
+        // tags: prefer the DB plan row (single source of truth, as in Mode A);
+        // fall back to whatever tags the harness passed in.
+        let tags = Array.isArray(article.tags) && article.tags.length ? article.tags : [];
+        try {
+          await t.db.withConn(async (conn) => {
+            const row = await planRepo.getBySlug(conn, DEFAULT_APP_ID(), article.slug);
+            if (row && Array.isArray(row.tags) && row.tags.length) tags = row.tags;
+          });
+        } catch (e) {
+          // a missing plan row must not block publishing
+        }
+
+        const res = await csdn.publishCsdn({
+          contentMd: `# ${article.title}\n\n${article.contentMd.trim()}\n`,
+          title: article.title,
+          publish: !asDraft,
+          tags,
+        });
+
+        appendLog(site.siteDir, {
+          action: asDraft ? 'draft' : 'publish',
+          platform,
+          slug: article.slug,
+          ok: !res.failed,
+          detail: { ...res, rewrite: article.rewrite || 'harness' },
+        });
+
+        if (res.failed) {
+          failed += 1;
+          csdnResults.push({ slug: article.slug, ok: false, stage: res.stage, detail: res, title: article.title });
+        } else {
+          csdnResults.push({
+            slug: article.slug,
+            ok: true,
+            published: !asDraft,
+            draftId: res.draftId,
+            articleId: res.articleId,
+            url: res.url,
+            title: article.title,
+            tags: res.tags,
+          });
+        }
+      } catch (e) {
+        failed += 1;
+        csdnResults.push({ slug: article.slug, ok: false, error: e.message, title: article.title });
+        appendLog(site.siteDir, { action: 'error', platform, slug: article.slug, ok: false, detail: { error: e.message } });
+      }
+    }
+  }
+
+  const pushResults = [...juejinResults, ...csdnResults];
+
   return {
     ok: failed === 0,
     platform,
-    action: juejinResults.length ? (asDraft ? 'draft' : 'publish') : pushResult ? 'draft' : 'manual',
+    action: pushResults.length ? (asDraft ? 'draft' : 'publish') : pushResult ? 'draft' : 'manual',
     refs: { mdDir: dir, mediaId: pushResult && pushResult.mediaId },
     exported,
     // mirror Mode A's shape so the MCP publish log (channel_plan) can record it
-    results: juejinResults.length ? juejinResults : undefined,
+    results: pushResults.length ? pushResults : undefined,
     logPath: logFile(site.siteDir),
   };
 }

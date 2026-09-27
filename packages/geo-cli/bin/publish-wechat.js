@@ -69,7 +69,18 @@ async function main() {
 
   // ==================== main flow ====================
 
-  await t.syndicate.wechat.syncWechat({ slugs, dryRun, shouldPublish, siteKey });
+  // Route through the unified channel publish so WeChat also benefits from the
+  // channel-agnostic slug dedup (filterUnpublished) — a single entry point for all
+  // platforms (MCP + CLI). The ≤8 validation + credential pre-check above still
+  // run here (CLI-only). keepOrder is left unset → keeps the historical
+  // newest→oldest order, byte-identical to the previous direct syncWechat call.
+  await t.syndicate.channel.publishToChannel({
+    platform: 'wechat',
+    slugs,
+    asDraft: !shouldPublish,
+    dryRun,
+    siteKey,
+  });
 }
 
 if (require.main === module) {
@@ -79,4 +90,9 @@ if (require.main === module) {
   });
 }
 
-module.exports = { syncWechat: (opts) => t.syndicate.wechat.syncWechat(opts) };
+// Reusable in-process entry (e.g. dsh). Thin wrapper over the unified channel
+// publish scoped to WeChat — keeps the same call shape as before.
+module.exports = {
+  publish: (opts) =>
+    t.syndicate.channel.publishToChannel({ platform: 'wechat', ...(opts || {}) }),
+};

@@ -1,19 +1,21 @@
 platform: csdn
 name: CSDN
-api: none
-status: manual
+api: cookie
+status: pending
 capabilities:
   multiArticle: false
   maxArticles: 1
-  maxTitleLen: 50
+  maxTitleLen: 100
   maxBodyLen: 20000
   tags: true
   cover: false
-  draft: false
+  draft: true
   schedule: false
+  list: true
+  delete: true
 rewrite:
   title:
-    max: 50
+    max: 100
     style: "技术向，含核心关键词；可用『XX怎么做？』句式（CSDN 检索友好）"
   removeBlocks: ["<品牌简介块>", "立即行动"]
   keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
@@ -23,11 +25,18 @@ rewrite:
     firstPara: "背景 + 问题 + 本文结构，技术读者可快速判断是否值得读"
   tags:
     max: 5
-    note: "CSDN 标签，技术类（GEO、SEO、搜索）"
+    note: "CSDN 标签为自由文本，逗号分隔；发布时强制 1~5 个（缺标签直接 400 请设置文章标签）"
   cover:
     required: false
     note: "CSDN 自动取首图"
   notes: |
-    - 无官方发布 API：仅导出 md 发布包供人工粘贴发布（CSDN 编辑器支持 md 粘贴）
+    - api: cookie —— 非官方 OpenAPI。CSDN 未开放写作类公开接口，走的是创作中心自身
+      的 bizapi 网关（Cookie + 本地计算的 x-ca-* 签名），与掘金同性质。
+    - status: pending —— 需先在站点 .env 配好 CSDN_COOKIE 后置为 ready。
+    - CSDN 服务端不做 Markdown→HTML 转换：发布链路用 mdToCsdnHtml() 先转好 HTML
+      再提交，否则详情页会渲染成一坨纯文本并丢失代码高亮。
+    - 一步式发文（saveArticle 的 status 字段）：2=草稿 / 1=审核 / 0=发布，
+      is_new=0 + article_id 即更新。没有掘金那种 create→update→publish 三步。
+    - 发布即公开（status:0），故默认走草稿（asDraft=true），人工核对后再发布。
     - 技术教程结构；保留代码/表格/数据来源
     - 文末可保留官网原文链接（CSDN 允许带来源链接）
