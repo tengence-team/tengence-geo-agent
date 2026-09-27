@@ -2,7 +2,7 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.tengence-team/geo",
   "title": "Tengence GEO Agent",
-  "description": "GEO/SEO content pipeline as an MCP server: plan, write, gate-check, publish, submit to search engines, and monitor AI visibility. 56 tools, stdio + Streamable HTTP.",
+  "description": "GEO/SEO content pipeline MCP: plan, write, gate-check, publish, submit, monitor AI visibility.",
   "repository": {
     "url": "https://github.com/tengence-team/tengence-geo-agent",
     "source": "github"
