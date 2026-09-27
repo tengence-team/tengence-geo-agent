@@ -1,0 +1,164 @@
+platform: tencent
+name: 腾讯云开发者社区
+api: cookie
+status: ready
+capabilities:
+  multiArticle: false
+  maxArticles: 1
+  maxTitleLen: 100
+  maxBodyLen: 50000
+  maxAbstractLen: 200
+  tags: true
+  cover: true
+  draft: true
+  schedule: false
+  list: true
+  delete: true
+  # ✅ 实测（2026-09-27）：服务端发布接口可用，**无验证码 / 无人机验证**，
+  #    返回 {"articleId":2751864,"status":0}。
+  #    但发布后进入平台审核队列（文章页显示「审核中」，status=0 PENDING_APPROVAL），
+  #    过审后自动公开 —— 因此无需人工点发布，与阿里云「必须人工发布」不同。
+  publishGated: false
+  # 审核态枚举（取自编辑器 bundle）：0 审核中 / 1 已发布 / 2 未通过 / 3 被封禁 / 4 待采纳
+  reviewRequired: true
+  reviewStatusPending: 0
+
+# ── 主图（文章图片）────────────────────────────────────────────
+# 已实测（2026-09-27）：`pic` 字段**直接接受任意外链 URL** 并原样持久化 ——
+# 与阿里云「必须转存自家 CDN」、CSDN「封面须转存」都不同，本渠道**无需上传环节**。
+# 实测证据：alicdn 的 jpg 与本站 .webp 均写入成功，getDraftDetail 回读一致，
+# 且已发布文章页正常渲染该封面。
+images:
+  supported: true
+  # 当前 pic 不校验格式/域名（webp 实测通过）。下方为**上传通道**的格式白名单，
+  # 仅当将来平台收紧外链策略、改用 COS 上传时才生效。
+  supportedExtensions: [jpg, jpeg, png, gif]
+  suggestedSize: "不限（编辑器封面裁切框 168x160 预览）"
+  externalUrlAllowed: true
+  # 备用上传通道（当前不启用）：
+  #   POST /api/common/cos/upload-info {scene:"editor.image", extension}
+  #     → {objectKey, region, bucket, isPrivateBucket}
+  #   POST /api/common/cos/tmp-secret {objectKey} → {credentials:{TmpSecretId,TmpSecretKey,Token}}
+  #   COS PUT → Location → "https://" + Location
+  # ⚠️ 实测 bucket=developer-private-1258344699 且 isPrivateBucket=true（私有桶，
+  #    访问需签名）；图片 ≤10MB、附件 ≤500MB。
+  uploadFlow:
+    - "POST /api/common/cos/upload-info  {scene:'editor.image', extension}"
+    - "POST /api/common/cos/tmp-secret   {objectKey}"
+    - "COS PUT → Location → https://<Location>"
+  coverFieldDraft: "pic"
+  coverFieldPublish: "pic"
+  convertBeforeUpload: false
+
+rewrite:
+  strategy: body
+  title:
+    max: 100
+    style: "技术向陈述式，含核心关键词；建议『主题：方法/结论』结构，避免夸张与标题党"
+    forbidden: ["最", "第一", "震惊", "速速", "史上", "必看", "曝光", "免费领"]
+  # 字面匹配（styleCheck 用 substring 判定），必须写具体块名/文案，不要写抽象占位
+  removeBlocks:
+    - "关于通智云"
+    - "关于我们"
+    - "立即行动"
+    - "免费试用"
+    - "免费预约"
+    - "预约专家咨询"
+    - "了解通智搜索"
+    - "了解通智 GEO"
+  forbiddenPhrases:
+    - "免费试用"
+    - "免费预约"
+    - "预约咨询"
+    - "预约诊断"
+    - "立即咨询"
+    - "联系我们"
+    - "扫码"
+    - "加群"
+    - "添加微信"
+    - "关注公众号"
+    - "商务合作"
+    - "点击购买"
+  keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
+  externalLinks:
+    maxBrandLinks: -1
+    brandDomainPatterns: ["tengence.com"]
+    allowCitations: true
+    brandLinkAllowedPatterns:
+      - "tengence.com/blog/article/"
+    brandLinkDeniedPatterns:
+      - "console."
+      - "app."
+      - "/pricing"
+      - "/price"
+      - "/signup"
+      - "/register"
+      - "/login"
+      - "/demo"
+      - "/contact"
+      - "/trial"
+      - "/product"
+      - "/solution"
+      - "/about"
+    brandLinkTailOnly: true
+    note: "本站文章链接（/blog/article/）条数不限，建议集中在文末『相关阅读』；首页/产品/定价/注册/控制台等转化链接一律删除；第三方权威引用保留并标注来源"
+  body:
+    minChars: 140
+    maxChars: 50000
+    firstPara: "背景 + 问题 + 本文结构，技术读者可快速判断是否值得读"
+    style: "技术严谨、保留代码/表格/数据；步骤清晰、可复现；避免过度口语化与营销腔"
+    structure: ["背景与问题", "方案/步骤", "关键要点", "FAQ", "参考来源"]
+  cover:
+    required: false
+    note: "pic 直接填外链即可（实测 webp 亦可），无需上传；不传则无封面"
+  tags:
+    max: 5
+    note: "最多 5 个平台标签；可传自由文本由 tag/search 解析为 tagId，或直接传 tagIds。平台要求至少 1 个。另有长尾标签 longtailTag（自由文本，≤5）"
+  classify:
+    max: 3
+    note: "文章分类 id（scene=1 共 24 个，如 1 云计算 / 2 人工智能 / 7 大数据 / 16 架构设计 / 23 算法）。仅当账号具备分类管理员权限时必填，当前账号非必填"
+  abstract:
+    max: 200
+    required: true
+    note: "编辑器 textarea maxLength=200；另会附带 summary 字段（自动摘要）"
+  checklist:
+    - "标题 ≤100 字且技术向，无 forbidden 词"
+    - "摘要 ≤200 字"
+    - "正文 140–50000 字（编辑器硬校验）"
+    - "至少 1 个标签、最多 5 个；分类最多 3 个（当前账号非必填）"
+    - "首段交代背景与解决的问题"
+    - "保留代码块/表格/数据来源"
+    - "删除品牌营销块与 CTA（removeBlocks / forbiddenPhrases 全清空）"
+    - "本站链接仅限 /blog/article/ 文章页；相关阅读与第三方引用条数不限，转化链接为 0"
+    - "封面直接给外链 URL，无需转存"
+  compliance:
+    hardRules:
+      - id: "promo-drainage"
+        clause: "营销推广 / 站外引流"
+        text: "含营销推广、站外引流转化的内容会被判定为低质或违规"
+        penalty: "审核不通过（status=2）或降权"
+        do: "删除品牌营销块与立即行动 CTA；移除 console./contact/product 等转化外链；仅保留 /blog/article/ 文章页与第三方权威引用"
+      - id: "min-length"
+        clause: "正文字数下限"
+        text: "编辑器硬校验：文章内容不能少于 140 字"
+        penalty: "前端拒绝提交（服务端同样会校验）"
+        do: "正文去空白后 ≥140 字；模块会在投稿前本地校验并提前报错"
+      - id: "tags-required"
+        clause: "标签必填"
+        text: "编辑器硬校验：请选择文章标签（≥1）"
+        penalty: "无法提交"
+        do: "publishTencent 传 tags（自由文本，自动解析为 tagId）或 tagIds；也可配置 TENCENT_TAG_IDS 兜底"
+    citationRule: "技术引用保留原文链接并标注来源，与 GEO 回链硬规则不冲突"
+  notes: |
+    - api: cookie —— 非官方 OpenAPI。走的是社区编辑器自身的 /developer/api/* 接口。
+    - 鉴权：Cookie + Origin + Referer 即可。**无 CSRF**（与阿里云的三件套不同）。
+    - 全部为 POST + JSON；失败也返回 HTTP 200，需从 body 的 code/msg 判成功。
+    - ⚠️ 载荷坑：正文不是 markdownContent，而是
+        content = "<!--markdown-->\n" + md + "\n<!--/markdown-->"，
+      另需 plain（去全部空白，截 50000）与 summary。
+    - ⚠️ 发布态开关是 banComment（= openComment?0:1）与 closeArticleTextLink，
+      不是 openComment / closeTextLink（第三方文章的写法是错的）。
+    - ⚠️ editArticleDraft **必须传完整载荷**，只传部分字段会返回 400「参数错误」。
+    - deleteUserArticleDrafts 的参数是单数 draftId，不是 draftIds。
+    - 发布可用且无需人工（无验证码），但发布后进审核队列：status=0 审核中 → 1 已发布。
+    - 封面 pic 支持任意外链（含 webp），无需上传 —— 与阿里云/CSDN 都不同。

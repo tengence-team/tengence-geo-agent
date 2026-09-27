@@ -21,9 +21,10 @@ const juejin = require('./juejin');
 const juejinTaxonomy = require('./juejin-taxonomy');
 const csdn = require('./csdn');
 const aliyun = require('./aliyun');
+const tencent = require('./tencent');
 const wechat = require('./wechat');
 const registry = require('./registry');
 const channel = require('./channel');
 const styleCheck = require('./styleCheck');
 
-module.exports = { devto, juejin, juejinTaxonomy, csdn, aliyun, wechat, registry, channel, styleCheck };
+module.exports = { devto, juejin, juejinTaxonomy, csdn, aliyun, tencent, wechat, registry, channel, styleCheck };

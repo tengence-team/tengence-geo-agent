@@ -36,6 +36,7 @@ const PLATFORM_KEYS = [
   'zhihu',
   'csdn',
   'aliyun',
+  'tencent',
   'toutiao',
   'xiaohongshu',
 ];

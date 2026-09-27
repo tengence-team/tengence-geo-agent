@@ -38,6 +38,7 @@ const juejin = require('./juejin');
 const juejinTaxonomy = require('./juejin-taxonomy');
 const csdn = require('./csdn');
 const aliyun = require('./aliyun');
+const tencent = require('./tencent');
 const { publishDevto } = require('./devto');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
@@ -110,7 +111,11 @@ async function articleFromDb(conn, appId, slug, siteDomain) {
  * CSDN tags are free text, so no platform dictionary is involved — publishCsdn caps
  * them at the platform maximum and applies the CSDN_TAGS env fallback when empty.
  */
-function csdnTagsFor(article) {
+/**
+ * Free-text tags for an article, used by the channels whose tags are free text
+ * (csdn / tencent). DB plan tags win; target_keywords is the fallback.
+ */
+function articleTagsFor(article) {
   const fromPlan = Array.isArray(article.planTags) ? article.planTags : [];
   if (fromPlan.length) return fromPlan.map((s) => String(s || '').trim()).filter(Boolean);
   return (article.targetKeywords || '')
@@ -331,7 +336,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // target_keywords (publishCsdn trims to the platform maximum of 5 and applies
           // the env fallback when there is none).
           fs.writeFileSync(mdPath, `# ${article.title}\n\n${article.contentMd.trim()}\n`, 'utf8');
-          const tags = csdnTagsFor(article);
+          const tags = articleTagsFor(article);
 
           if (dryRun) {
             appendLog(site.siteDir, {
@@ -409,6 +414,50 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
               url: res.url,
               title: article.title,
               publishGated: true,
+            });
+          }
+        } else if (platform === 'tencent') {
+          // Reuses the SAME upstream dedup as every other platform (filterUnpublished).
+          // ✅ Unlike Aliyun, Tencent Cloud publish is NOT human-gated (verified
+          // 2026-09-27: addArticle succeeds with no captcha). It does enter the
+          // platform's review queue (status 0 = 审核中) and goes public once approved,
+          // so `publish` follows `asDraft` like the other ungated channels.
+          fs.writeFileSync(mdPath, `# ${article.title}\n\n${article.contentMd.trim()}\n`, 'utf8');
+          const tags = articleTagsFor(article);
+
+          if (dryRun) {
+            appendLog(site.siteDir, {
+              action: 'dry-run', platform, slug, ok: true,
+              detail: { title: article.title, tags },
+            });
+            results.push({ slug, ok: true, dryRun: true, title: article.title, tags });
+            continue;
+          }
+
+          const res = await tencent.publishTencent({
+            mdFile: mdPath,
+            title: article.title,
+            publish: !asDraft,
+            tags,
+          });
+          appendLog(site.siteDir, {
+            action: asDraft ? 'draft' : 'publish', platform, slug, ok: !res.failed, detail: res,
+          });
+          if (res.failed) {
+            failed += 1;
+            results.push({ slug, ok: false, stage: res.stage, detail: res, title: article.title });
+          } else {
+            // identical shape to the csdn branch so channel_plan logging is uniform
+            results.push({
+              slug,
+              ok: true,
+              published: !asDraft,
+              draftId: res.draftId,
+              articleId: res.articleId,
+              url: res.url,
+              title: article.title,
+              tags: res.tags,
+              underReview: !!res.underReview,
             });
           }
         } else {
@@ -698,7 +747,55 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
     }
   }
 
-  const pushResults = [...juejinResults, ...csdnResults, ...aliyunResults];
+  // ---- tencent: Mode B ALSO pushes the rewritten draft through the real pipeline ----
+  // Same rationale as csdn/aliyun: without this a platform-adapted draft would only
+  // ever land on disk. Tencent Cloud takes Markdown directly and is NOT publish-gated,
+  // so when `asDraft` is false this goes live (into the platform review queue).
+  const tencentResults = [];
+  if (platform === 'tencent' && !dryRun) {
+    for (const article of activeArticles) {
+      if (!article.slug || !article.title || !article.contentMd) continue;
+      try {
+        const res = await tencent.publishTencent({
+          contentMd: `# ${article.title}\n\n${article.contentMd.trim()}\n`,
+          title: article.title,
+          publish: !asDraft, // not human-gated on this platform
+          tags: Array.isArray(article.tags) && article.tags.length ? article.tags : null,
+        });
+
+        appendLog(site.siteDir, {
+          action: asDraft ? 'draft' : 'publish',
+          platform,
+          slug: article.slug,
+          ok: !res.failed,
+          detail: { ...res, rewrite: article.rewrite || 'harness' },
+        });
+
+        if (res.failed) {
+          failed += 1;
+          tencentResults.push({ slug: article.slug, ok: false, stage: res.stage, detail: res, title: article.title });
+        } else {
+          tencentResults.push({
+            slug: article.slug,
+            ok: true,
+            published: !asDraft,
+            draftId: res.draftId,
+            articleId: res.articleId,
+            url: res.url,
+            title: article.title,
+            tags: res.tags,
+            underReview: !!res.underReview,
+          });
+        }
+      } catch (e) {
+        failed += 1;
+        tencentResults.push({ slug: article.slug, ok: false, error: e.message, title: article.title });
+        appendLog(site.siteDir, { action: 'error', platform, slug: article.slug, ok: false, detail: { error: e.message } });
+      }
+    }
+  }
+
+  const pushResults = [...juejinResults, ...csdnResults, ...aliyunResults, ...tencentResults];
 
   return {
     ok: failed === 0,

@@ -36,7 +36,7 @@ const t = require('@tengence/geo-sdk');
 // 'aliyun' is included even though its publish is human-gated: the log is what the
 // slug-based dedup reads, so a draft-only run must still be recorded as "draft"
 // (never "published") — otherwise every run would create another draft.
-const PUBLISH_LOG_PLATFORMS = ['juejin', 'csdn', 'aliyun'];
+const PUBLISH_LOG_PLATFORMS = ['juejin', 'csdn', 'aliyun', 'tencent'];
 
 /**
  * Resolve the user workspace for a call.
