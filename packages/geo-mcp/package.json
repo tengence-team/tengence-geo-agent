@@ -1,7 +1,7 @@
 {
   "name": "@tengence/geo-mcp",
   "version": "0.1.0",
-  "description": "GEO content engine MCP server: 9 domains, 29 tools, stdio + Streamable HTTP transports, Bearer-token auth (the MCP bridge layer of @tengence/geo-sdk)",
+  "description": "GEO content engine MCP server: 56 tools across content, publishing, search-inclusion and AI-monitoring domains; stdio + Streamable HTTP transports, Bearer-token auth (the MCP bridge layer of @tengence/geo-sdk)",
   "bin": {
     "tengence-geo-mcp": "bin/geo-mcp.js",
     "tengence-geo-mcp-http": "bin/geo-mcp-http.js"
@@ -9,7 +9,8 @@
   "files": [
     "bin/",
     "server.js",
-    "tools/"
+    "tools/",
+    "README.md"
   ],
   "engines": {
     "node": ">=20"
@@ -23,6 +24,19 @@
     "wordpress"
   ],
   "license": "MIT",
+  "author": "Tengence Team",
+  "mcpName": "io.github.tengence-team/geo",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tengence-team/tengence-geo-agent.git"
+  },
+  "homepage": "https://github.com/tengence-team/tengence-geo-agent",
+  "bugs": {
+    "url": "https://github.com/tengence-team/tengence-geo-agent/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@tengence/geo-sdk": "0.1.0",
     "@tengence/geo-cli": "0.1.0",

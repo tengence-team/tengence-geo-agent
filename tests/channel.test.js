@@ -46,9 +46,9 @@ after(() => {
 
 // ==================== registry ====================
 
-test('registry: 9 platforms with api/status declared', () => {
+test('registry: 11 platforms with api/status declared', () => {
   const platforms = t.syndicate.registry.listPlatforms();
-  assert.equal(platforms.length, 9);
+  assert.equal(platforms.length, 11);
   const byKey = Object.fromEntries(platforms.map((p) => [p.key, p]));
   assert.equal(byKey.wechat.api, 'official');
   assert.equal(byKey.wechat.status, 'ready');
@@ -56,7 +56,15 @@ test('registry: 9 platforms with api/status declared', () => {
   assert.equal(byKey.devto.api, 'official');
   assert.equal(byKey.baijiahao.api, 'official');
   assert.equal(byKey.baijiahao.status, 'pending', 'baijiahao is placeholder until enterprise credentials');
-  for (const k of ['zhihu', 'csdn', 'toutiao', 'xiaohongshu']) {
+  // cookie-based channels added later (CSDN / Aliyun / Tencent developer community)
+  assert.equal(byKey.csdn.api, 'cookie');
+  assert.equal(byKey.aliyun.api, 'cookie');
+  assert.equal(byKey.tencent.api, 'cookie');
+  // every ready channel must actually have publish code behind it
+  for (const k of ['wechat', 'juejin', 'devto', 'csdn', 'aliyun', 'tencent']) {
+    assert.equal(t.syndicate.registry.hasPublish(k), true, `${k} is ready but has no publish code`);
+  }
+  for (const k of ['blog', 'zhihu', 'toutiao', 'xiaohongshu']) {
     assert.equal(byKey[k].api, 'none', `${k} must be api:none`);
     assert.equal(byKey[k].status, 'manual', `${k} publishes manually from the export`);
     assert.equal(t.syndicate.registry.hasPublish(k), false, `${k} has no publish code`);

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.tengence-team/geo",
+  "title": "Tengence GEO Agent",
+  "description": "GEO/SEO content pipeline as an MCP server: plan, write, gate-check, publish, submit to search engines, and monitor AI visibility. 56 tools, stdio + Streamable HTTP.",
+  "repository": {
+    "url": "https://github.com/tengence-team/tengence-geo-agent",
+    "source": "github"
+  },
+  "homepage": "https://github.com/tengence-team/tengence-geo-agent",
+  "documentation": "https://github.com/tengence-team/tengence-geo-agent/tree/main/packages/geo-mcp",
+  "license": {
+    "id": "MIT"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@tengence/geo-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "SITES_ROOT",
+          "description": "Root directory holding per-site config and .env files. Optional; the workspace is chosen at runtime via the workspace_use tool.",
+          "isRequired": false
+        },
+        {
+          "name": "TENGENCE_GEO_HOME",
+          "description": "Internal runtime data directory (DB, caches). Defaults to ~/.tengence/geo-mcp.",
+          "isRequired": false
+        },
+        {
+          "name": "DB_DRIVER",
+          "description": "Storage backend: sqlite (default) or mysql for production.",
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}

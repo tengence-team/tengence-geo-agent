@@ -24,7 +24,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const sharp = require('sharp');
+const sharp = require('./sharp'); // optional dependency, loaded lazily on first call
 
 const redline = require('./redline');
 const sources = require('./sources');

@@ -1,0 +1,92 @@
+name: Release
+
+# Runs on every git tag `v*`. Publishes the four packages to npm (in dependency order),
+# then best-effort publishes metadata to the official MCP Registry. The Registry job is
+# allowed to fail (the Registry is still in preview) so it never blocks an npm release.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+  id-token: write        # required for npm provenance / OIDC
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  npm:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: 'https://registry.npmjs.org'
+      # Publish in dependency order: sdk -> cli -> mcp -> agent.
+      # NPM_TOKEN must be an Automation token stored as a repo secret.
+      # Provenance is attached when the package is published from a public GitHub repo.
+      # (Alternative: configure npm Trusted Publishing and drop NODE_AUTH_TOKEN.)
+      - run: npm ci
+      - run: npm publish --provenance --access public -w packages/geo-sdk
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --provenance --access public -w packages/geo-cli
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --provenance --access public -w packages/geo-mcp
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - run: npm publish --provenance --access public -w apps/agent
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  registry:
+    needs: npm
+    continue-on-error: true     # Registry is in preview; do not block npm releases
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Keep server.json's two version fields in sync with the tag (v0.1.0 -> 0.1.0).
+      - name: Sync server.json version
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          jq --arg v "$VERSION" '.version=$v | .packages[0].version=$v' server.json > server.tmp.json
+          mv server.tmp.json server.json
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore: bump server.json to $VERSION [skip ci]" || echo "no changes"
+      - name: Install mcp-publisher
+        run: |
+          OS=$(uname -s | tr '[:upper:]' '[:lower:]')
+          ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/')
+          curl -fSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_${OS}_${ARCH}.tar.gz" \
+            | tar xz mcp-publisher
+          sudo mv mcp-publisher /usr/local/bin/ || mv mcp-publisher "$HOME/.local/bin/"
+          mcp-publisher --help
+      - name: Authenticate (OIDC) and publish
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ${{ env.ACTIONS_ID_TOKEN_REQUEST_TOKEN }}
+          ACTIONS_ID_TOKEN_REQUEST_URL: ${{ env.ACTIONS_ID_TOKEN_REQUEST_URL }}
+        run: |
+          # Non-interactive GitHub OIDC auth for the io.github.* namespace.
+          # If this subcommand is unavailable in your mcp-publisher build, run
+          # `mcp-publisher login github` locally and re-publish manually.
+          mcp-publisher login github-oidc || mcp-publisher login github-oidc
+          mcp-publisher publish --dry-run
+          mcp-publisher publish

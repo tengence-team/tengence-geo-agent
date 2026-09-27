@@ -26,8 +26,10 @@
  *     path in `command` instead.
  * Nothing else is required — no SITES_ROOT, no DB_PATH, no APP_ID.
  *
- * Note: the packages are private and not published yet, so `npx -y @tengence/geo-mcp`
- * fails with 404 — point at the local script as shown above.
+ * Published distribution: once @tengence/geo-mcp is on npm, clients can also launch
+ * it without a local checkout via `npx -y @tengence/geo-mcp` (the package resolves its
+ * own script). Node 22.5+ enables the zero-native built-in SQLite driver; on Node 20/21
+ * (or runtimes without node:sqlite) install the optional `better-sqlite3` dependency.
  */
 
 const { createServer, printStartupBanner, bindFromClientRoots } = require('../server');

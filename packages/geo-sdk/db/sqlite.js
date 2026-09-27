@@ -1,6 +1,12 @@
 /**
- * SQLite driver facade (better-sqlite3)
+ * SQLite driver facade (built-in node:sqlite; better-sqlite3 as optional fallback)
  * ============================================================================
+ * Driver selection lives in ./sqlite-driver.js — the default path uses Node's built-in
+ * `node:sqlite` (no native build, keeps `npx -y @tengence/geo-mcp` installs small);
+ * `better-sqlite3` is an optional dependency used only when the built-in one is
+ * unavailable (Node < 22.5 or a runtime built without it). Override per process with
+ * `GEO_SQLITE_DRIVER=builtin|native`.
+ * ----------------------------------------------------------------------------
  * Lets the existing repository code (written against mysql2/promise conventions) run
  * on SQLite without modification:
  *
@@ -29,7 +35,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const Database = require('better-sqlite3');
+const sqliteDriver = require('./sqlite-driver');
 
 const { createSqliteTablesSQL, SCHEMA_VERSION, CHANNEL_PLAN } = require('./sqlite-schema');
 
@@ -74,6 +80,12 @@ function ensureSchema(db) {
   return { applied: true, version: SCHEMA_VERSION };
 }
 
+/**
+ * Set when the active driver cannot register user-defined functions — `NOW()` is then
+ * rewritten to the equivalent SQL expression in translateSql() instead.
+ */
+let _nowViaSql = false;
+
 /** Open (or reuse) the database handle; auto-switches handles when DB_PATH changes (test-friendly) */
 function getDb() {
   const dbPath = resolveDbPath();
@@ -82,11 +94,18 @@ function getDb() {
     try { _db.close(); } catch (_) { /* ignore */ }
   }
   fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-  const db = new Database(dbPath);
+  // Built-in node:sqlite first, optional native better-sqlite3 as fallback.
+  const db = sqliteDriver.open(dbPath);
   db.pragma('journal_mode = WAL');
   db.pragma('busy_timeout = 5000');
   db.pragma('foreign_keys = ON');
-  db.function('NOW', localNow);
+  try {
+    db.function('NOW', localNow);
+    _nowViaSql = false;
+  } catch (_) {
+    // Driver has no user-defined functions: degrade to a SQL-level NOW().
+    _nowViaSql = true;
+  }
   ensureSchema(db);
   _db = db;
   _dbPath = dbPath;
@@ -130,6 +149,7 @@ function translateSql(sql) {
     .replace(RE_JSON_CONTAINS, (_, col, key) =>
       `EXISTS (SELECT 1 FROM json_each(${col}) WHERE json_each.value = ${key})`)
     .replace(/IFNULL\(/g, 'COALESCE(');
+  if (_nowViaSql) out = out.replace(/\bNOW\(\s*\)/gi, "datetime('now','localtime')");
   return out;
 }
 
@@ -191,11 +211,17 @@ function dbStatus() {
     .map((r) => r.name);
   return {
     driver: 'sqlite',
+    sqliteDriver: db.kind,
     dbPath: resolveDbPath(),
     schemaVersion: version,
     tableCount: tables.length,
     tables,
   };
+}
+
+/** Driver diagnostics without opening a database (used by tests / db_status). */
+function driverInfo() {
+  return sqliteDriver.detect();
 }
 
 module.exports = {
@@ -206,5 +232,6 @@ module.exports = {
   resetDb,
   createSqliteConnection,
   dbStatus,
+  driverInfo,
   translateSql,
 };
