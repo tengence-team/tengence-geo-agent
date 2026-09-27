@@ -22,9 +22,22 @@ const juejinTaxonomy = require('./juejin-taxonomy');
 const csdn = require('./csdn');
 const aliyun = require('./aliyun');
 const tencent = require('./tencent');
+const tencentTaxonomy = require('./tencent-taxonomy');
 const wechat = require('./wechat');
 const registry = require('./registry');
 const channel = require('./channel');
 const styleCheck = require('./styleCheck');
 
-module.exports = { devto, juejin, juejinTaxonomy, csdn, aliyun, tencent, wechat, registry, channel, styleCheck };
+module.exports = {
+  devto,
+  juejin,
+  juejinTaxonomy,
+  csdn,
+  aliyun,
+  tencent,
+  tencentTaxonomy,
+  wechat,
+  registry,
+  channel,
+  styleCheck,
+};

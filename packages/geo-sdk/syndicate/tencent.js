@@ -94,13 +94,23 @@ const TENCENT_MAX_LONGTAIL = 5;
 /** 文章来源（编辑器下拉）；原创时 sourceDetail 传 undefined */
 const SOURCE_TYPE = { original: 1, reproduced: 2, translated: 3, other: 99 };
 
-/** Article status as returned by the platform (bundle enum). */
+/**
+ * Article status, read off `articleInfo.status` (bundle enum, chunk c32.js):
+ *   { PENDING_APPROVAL:0 → 审核中, NORMAL:2 → 正常, REJECTED:3 → 未通过, DELETED:5 → 已删除 }
+ *
+ * ⚠️ CORRECTED 2026-09-27: an earlier version used a DIFFERENT enum found in
+ * c33.js ({TO_BE_AUDIT:0, NORMAL:1, REJECT:2, BANNED:3, TO_BE_ADOPTED:4}), which
+ * reads status 3 as 被封禁. That is wrong for articles — verified against
+ * `POST /api/creator/articleListNum` → {reject:1, pass:0, pending:0} while
+ * articleInfo.status was 3, and an anonymous fetch of the article page returned
+ * HTTP 404 「不存在」. So 3 = REJECTED (未通过), and 已发布 is 2 (not 1).
+ * Several enums coexist in the bundle; this one is the article-level one.
+ */
 const ARTICLE_STATUS = {
   PENDING_APPROVAL: 0,
-  NORMAL: 1,
-  REJECT: 2,
-  BANNED: 3,
-  TO_BE_ADOPTED: 4,
+  NORMAL: 2,
+  REJECTED: 3,
+  DELETED: 5,
 };
 
 /** Read Tencent credentials from injected env. */

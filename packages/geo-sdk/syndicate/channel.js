@@ -39,6 +39,7 @@ const juejinTaxonomy = require('./juejin-taxonomy');
 const csdn = require('./csdn');
 const aliyun = require('./aliyun');
 const tencent = require('./tencent');
+const tencentTaxonomy = require('./tencent-taxonomy');
 const { publishDevto } = require('./devto');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
@@ -122,6 +123,30 @@ function articleTagsFor(article) {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+}
+
+/**
+ * The article's main image — read straight from the articles table
+ * (articles.featured_image). This is the SINGLE SOURCE OF TRUTH for a channel
+ * cover; no front matter is involved. Never throws: an article without a featured
+ * image simply publishes without one.
+ * @param {string} slug
+ * @param {string|null} [inherited] value already resolved by the caller (wins)
+ */
+async function featuredImageFor(slug, inherited = null) {
+  if (inherited) return inherited;
+  if (!slug) return null;
+  try {
+    let url = null;
+    await t.db.withConn(async (conn) => {
+      const detail = await t.db.articles.getDetail(conn, DEFAULT_APP_ID(), slug);
+      if (detail && detail.featured_image) url = detail.featured_image;
+    });
+    return url;
+  } catch (e) {
+    // a missing/unreadable article row must not block publishing
+    return null;
+  }
 }
 
 /**
@@ -220,6 +245,14 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
   let taxoCtx = null;
   if (platform === 'juejin') {
     taxoCtx = await juejinTaxonomy.prepareJuejinTaxonomy({ siteDir: site.siteDir, autoSync: !dryRun });
+  }
+
+  // Tencent Cloud: same platform-scoped dictionary approach, but CATEGORY ONLY —
+  // the platform publishes no full tag word list (tag/search is a keyword search),
+  // so tags keep being resolved live per publish by syndicate/tencent.js.
+  let tencentTaxoCtx = null;
+  if (platform === 'tencent') {
+    tencentTaxoCtx = await tencentTaxonomy.prepareTencentTaxonomy({ siteDir: site.siteDir, autoSync: !dryRun });
   }
 
   const results = [];
@@ -392,10 +425,15 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             continue;
           }
 
+          // Main image: the blog's featured image from the articles table.
+          // publishAliyun downloads + re-uploads it to Aliyun's own OSS/CDN; the
+          // platform's whitelist is jpg/jpeg/png/gif, so a webp source is skipped
+          // with a warning (non-fatal — the draft is still saved).
           const res = await aliyun.publishAliyun({
             mdFile: mdPath,
             title: article.title,
             publish: false, // live publish is human-gated on this platform
+            coverUrl: article.featuredImage || null,
           });
           appendLog(site.siteDir, {
             action: 'draft', platform, slug, ok: !res.failed, detail: res,
@@ -425,12 +463,31 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           fs.writeFileSync(mdPath, `# ${article.title}\n\n${article.contentMd.trim()}\n`, 'utf8');
           const tags = articleTagsFor(article);
 
+          // Map OUR plan category onto the platform's 分类 id via the cached
+          // dictionary (never fails). classifyIds is NOT required by the platform,
+          // so a miss just means "no category" rather than an error.
+          const taxo = tencentTaxoCtx
+            ? tencentTaxonomy.resolveFromContext(tencentTaxoCtx, { category: article.planCategory })
+            : null;
+          const taxoSummary = taxo
+            ? {
+                classify: taxo.classifyName || taxo.classifyIds[0] || null,
+                classifyIds: taxo.classifyIds,
+                classifyOrigin: taxo.classifyOrigin,
+                dictEmpty: taxo.dictEmpty,
+              }
+            : null;
+          // Main image: the blog's own featured image, straight from the articles
+          // table (articles.featured_image). Tencent Cloud accepts ANY external url
+          // as-is — including webp — so no upload step is involved.
+          const coverUrl = article.featuredImage || null;
+
           if (dryRun) {
             appendLog(site.siteDir, {
               action: 'dry-run', platform, slug, ok: true,
-              detail: { title: article.title, tags },
+              detail: { title: article.title, tags, coverUrl, taxonomy: taxoSummary },
             });
-            results.push({ slug, ok: true, dryRun: true, title: article.title, tags });
+            results.push({ slug, ok: true, dryRun: true, title: article.title, tags, coverUrl, taxonomy: taxoSummary });
             continue;
           }
 
@@ -439,9 +496,12 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             title: article.title,
             publish: !asDraft,
             tags,
+            classifyIds: taxo ? taxo.classifyIds : null,
+            coverUrl,
           });
           appendLog(site.siteDir, {
-            action: asDraft ? 'draft' : 'publish', platform, slug, ok: !res.failed, detail: res,
+            action: asDraft ? 'draft' : 'publish', platform, slug, ok: !res.failed,
+            detail: { ...res, taxonomy: taxoSummary },
           });
           if (res.failed) {
             failed += 1;
@@ -457,7 +517,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
               url: res.url,
               title: article.title,
               tags: res.tags,
+              coverUrl: res.coverUrl,
               underReview: !!res.underReview,
+              taxonomy: taxoSummary,
             });
           }
         } else {
@@ -714,6 +776,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
           contentMd: `# ${article.title}\n\n${article.contentMd.trim()}\n`,
           title: article.title,
           publish: false, // live publish is human-gated on this platform
+          coverUrl: await featuredImageFor(article.slug, article.featuredImage),
         });
 
         appendLog(site.siteDir, {
@@ -753,14 +816,42 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
   // so when `asDraft` is false this goes live (into the platform review queue).
   const tencentResults = [];
   if (platform === 'tencent' && !dryRun) {
+    const tencentTaxoCtx = await tencentTaxonomy.prepareTencentTaxonomy({ siteDir: site.siteDir, autoSync: true });
     for (const article of activeArticles) {
       if (!article.slug || !article.title || !article.contentMd) continue;
       try {
+        // Category: prefer the DB plan row (single source of truth, as in Mode A).
+        let category = null;
+        try {
+          await t.db.withConn(async (conn) => {
+            const row = await planRepo.getBySlug(conn, DEFAULT_APP_ID(), article.slug);
+            if (!row) return;
+            category = row.category || category;
+          });
+        } catch (e) {
+          // a missing plan row must not block publishing
+        }
+        const taxo = tencentTaxoCtx
+          ? tencentTaxonomy.resolveFromContext(tencentTaxoCtx, { category })
+          : null;
+        const taxoSummary = taxo
+          ? {
+              classify: taxo.classifyName || taxo.classifyIds[0] || null,
+              classifyIds: taxo.classifyIds,
+              classifyOrigin: taxo.classifyOrigin,
+              dictEmpty: taxo.dictEmpty,
+            }
+          : null;
+
         const res = await tencent.publishTencent({
           contentMd: `# ${article.title}\n\n${article.contentMd.trim()}\n`,
           title: article.title,
           publish: !asDraft, // not human-gated on this platform
           tags: Array.isArray(article.tags) && article.tags.length ? article.tags : null,
+          classifyIds: taxo ? taxo.classifyIds : null,
+          // Mode B articles come from the harness; when they carry no cover, fall
+          // back to the articles table (same source of truth as Mode A).
+          coverUrl: await featuredImageFor(article.slug, article.featuredImage),
         });
 
         appendLog(site.siteDir, {
@@ -768,7 +859,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
           platform,
           slug: article.slug,
           ok: !res.failed,
-          detail: { ...res, rewrite: article.rewrite || 'harness' },
+          detail: { ...res, taxonomy: taxoSummary, rewrite: article.rewrite || 'harness' },
         });
 
         if (res.failed) {
@@ -784,7 +875,9 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
             url: res.url,
             title: article.title,
             tags: res.tags,
+            coverUrl: res.coverUrl,
             underReview: !!res.underReview,
+            taxonomy: taxoSummary,
           });
         }
       } catch (e) {

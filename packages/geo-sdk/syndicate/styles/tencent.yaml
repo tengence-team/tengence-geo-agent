@@ -19,9 +19,20 @@ capabilities:
   #    但发布后进入平台审核队列（文章页显示「审核中」，status=0 PENDING_APPROVAL），
   #    过审后自动公开 —— 因此无需人工点发布，与阿里云「必须人工发布」不同。
   publishGated: false
-  # 审核态枚举（取自编辑器 bundle）：0 审核中 / 1 已发布 / 2 未通过 / 3 被封禁 / 4 待采纳
+  # 审核态枚举（articleInfo.status，取自 bundle c32.js）：0 审核中 / 2 正常(已发布) / 3 未通过 / 5 已删除
+  # ⚠️ 2026-09-27 纠正：旧版误用了另一套枚举（1=已发布、3=被封禁）。实证：
+  #    POST /api/creator/articleListNum → {reject:1, pass:0, pending:0}，而 articleInfo.status=3，
+  #    且匿名访问文章页 404 → 3 是「未通过」，不是「被封禁」；已发布是 2 不是 1。
+  # ✅ 审核结果可用 POST /api/creator/articleListNum 读取 → {pending, pass, reject, draft, delete, recycle}
   reviewRequired: true
   reviewStatusPending: 0
+  reviewStatusRejected: 3
+  # ❗ 实测首篇（articleId 2751864）**被驳回**（reject=1）：直接发原文、未经改写，
+  #    正文含「通智云」×3、「通智搜索」×3、「通智 GEO」×1、CTA（立即行动/免费试用/免费预约），
+  #    以及 console.tengence.com/login、www.tengence.com/contact-us 两个转化外链
+  #    → 命中下方 compliance.promo-drainage 硬规则。
+  #    结论：**必须先走 Mode B 改写**（清品牌块/CTA/转化链接）再投稿，不能直接发原文。
+  reviewRejectedExample: 2751864
 
 # ── 主图（文章图片）────────────────────────────────────────────
 # 已实测（2026-09-27）：`pic` 字段**直接接受任意外链 URL** 并原样持久化 ——
@@ -110,13 +121,19 @@ rewrite:
     structure: ["背景与问题", "方案/步骤", "关键要点", "FAQ", "参考来源"]
   cover:
     required: false
-    note: "pic 直接填外链即可（实测 webp 亦可），无需上传；不传则无封面"
+    # 数据源：**文章表 articles.featured_image**（博客特色图），由 channel.js 直接传入，
+    # 不需要任何 front matter 字段。见 channel.js featureImageFor()。
+    note: "取 articles.featured_image（博客特色图）；pic 直接填外链即可（实测 webp 亦可），无需上传"
   tags:
     max: 5
     note: "最多 5 个平台标签；可传自由文本由 tag/search 解析为 tagId，或直接传 tagIds。平台要求至少 1 个。另有长尾标签 longtailTag（自由文本，≤5）"
   classify:
     max: 3
-    note: "文章分类 id（scene=1 共 24 个，如 1 云计算 / 2 人工智能 / 7 大数据 / 16 架构设计 / 23 算法）。仅当账号具备分类管理员权限时必填，当前账号非必填"
+    # 数据源：**我们的 article_plan.category** 经 syndicate/tencent-taxonomy.js 映射为平台类目 id
+    # （平台字典缓存在 channel_taxonomy 表，平台级共享，无需站点侧配置文件）。
+    # 兜底链：别名 → 同名 → token → 模糊 → 默认(人工智能) → TENCENT_CLASSIFY_IDS → 字典首项 → 硬编码 2。
+    # 平台只在账号具备分类管理员权限时必填，当前账号非必填。
+    note: "由 article_plan.category 经 tencent-taxonomy 映射（别名表见 tencent-taxonomy.js CATEGORY_ALIASES）；我们的类目 → 平台类目：search-recommend→23 算法、geo-ai-search→2 人工智能、data-growth→7 大数据、product-solutions→16 架构设计、product-guides→4 后端、industry-insights→2 人工智能、case-studies→16 架构设计"
   abstract:
     max: 200
     required: true
@@ -160,5 +177,13 @@ rewrite:
       不是 openComment / closeTextLink（第三方文章的写法是错的）。
     - ⚠️ editArticleDraft **必须传完整载荷**，只传部分字段会返回 400「参数错误」。
     - deleteUserArticleDrafts 的参数是单数 draftId，不是 draftIds。
-    - 发布可用且无需人工（无验证码），但发布后进审核队列：status=0 审核中 → 1 已发布。
+    - 发布可用且无需人工（无验证码），但发布后进审核队列：status=0 审核中 → 2 已发布 / 3 未通过。
+      首篇（2751864）因未改写、带品牌块与转化外链被驳回 —— **务必先 Mode B 改写再投稿**。
+    - 查审核结果：POST /api/creator/articleListNum → {pending, pass, reject, draft, delete, recycle}。
+      判断「是否已公开」最快的办法：不带 Cookie 匿名抓文章页，200=已公开，404=未公开。
     - 封面 pic 支持任意外链（含 webp），无需上传 —— 与阿里云/CSDN 都不同。
+      数据源固定为文章表 articles.featured_image（博客特色图），不需要 front matter。
+    - 类目（classifyIds）由我们的 article_plan.category 经 syndicate/tencent-taxonomy.js
+      映射得到；平台 24 个类目缓存在 channel_taxonomy（platform=tencent, kind=category）。
+      注意：腾讯云**没有全量标签字典**（tag/search 是关键词搜索），所以标签不走字典缓存，
+      仍由 syndicate/tencent.js resolveTagIds() 实时解析 —— 这是与 juejin-taxonomy 的关键差异。
