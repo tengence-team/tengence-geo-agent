@@ -18,6 +18,9 @@ dist/
 build/
 coverage/
 
+# Connector submission packages (regenerate from connector/ at any time)
+*.zip
+
 # Logs
 *.log
 npm-debug.log*
