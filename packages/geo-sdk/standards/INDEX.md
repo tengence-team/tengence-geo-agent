@@ -27,6 +27,28 @@
 | `templates/research-brief.md` | Pre-writing research brief (hard-gated: publishing is blocked when missing) | done |
 | `templates/skeletons/` | T1–T7 body skeletons: `definition` (T1), `howto` (T2), `product` (T3), `case` (T4), `industry` (T5), `comparison` (T6), `guide` (T7) | done |
 
+## L2/L3 consumption map
+
+Higher layers (`harness/` at the repo root) **never copy rule text** — they point at
+these files and let the model fetch them at runtime via `standards_read()`. This table
+is the mirror of `harness/README.md` §6; keep the two in sync.
+
+| Consumer (L2/L3 asset) | Standards it reads |
+|---|---|
+| `harness/work-modes/topic-planning.md` | `content-strategy` |
+| `harness/work-modes/writing-gate.md` | `article-writing-standards`, `block-conventions`, `templates/research-brief`, `templates/skeletons/<type>` |
+| `harness/work-modes/publishing.md` | `content-platform-integration`, `block-conventions` |
+| `harness/work-modes/monitoring.md` | `llm-visibility-monitoring`, `search-engine-integration` |
+| `harness/skills/geo-article-writing` | `article-writing-standards`, `block-conventions` |
+| `harness/skills/geo-search-submit` | `search-engine-integration` |
+| `harness/skills/geo-visibility-monitor` | `llm-visibility-monitoring`, `search-engine-integration` |
+| `harness/expert/geo-expert.md` | this index first, then whichever the task needs |
+
+Why the rules are not duplicated up there: the whole set is ~68k characters, loading it
+into a System Prompt would cost tens of thousands of tokens per turn, and users on other
+platforms (Coze, Bailian, Claude Desktop) have no Buddy-app prompt at all — they only
+learn the rules from what this package returns.
+
 ## Conventions
 
 - File names are English kebab-case; article files inside a site directory keep their
