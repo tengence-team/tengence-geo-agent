@@ -1,0 +1,22 @@
+{
+  "name": "Tengence GEO Agent",
+  "name_zh": "通智 GEO 内容智能体",
+  "name_en": "Tengence GEO Agent",
+  "description": "GEO/SEO content pipeline MCP: plan, write, gate-check, publish, submit, monitor AI visibility.",
+  "description_zh": "GEO/SEO 内容生产流水线 MCP：规划选题、撰写正文、门禁校验、发布、提交搜索引擎、监测 AI 可见性。",
+  "description_en": "GEO/SEO content pipeline MCP: plan topics, draft articles, gate-check, publish, submit to search engines, and monitor AI visibility.",
+  "source": "tengence-geo-mcp",
+  "type": "mcp",
+  "version": "0.1.1",
+  "minWorkbuddyVersion": "4.24.0",
+  "examples_zh": [
+    "规划一篇关于通智云 GEO 优化的文章",
+    "撰写正文并通过门禁校验",
+    "发布到微信草稿并监测 AI 可见性"
+  ],
+  "examples_en": [
+    "Plan a GEO article about Tengence Cloud",
+    "Draft the body and pass the gate-check",
+    "Publish to WeChat draft and monitor AI visibility"
+  ]
+}
