@@ -91,6 +91,73 @@ function request(url, options = {}, body = null) {
   });
 }
 
+/**
+ * Re-host an external image URL onto Juejin's own CDN so it can be used as the
+ * article cover. Juejin's `cover_image` field only accepts a Juejin-hosted URL;
+ * external links (e.g. the blog CDN) are rejected at draft-create time
+ * (err_no 2 "参数错误"), so we must re-host first.
+ *
+ * Mirrors the web editor's cover picker: POST https://juejin.cn/image/urlSave
+ * (JSON body {url, version:"2.0", imgType:"private"}, cookie auth). The backend
+ * fetches the image server-side and returns a Juejin CDN URL in `data`.
+ * Returns the full CDN URL on success, null on any failure (caller then falls
+ * back to an empty cover — publishing still proceeds).
+ *
+ * @param {string} imageUrl external image URL (the blog's featured_image)
+ * @returns {Promise<string|null>}
+ */
+async function uploadImage(imageUrl) {
+  const { cookie, uid, aid } = creds();
+  if (!cookie) {
+    console.warn('  ⚠️  JUEJIN_COOKIE missing — 无法上传封面图床');
+    return null;
+  }
+  if (!imageUrl) return null;
+  const url = `https://juejin.cn/image/urlSave?aid=${aid}&uuid=${uid}`;
+  const urlObj = new URL(url);
+  const resp = await new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: urlObj.hostname,
+        path: urlObj.pathname + urlObj.search,
+        method: 'POST',
+        headers: {
+          Cookie: cookie,
+          'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
+          'Content-Type': 'application/json',
+          Referer: 'https://juejin.cn/editor/drafts/new',
+          Origin: 'https://juejin.cn',
+          aid,
+        },
+      },
+      (res) => {
+        let data = '';
+        res.on('data', (c) => (data += c));
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            resolve({ raw: data, statusCode: res.statusCode });
+          }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.setTimeout(30000, () => {
+      req.destroy();
+      reject(new Error('urlSave timeout'));
+    });
+    req.write(JSON.stringify({ url: imageUrl, version: '2.0', imgType: 'private' }));
+    req.end();
+  });
+
+  if (resp.err_no !== 0 || !resp.data) {
+    console.warn(`  ⚠️  封面图床转存失败（err_no=${resp.err_no}）: ${JSON.stringify(resp).slice(0, 200)}`);
+    return null;
+  }
+  return resp.data; // Juejin CDN url, e.g. https://p0-xtjj-private.juejin.cn/...
+}
+
 /** Build default headers (Cookie injected from env). */
 function jHeaders(referer, extra = {}) {
   const { cookie, aid } = creds();
@@ -105,7 +172,8 @@ function jHeaders(referer, extra = {}) {
 }
 
 // Create draft (empty). categoryId overrides the env default (resolved taxonomy).
-async function createDraft(title, tagIds = [], categoryId = null) {
+// coverImage: a Juejin-hosted CDN url ('' → no cover).
+async function createDraft(title, tagIds = [], categoryId = null, coverImage = '') {
   const { uid, categoryId: envCategoryId } = creds();
   const url = 'https://api.juejin.cn/content_api/v1/article_draft/create';
   const payload = {
@@ -114,7 +182,7 @@ async function createDraft(title, tagIds = [], categoryId = null) {
     tags: [],
     tag_ids: tagIds || [],
     category_id: categoryId || envCategoryId,
-    cover_image: '',
+    cover_image: coverImage || '',
     is_english: 0,
     user_id: uid,
   };
@@ -138,7 +206,8 @@ function stripLeadingTitleHeading(md) {
 }
 
 // Update draft with content. categoryId overrides the env default.
-async function updateDraft(draftId, title, content, tagIds = [], categoryId = null) {
+// coverImage: a Juejin-hosted CDN url ('' → no cover).
+async function updateDraft(draftId, title, content, tagIds = [], categoryId = null, coverImage = '') {
   const { uid, categoryId: envCategoryId } = creds();
   const url = 'https://api.juejin.cn/content_api/v1/article_draft/update';
   const payload = {
@@ -151,7 +220,7 @@ async function updateDraft(draftId, title, content, tagIds = [], categoryId = nu
     tags: [],
     tag_ids: tagIds || [],
     category_id: categoryId || envCategoryId,
-    cover_image: '',
+    cover_image: coverImage || '',
     is_english: 0,
     is_original: 1,
     edit_type: 10,
@@ -190,6 +259,27 @@ async function listPublished(page = 0, pageSize = 20) {
     { method: 'POST', headers: jHeaders() },
     payload
   );
+}
+
+/**
+ * List ALL owned articles (paginated). Juejin's `article/list_by_user` returns every
+ * article the account owns — including ones still under review (audit_status=1) —
+ * and each item carries live status fields (article_info.audit_status / status /
+ * verify_status). This is the most authoritative source for reconciling the local
+ * publish-log status (published / reviewing / review_failed / deleted).
+ * @returns {Promise<Array<object>>} flat array of list items (each carries article_info)
+ */
+async function listAllArticles(pageSize = 50) {
+  const out = [];
+  for (let page = 0; page < 50; page += 1) {
+    const resp = await listPublished(page, pageSize);
+    const data = resp && resp.data;
+    const arr = Array.isArray(data) ? data : data && Array.isArray(data.data) ? data.data : [];
+    if (!arr.length) break;
+    out.push(...arr);
+    if (arr.length < pageSize) break;
+  }
+  return out;
 }
 
 /** Fetch one draft's detail. */
@@ -345,7 +435,7 @@ async function listAllTags() {
  * an article without them.
  *
  * @param {{mdFile?:string, contentMd?:string, title?:string|null, publish?:boolean, dryRun?:boolean,
- *          tags?:string[], tagIds?:string[], categoryId?:string|null}} opts
+ *          tags?:string[], tagIds?:string[], categoryId?:string|null, coverUrl?:string|null}} opts
  *   mdFile  = path of a markdown file to read the body from (mutually exclusive-ish
  *             with contentMd; contentMd wins when both are given).
  *   contentMd = the body AS A STRING. This is the harness-rewritten (Mode B) path:
@@ -354,9 +444,12 @@ async function listAllTags() {
  *   tags    = article target_keywords (strings); resolved to tag_ids best-effort.
  *   tagIds  = already-resolved juejin tag_ids (bypasses resolution; takes priority).
  *   categoryId = already-resolved juejin category_id (overrides the env default).
- * @returns {Promise<{draftId?:string, articleId?:string, failed?:boolean, stage?:string, dryRun?:boolean, skipped?:boolean, taxonomy?:object}>}
+ *   coverUrl = the blog's featured image URL (articles.featured_image). Re-hosted
+ *             onto Juejin's own CDN before being set as the article's cover_image
+ *             (Juejin rejects external cover links). Omit/empty → no cover.
+ * @returns {Promise<{draftId?:string, articleId?:string, failed?:boolean, stage?:string, dryRun?:boolean, skipped?:boolean, taxonomy?:object, coverUrl?:string|null}>}
  */
-async function publishJuejin({ mdFile = null, contentMd = null, title = null, publish = false, dryRun = false, tags = [], tagIds = null, categoryId = null }) {
+async function publishJuejin({ mdFile = null, contentMd = null, title = null, publish = false, dryRun = false, tags = [], tagIds = null, categoryId = null, coverUrl = null }) {
   const { cookie, categoryId: envCategoryId, defaultTagId } = creds();
   if (!cookie) {
     console.log('❌ JUEJIN_COOKIE not found in .env');
@@ -391,11 +484,32 @@ async function publishJuejin({ mdFile = null, contentMd = null, title = null, pu
 
   if (dryRun) {
     console.log(`🔍 [dryRun] would create draft then ${publish ? 'publish' : 'save as draft'} on Juejin: ${title}`);
-    return { dryRun: true, title, skipped: false, taxonomy };
+    // dry-run makes NO external calls — note the intended cover only.
+    return { dryRun: true, title, skipped: false, taxonomy, coverUrl: coverUrl || null };
+  }
+
+  // ---- cover: re-host the blog's featured image onto Juejin's own CDN ----
+  // Juejin's cover_image only accepts a Juejin-hosted URL; external links (the
+  // blog CDN) do NOT render. Mirror the CSDN branch (channel.js), which re-uploads
+  // the featured image to the platform's image bed before setting the cover.
+  let coverImage = '';
+  if (coverUrl) {
+    console.log(`🖼️  上传封面到掘金图床...`);
+    try {
+      const uploaded = await uploadImage(coverUrl);
+      if (uploaded) {
+        coverImage = uploaded;
+        console.log(`✅ 封面已上传: ${coverImage}`);
+      } else {
+        console.log(`⚠️  封面上传未返回有效 URL，沿用空封面（文章仍正常发布）`);
+      }
+    } catch (e) {
+      console.warn(`  ⚠️  封面上传异常，沿用空封面: ${e.message}`);
+    }
   }
 
   console.log(`📤 Creating the Juejin draft...`);
-  const createResult = await createDraft(title, resolvedTagIds, resolvedCategoryId);
+  const createResult = await createDraft(title, resolvedTagIds, resolvedCategoryId, coverImage);
   if (createResult.err_no !== 0) {
     console.log(`❌ Create failed: ${JSON.stringify(createResult, null, 2)}`);
     return { failed: true, stage: 'create' };
@@ -405,7 +519,7 @@ async function publishJuejin({ mdFile = null, contentMd = null, title = null, pu
   console.log(`✅ Draft created! Draft ID: ${draftId}`);
 
   console.log(`✏️ Writing the body...`);
-  const updateResult = await updateDraft(draftId, title, bodyContent, resolvedTagIds, resolvedCategoryId);
+  const updateResult = await updateDraft(draftId, title, bodyContent, resolvedTagIds, resolvedCategoryId, coverImage);
   if (updateResult.err_no !== 0) {
     // fix: do NOT publish a draft whose body failed to save
     console.log(`❌ Body write failed: ${JSON.stringify(updateResult, null, 2)}`);
@@ -428,17 +542,19 @@ async function publishJuejin({ mdFile = null, contentMd = null, title = null, pu
     }
   }
 
-  return { draftId, articleId: publishedArticleId, taxonomy };
+  return { draftId, articleId: publishedArticleId, taxonomy, coverUrl: coverUrl || null, coverImage };
 }
 
 module.exports = {
   publishJuejin,
   extractBrief,
+  uploadImage,
   createDraft,
   updateDraft,
   publishArticle,
   listDrafts,
   listPublished,
+  listAllArticles,
   getDraft,
   deleteDraft,
   deleteArticle,

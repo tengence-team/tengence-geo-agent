@@ -200,15 +200,23 @@ async function clearPlatform(platform) {
 }
 
 /**
- * Set of slugs already marked `published` on a platform — drives nextDue skip.
+ * Set of slugs already DISPATCHED to a platform (published OR still under review) —
+ * drives the nextDue / filterUnpublished skip. `reviewing` is included so a
+ * just-published-but-not-yet-approved article is never re-sent; `review_failed` and
+ * `deleted` are deliberately excluded so they get a fresh (re)publish attempt.
  * @returns {Promise<Set<string>>}
  */
+const DISPATCHED_STATUSES = new Set(['published', 'reviewing']);
 async function publishedSlugs(platform) {
   const appId = DEFAULT_APP_ID();
   const set = new Set();
   await withConn(async (conn) => {
-    const rows = await repo.list(conn, appId, { platform, status: 'published' });
-    for (const row of rows) for (const s of row.article_slugs) set.add(s);
+    const rows = await repo.list(conn, appId, { platform });
+    for (const row of rows) {
+      if (DISPATCHED_STATUSES.has(row.status)) {
+        for (const s of row.article_slugs) set.add(s);
+      }
+    }
   });
   return set;
 }
@@ -375,6 +383,177 @@ async function reconcileFromJuejin({ map } = {}) {
 }
 
 /**
+ * Reconcile a platform's channel_plan STATUSES with the platform's LIVE article list.
+ * This is the "refresh my latest status from the source of truth" step the user asked
+ * for: query the platform's article list (the most complete / authentic view — it
+ * includes articles still under review, and drops deleted ones) and rewrite each
+ * local row's status to match reality.
+ *
+ * Juejin semantics (verified empirically against public article pages):
+ *   article_info.audit_status : 2 = 审核通过/已发布(publicly visible) · 1 = 审核中(under
+ *                               review, public page 404s) · 0/3/… = treat as rejected
+ *   article_info.status       : 1 = published · 0 = under review (consistent with audit)
+ *   article_info.verify_status: editor-pick flag (0/1), NOT review-related
+ * A row whose article is absent from the live list entirely is treated as `deleted`.
+ *
+ * Matching priority per row: juejin draft_id (stored in row.draft_ids) → normalized
+ * title (row.topic OR the canonical blog title for the row's slug).
+ *
+ * Robustness: the platform's list API is occasionally flaky (a single call can drop an
+ * item). To avoid a transient gap being mis-read as `deleted`, we fetch `retries` times,
+ * keep the MOST COMPLETE response for status values, and build a UNION of draft_ids /
+ * titles across ALL successful fetches for the existence check. An article is only
+ * declared `deleted` when it is absent from every successful fetch AND the returned
+ * list looks complete (did not unexpectedly shrink below the count of already-dispatched
+ * rows). Otherwise a genuinely-present-but-unreadable-this-run article keeps its status.
+ *
+ * @param {string} platform platform key (currently 'juejin' only)
+ * @param {{dryRun?:boolean, retries?:number}} [opts]
+ * @returns {Promise<{platform:string, total:number, changed:number, recorded:number, liveCount:number,
+ *           attempts:number, byStatus:object, changes:Array<object>, dryRun:boolean}>}
+ */
+async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 } = {}) {
+  if (!platform) throw new Error('syncStatuses requires a platform key');
+  const appId = DEFAULT_APP_ID();
+  const norm = (s) => (s || '').trim().toLowerCase();
+
+  // 1) live fetch with retries → most-complete set (status) + union (existence)
+  const fetchOnce = async () => {
+    if (platform === 'juejin') return t.syndicate.juejin.listAllArticles();
+    throw new Error(
+      `syncStatuses: not implemented for platform "${platform}" — currently juejin only`
+    );
+  };
+  let best = null; // { items } with the largest length
+  const attempts = [];
+  for (let i = 0; i < Math.max(1, retries); i += 1) {
+    try {
+      const items = await fetchOnce();
+      if (Array.isArray(items)) {
+        attempts.push(items);
+        if (!best || items.length > best.items.length) best = { items };
+      }
+    } catch (e) {
+      // transient — next attempt
+    }
+  }
+  if (!best || !best.items.length) {
+    throw new Error(
+      `syncStatuses: live fetch for "${platform}" returned no data after ${retries} attempts — aborting to avoid false deletions`
+    );
+  }
+  const liveItems = best.items;
+
+  // 2) index: byDraft/byTitle from the most-complete fetch; presentSet (union) for existence
+  const byDraft = new Map();
+  const byTitle = new Map();
+  const presentSet = new Set();
+  const addPresent = (ai) => {
+    if (ai.draft_id) presentSet.add(`d:${ai.draft_id}`);
+    const ti = norm(ai.title);
+    if (ti) presentSet.add(`t:${ti}`);
+  };
+  for (const it of liveItems) {
+    const ai = it.article_info || it;
+    if (ai.draft_id) byDraft.set(String(ai.draft_id), ai);
+    const ti = norm(ai.title);
+    if (ti) byTitle.set(ti, ai);
+    addPresent(ai);
+  }
+  for (const items of attempts) {
+    for (const it of items) addPresent(it.article_info || it);
+  }
+
+  // canonical blog title per slug — some channel_plan rows carry a truncated/older
+  // topic, so fall back to the blog's current title when matching by title.
+  const blog = (await t.plan.list({ limit: 5000 })).filter((r) => r.plan_status === 'published');
+  const blogTitleBySlug = new Map(blog.map((r) => [r.slug, r.title]));
+
+  const auditToStatus = (ai) => {
+    const a = ai.audit_status;
+    if (a === 2) return 'published'; // 审核通过
+    if (a === 1) return 'reviewing'; // 审核中
+    return 'review_failed'; // 0 / 3 / other → treat as rejected (retryable)
+  };
+
+  const changes = [];
+  const byStatus = {};
+  let total = 0;
+  let changed = 0;
+  let recorded = 0; // rows whose platform article_id was written this run
+
+  await withConn(async (conn) => {
+    const rows = await repo.list(conn, appId, { platform });
+    total = rows.length;
+    // guard: only declare deletions when the live list did not unexpectedly shrink
+    const dispatchedBefore = rows.filter((r) => DISPATCHED_STATUSES.has(r.status)).length;
+    const listLooksComplete = liveItems.length >= dispatchedBefore;
+
+    for (const row of rows) {
+      const draftId = row.draft_ids && row.draft_ids[0] ? String(row.draft_ids[0]) : null;
+      const slug = (row.article_slugs || [])[0];
+      const titleCandidates = [row.topic, slug && blogTitleBySlug.get(slug)]
+        .filter(Boolean)
+        .map(norm);
+      const ai =
+        (draftId && byDraft.get(draftId)) ||
+        titleCandidates.map((tn) => byTitle.get(tn)).find(Boolean);
+
+      let newStatus;
+      if (ai) {
+        newStatus = auditToStatus(ai);
+      } else {
+        const exists =
+          (draftId && presentSet.has(`d:${draftId}`)) ||
+          titleCandidates.some((tn) => presentSet.has(`t:${tn}`));
+        // present in some fetch but status unreadable this run → keep current (don't flip)
+        // absent from every fetch AND the list looks complete → genuinely deleted
+        newStatus = exists ? row.status : listLooksComplete ? 'deleted' : row.status;
+      }
+      byStatus[newStatus] = (byStatus[newStatus] || 0) + 1;
+
+      // the platform's authoritative article id (e.g. Juejin post id) to record locally.
+      // Keep as string — these are 19-digit Snowflake ids that lose precision as a JS Number.
+      const articleId = ai && ai.article_id != null ? String(ai.article_id) : null;
+      const idChanged = newStatus !== row.status;
+      const idRecorded =
+        articleId != null && articleId !== (row.article_id != null ? String(row.article_id) : null);
+
+      if (idChanged || idRecorded) {
+        if (idChanged) changed += 1;
+        if (idRecorded) recorded += 1;
+        changes.push({
+          id: row.id,
+          slug,
+          from: row.status,
+          to: newStatus,
+          draftId,
+          articleId,
+          articleIdRecorded: idRecorded,
+          title: row.topic || '',
+        });
+        if (!dryRun) {
+          if (idChanged) await repo.markStatus(conn, appId, row.id, newStatus);
+          if (idRecorded) await repo.setArticleId(conn, appId, row.id, articleId);
+        }
+      }
+    }
+  });
+
+  return {
+    platform,
+    total,
+    changed,
+    recorded,
+    liveCount: liveItems.length,
+    attempts: attempts.length,
+    byStatus,
+    changes,
+    dryRun,
+  };
+}
+
+/**
  * The next article to publish on a platform.
  *   - wechat: the earliest calendar row still in todo (per-issue batch).
  *   - juejin / devto: DERIVED from the blog article plan — only blog-published rows,
@@ -425,6 +604,7 @@ module.exports = {
   recordPublish,
   reconcileFromPlatform,
   reconcileFromJuejin,
+  syncStatuses,
   list,
   get,
   markStatus,

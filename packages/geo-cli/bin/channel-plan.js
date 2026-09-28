@@ -8,6 +8,7 @@
  *   tengence-geo channel-plan.js mark <id> <status>         # todo|draft|published|paused
  *   tengence-geo channel-plan.js import-wechat <plan.md>    # import 《微信公众号发布计划.md》
  *   tengence-geo channel-plan.js reconcile <platform> [--published=slug1,slug2]
+ *   tengence-geo channel-plan.js sync-status [--platform=juejin] [--dry-run]
  *   tengence-geo channel-plan.js taxonomy sync [--platform=juejin]
  *   tengence-geo channel-plan.js taxonomy list [--kind=tag] [--name=SEO | --prefix=搜索] [--limit=50]
  *   tengence-geo channel-plan.js taxonomy resolve --category=geo-ai-search --tags=geo-seo,search-system
@@ -32,6 +33,7 @@ async function main() {
       category: { type: 'string' },
       tags: { type: 'string' },
       keywords: { type: 'string' },
+      'dry-run': { type: 'boolean' },
     },
     process.argv.slice(2)
   );
@@ -104,6 +106,19 @@ async function main() {
     }
     const res = await ch.reconcileFromJuejin({ map });
     console.log(`✅ Reconciled ${platform}: ${JSON.stringify(res)}`);
+    return;
+  }
+
+  if (cmd === 'sync-status') {
+    const platform = flags.platform || positionals[1] || 'juejin';
+    const dryRun = !!flags['dry-run'];
+    const res = await ch.syncStatuses(platform, { dryRun });
+    console.log(`✅ sync-status ${platform} (dryRun=${dryRun}): total=${res.total} changed=${res.changed} recorded(article_id)=${res.recorded} byStatus=${JSON.stringify(res.byStatus)}`);
+    for (const c of res.changes) {
+      const rec = c.articleIdRecorded ? `  → 记录文章ID=${c.articleId}` : '';
+      console.log(`   #${c.id} ${c.slug}  ${c.from} → ${c.to}  (draft=${c.draftId})${rec}  ${c.title}`);
+    }
+    if (!res.changes.length) console.log('   (no changes needed)');
     return;
   }
 

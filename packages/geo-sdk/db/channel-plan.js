@@ -17,7 +17,16 @@
 
 const { CHANNEL_PLAN } = require('./sqlite-schema');
 
-const STATUSES = ['todo', 'draft', 'published', 'paused'];
+// Statuses: todo → draft → published (paused for manual holds).
+// Reconciliation with the live platform can also surface:
+//   reviewing     — published call succeeded but the platform still has it in review
+//                   (e.g. Juejin audit_status=1: not yet publicly visible)
+//   review_failed — platform rejected the article (e.g. Juejin audit_status=3)
+//   deleted       — the article no longer exists on the platform at all
+// `published` and `reviewing` are both treated as "already dispatched" by the dedup
+// logic (nextDue / filterUnpublished); `review_failed` and `deleted` remain eligible
+// for a (re)publish attempt.
+const STATUSES = ['todo', 'draft', 'published', 'paused', 'reviewing', 'review_failed', 'deleted'];
 
 /** Normalize a row record (decode JSON columns). */
 function normalizeRow(row) {
@@ -40,7 +49,8 @@ function normalizeRow(row) {
     }
   }
   if (!Array.isArray(draftIds)) draftIds = [];
-  return { ...row, article_slugs: articleSlugs, draft_ids: draftIds };
+  const articleId = row.article_id != null ? String(row.article_id) : null;
+  return { ...row, article_slugs: articleSlugs, draft_ids: draftIds, article_id: articleId };
 }
 
 /**
@@ -222,6 +232,20 @@ async function markStatus(conn, appId, id, status, draftIds) {
 }
 
 /**
+ * Persist the external platform's article id (e.g. Juejin post id) onto a row.
+ * Used by the juejin reconciliation so the live article id is recorded locally and
+ * can be referenced later (deep-linking, re-checks) without re-querying the platform.
+ */
+async function setArticleId(conn, appId, id, articleId) {
+  // Keep as string — Juejin article ids are 19-digit Snowflake ids that lose precision as a JS Number.
+  await conn.query(
+    `UPDATE ${CHANNEL_PLAN} SET article_id = ?, updated_at = NOW() WHERE app_id = ? AND id = ?`,
+    [articleId != null ? String(articleId) : null, appId, id]
+  );
+  return { id: Number(id), articleId: articleId != null ? String(articleId) : null };
+}
+
+/**
  * The next due row for a platform: the earliest row still in todo (nothing has
  * been prepared for it yet — draft/published rows are already handled). This is
  * what the scheduled publisher should prepare next. Returns null when all rows
@@ -247,5 +271,6 @@ module.exports = {
   upsert,
   upsertBySlug,
   markStatus,
+  setArticleId,
   nextDue,
 };

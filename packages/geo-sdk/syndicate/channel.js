@@ -325,6 +325,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             tags: tagKws,
             categoryId: taxo ? taxo.categoryId : null,
             tagIds: taxo ? taxo.tagIds : null,
+            // 封面：博客特色图（articles.featured_image）；publishJuejin 内部会
+            // 把它转存到掘金图床（外链封面在掘金无效，与 CSDN 分支同理）。
+            coverUrl: await featuredImageFor(slug, article.featuredImage),
           });
           appendLog(site.siteDir, {
             action: asDraft ? 'draft' : 'publish',
@@ -674,6 +677,8 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
           tags,
           categoryId: taxo ? taxo.categoryId : null,
           tagIds: taxo ? taxo.tagIds : null,
+          // 封面：博客特色图（harness 传入的 cover；缺失时回落 articles.featured_image）。
+          coverUrl: await featuredImageFor(article.slug, article.cover || article.featuredImage),
         });
 
         appendLog(site.siteDir, {

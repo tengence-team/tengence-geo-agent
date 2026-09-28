@@ -41,7 +41,7 @@ const CHANNEL_TAXONOMY = 'tengence_geo_channel_taxonomy';
 // only used as a monotonic "DDL already applied" marker (the DDL itself is idempotent,
 // IF NOT EXISTS), so jumping to 4 guarantees the channel_taxonomy table is created
 // everywhere regardless of which of {2,3} a given DB is currently at.
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 
 const createSqliteTablesSQL = `
 -- ========== 1. articles main table ==========
@@ -398,6 +398,7 @@ CREATE TABLE IF NOT EXISTS ${CHANNEL_PLAN} (
       article_slugs TEXT NOT NULL,
       status TEXT DEFAULT 'todo',
       draft_ids TEXT,
+      article_id TEXT,
       notes TEXT,
   schedule_at TEXT,
   created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),

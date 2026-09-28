@@ -61,10 +61,51 @@ function localNow() {
 }
 
 /**
+ * Ensure a column exists on a table with the correct affinity (SQLite has no
+ * "ADD COLUMN IF NOT EXISTS", and ALTER can't change a column's type). Used for
+ * incremental migrations on already-deployed DBs. If the column is missing we ADD it;
+ * if it exists but with the wrong affinity (e.g. INTEGER where we need TEXT for a
+ * 19-digit Snowflake id that would lose precision as a JS number) we rebuild it — but
+ * ONLY when it holds no data, so we never silently drop real rows.
+ * @param {object} db open handle
+ * @param {string} table
+ * @param {string} column
+ * @param {string} ddl column definition, e.g. "TEXT"
+ */
+function ensureColumnType(db, table, column, ddl) {
+  try {
+    const info = db.pragma(`table_info(${table})`);
+    const col = Array.isArray(info) ? info.find((c) => c.name === column) : null;
+    const typeOk = col && (col.type || '').toUpperCase().includes(ddl.toUpperCase());
+    if (!col) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+    } else if (!typeOk) {
+      const rows = db.prepare(`SELECT COUNT(*) AS cnt FROM ${table} WHERE ${column} IS NOT NULL`).all();
+      const cnt = rows && rows[0] ? Number(rows[0].cnt) : 0;
+      if (cnt === 0) {
+        db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`);
+      } else {
+        console.warn(
+          `⚠️ ${table}.${column} has type "${col.type}" but "${ddl}" is required and the column holds data — leaving as-is (manual migration needed)`
+        );
+      }
+    }
+  } catch (_) {
+    // table may not exist yet on a brand-new DB; CREATE TABLE IF NOT EXISTS covers it
+  }
+}
+
+/**
  * Idempotent schema init + incremental migration (PRAGMA user_version)
  * @returns {{applied:boolean, version:number}}
  */
 function ensureSchema(db) {
+  // Incremental column migrations — always run (cheap idempotent check) so the column
+  // exists with the right affinity whether the DB was created fresh or pre-dates this change.
+  // article_id is a 19-digit Juejin Snowflake id: store as TEXT to avoid JS Number precision loss.
+  ensureColumnType(db, CHANNEL_PLAN, 'article_id', 'TEXT');
+
   const version = Number(db.pragma('user_version', { simple: true }));
   if (version >= SCHEMA_VERSION) return { applied: false, version };
 
