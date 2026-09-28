@@ -62,6 +62,134 @@ const mdmod = require('../content/md');
 const APP_KEY = '203803574';
 const APP_SECRET = '9znpamsyl2c7cdrr9sas0le9vbc3r6ba';
 
+// CSDN 图床（封面/正文配图）走 resource-api 网关，用的是 web bundle 里另一对
+// AppKey/Secret（与发文网关不同）：2026-09-28 从 g.csdnimg.cn/csdn-upload/1.0.9
+// + csdn-http/1.0.2 逆向读出，并实测 code:200 通过。签名串里 x-ca-timestamp
+// 参与签名（发文网关那套不参与），所以单独实现。
+const RES_APP_KEY = '260196572';
+const RES_APP_SECRET = 't5PaqxVQpWoHgLGt7XPIvd5ipJcwJTU7';
+const BASE_RESOURCE = 'https://bizapi.csdn.net/resource-api';
+/** 封面图上传 appName（编辑器封面选择器用的是 direct_blog_coverimage） */
+const COVER_APP_NAME = 'direct_blog_coverimage';
+/** CSDN 图床支持的扩展名 */
+const IMAGE_SUFFIXES = ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'];
+
+/** 封面必须落在 CSDN 自家 CDN，外链一律无效 */
+const CSDN_CDN_PATTERNS = [/i-blog\.csdnimg\.cn/, /img-blog\.csdn\.net/, /i-scdn\.csdnimg\.cn/];
+
+/** 按扩展名给出 content-type（图床 PUT/POST 用）。 */
+function mimeFor(suffix) {
+  return (
+    { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif', bmp: 'image/bmp', webp: 'image/webp' }[
+      String(suffix || '').toLowerCase()
+    ] || 'application/octet-stream'
+  );
+}
+
+/**
+ * resource-api 网关签名：stringToSign 含 x-ca-timestamp（与发文网关唯一差异）。
+ *   METHOD\nAccept\n\nContent-Type\n\nx-ca-key:..\nx-ca-nonce:..\nx-ca-timestamp:..\nPathAndQuery
+ */
+function signResourceHeaders({ method, pathAndQuery, accept, contentType }) {
+  const nonce = crypto.randomUUID();
+  const timestamp = String(Date.now());
+  const signed = { 'x-ca-key': RES_APP_KEY, 'x-ca-nonce': nonce, 'x-ca-timestamp': timestamp };
+  const lines = Object.keys(signed)
+    .sort()
+    .map((k) => `${k}:${signed[k]}`)
+    .join('\n');
+  const stringToSign = [method.toUpperCase(), accept, '', contentType, ''].join('\n') + '\n' + lines + '\n' + pathAndQuery;
+  const signature = crypto.createHmac('sha256', RES_APP_SECRET).update(stringToSign, 'utf8').digest('base64');
+  return {
+    ...signed,
+    'x-ca-signature': signature,
+    'x-ca-signature-headers': Object.keys(signed).sort().join(','),
+  };
+}
+
+/** 向 resource-api 换取一次直传凭证（OBS 表单直传）。 */
+async function getImageUploadSignature({ appName = COVER_APP_NAME, suffix = 'jpg', imageTemplate = '' } = {}) {
+  const { cookie } = creds();
+  if (!cookie) throw new Error('CSDN_COOKIE_MISSING');
+  const accept = 'application/json, text/plain, */*';
+  const contentType = 'application/json;charset=UTF-8';
+  const pathAndQuery = '/resource-api/v1/image/direct/upload/signature';
+  const res = await fetch(`${BASE_RESOURCE}/v1/image/direct/upload/signature`, {
+    method: 'POST',
+    headers: {
+      ...signResourceHeaders({ method: 'POST', pathAndQuery, accept, contentType }),
+      accept,
+      'content-type': contentType,
+      cookie,
+      origin: 'https://editor.csdn.net',
+      referer: 'https://editor.csdn.net/md/',
+      'user-agent': UA,
+    },
+    body: JSON.stringify({ imageTemplate, appName, imageSuffix: String(suffix).toLowerCase() }),
+  });
+  const j = await res.json().catch(() => ({ code: res.status, msg: 'non-json response' }));
+  if (j.code !== 200 || !j.data) throw new Error(`CSDN 图床签名失败: ${j.msg || j.code}`);
+  return j.data;
+}
+
+/**
+ * 把一张图转存进 CSDN 图床，返回可直接当封面/配图用的 URL。
+ * @param {{buffer?:Buffer, filePath?:string, url?:string, suffix?:string, appName?:string}} opts
+ */
+async function uploadImage({ buffer = null, filePath = null, url = null, suffix = null, appName = COVER_APP_NAME } = {}) {
+  let buf = buffer;
+  let ext = String(suffix || '').toLowerCase().replace(/^\./, '');
+  if (!buf && filePath) {
+    buf = fs.readFileSync(filePath);
+    ext = ext || path.extname(filePath).slice(1).toLowerCase();
+  }
+  if (!buf && url) {
+    const r = await fetch(url, { headers: { 'user-agent': UA, referer: new URL(url).origin + '/' } });
+    if (!r.ok) throw new Error(`下载图片失败: HTTP ${r.status} ${url}`);
+    buf = Buffer.from(await r.arrayBuffer());
+    const ctype = r.headers.get('content-type') || '';
+    ext = ext || (ctype.split('/')[1] || '').split(';')[0].toLowerCase() || 'jpg';
+    if (ext === 'jpeg') ext = 'jpg';
+  }
+  if (!buf) throw new Error('uploadImage 需要 buffer / filePath / url 之一');
+  if (!IMAGE_SUFFIXES.includes(ext)) ext = 'jpg';
+
+  const sig = await getImageUploadSignature({ appName, suffix: ext });
+  const fd = new FormData();
+  fd.append('key', sig.filePath);
+  fd.append('policy', sig.policy);
+  fd.append('signature', sig.signature);
+  fd.append('callbackBody', sig.callbackBody);
+  fd.append('callbackBodyType', sig.callbackBodyType);
+  if (sig.provider === 'obs') {
+    fd.append('callbackUrl', sig.callbackUrl);
+    fd.append('AccessKeyId', sig.accessId);
+  } else {
+    fd.append('callback', sig.callbackUrl);
+    fd.append('OSSAccessKeyId', sig.accessId);
+  }
+  for (const [k, v] of Object.entries(sig.customParam || {})) fd.append(`x:${k}`, String(v));
+  fd.append('file', new Blob([buf], { type: mimeFor(ext) }), `image.${ext}`);
+
+  const up = await fetch(sig.host, { method: 'POST', body: fd });
+  const body = await up.text().catch(() => '');
+  let parsed = null;
+  try { parsed = JSON.parse(body); } catch (e) { /* 直传成功但响应非 JSON */ }
+  const imageUrl = parsed && parsed.data && parsed.data.imageUrl;
+  if (!imageUrl) {
+    if (up.status >= 200 && up.status < 300) {
+      return { imageUrl: `${String(sig.host).replace(/\/$/, '')}/${sig.filePath}`, raw: parsed || body };
+    }
+    throw new Error(`CSDN 图床上传失败: HTTP ${up.status} ${String(body).slice(0, 200)}`);
+  }
+  return { imageUrl, raw: parsed };
+}
+
+/** 已经是 CSDN CDN 的图无需再转存。 */
+function isCsdnCdn(url) {
+  return !!url && CSDN_CDN_PATTERNS.some((re) => re.test(url));
+}
+
 /** 发文 base */
 const BASE_EDITOR = 'https://bizapi.csdn.net/blog-console-api';
 /** 内容管理 base */
@@ -85,6 +213,9 @@ const DEFAULT_ACCEPT = 'application/json, text/plain, */*';
 const DEFAULT_CONTENT_TYPE = 'application/json;';
 
 /** Read CSDN credentials from injected env. */
+const UA =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
 function creds() {
   return {
     cookie: process.env.CSDN_COOKIE || '',
@@ -442,6 +573,8 @@ async function publishCsdn({
   categories = '',
   coverImages = [],
   coverType = 1,
+  coverUrl = null,
+  coverSuffix = null,
 } = {}) {
   const { cookie, defaultTags } = creds();
   if (!cookie) {
@@ -492,6 +625,25 @@ async function publishCsdn({
     return { failed: true, stage: 'tags', title };
   }
 
+  // 封面：CSDN 只认自家图床，外链（博客特色图）必须先转存；已经是 CDN 的直接用。
+  let resolvedCovers = Array.isArray(coverImages) ? coverImages.filter(Boolean) : [];
+  let coverSource = resolvedCovers.length ? 'direct' : null;
+  if (!resolvedCovers.length && coverUrl) {
+    if (isCsdnCdn(coverUrl)) {
+      resolvedCovers = [coverUrl];
+      coverSource = 'already-cdn';
+    } else {
+      try {
+        const up = await uploadImage({ url: coverUrl, suffix: coverSuffix });
+        resolvedCovers = [up.imageUrl];
+        coverSource = 'uploaded';
+        console.log(`🖼  封面已转存 CSDN 图床: ${up.imageUrl}`);
+      } catch (e) {
+        console.log(`⚠️  封面转存失败，按无封面继续: ${e.message}`);
+      }
+    }
+  }
+
   const contentHtml = mdToCsdnHtml(bodyMd);
   console.log(`📤 ${articleId ? 'Updating' : 'Creating'} on CSDN (${publish ? 'publish' : 'draft'})...`);
 
@@ -504,8 +656,8 @@ async function publishCsdn({
     publish,
     articleId,
     categories,
-    coverImages,
-    coverType,
+    coverImages: resolvedCovers,
+    coverType: resolvedCovers.length ? coverType : 0,
   });
   const u = unwrap(resp);
   if (!u.ok) {
@@ -524,6 +676,8 @@ async function publishCsdn({
     articleId: id,
     url,
     published: !!publish,
+    coverImages: resolvedCovers,
+    coverSource,
     title,
     titleTrimmed,
     tags: resolvedTags,
@@ -540,6 +694,10 @@ module.exports = {
   // write
   saveArticle,
   publishCsdn,
+  // image hosting（封面/正文配图必须落在 CSDN 图床）
+  uploadImage,
+  getImageUploadSignature,
+  isCsdnCdn,
   // read
   listArticles,
   listPublished,
@@ -555,5 +713,6 @@ module.exports = {
   // constants (consumed by channel.js / MCP tools)
   CSDN_TITLE_MAX,
   CSDN_TAGS_MAX,
+  COVER_APP_NAME,
   LIST_STATUS,
 };

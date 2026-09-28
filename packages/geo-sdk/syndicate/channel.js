@@ -385,6 +385,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             title: article.title,
             publish: !asDraft,
             tags,
+            // 封面：博客特色图（articles.featured_image）；publishCsdn 内部会
+            // 把它转存到 CSDN 图床（外链封面在 CSDN 无效）。
+            coverUrl: await featuredImageFor(slug, article.featuredImage),
           });
           appendLog(site.siteDir, {
             action: asDraft ? 'draft' : 'publish', platform, slug, ok: !res.failed, detail: res,
@@ -730,6 +733,8 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
           title: article.title,
           publish: !asDraft,
           tags,
+          // 封面同 Mode A：harness 传了 cover 就用，否则回落到 DB featured_image。
+          coverUrl: await featuredImageFor(article.slug, article.cover || article.featuredImage),
         });
 
         appendLog(site.siteDir, {
