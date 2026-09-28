@@ -18,6 +18,11 @@ dist/
 build/
 coverage/
 
+# Platform credentials (never commit: Client ID / Client Secret / tokens)
+*.credentials.md
+*.credentials.local.md
+credentials.local.*
+
 # Connector submission packages (regenerate from connector/ at any time)
 *.zip
 
