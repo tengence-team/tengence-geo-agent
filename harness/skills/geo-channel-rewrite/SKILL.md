@@ -40,6 +40,13 @@ description: 渠道分发标准链路——取下一期、读原文、按渠道�
    forbidden；正文按 structure 重组；删除 removeBlocks 命中的块；保留 keepBlocks；
    链接按渠道策略处理；口语化/短段落/字数下限按 yaml。
    **事实红线**：只允许重组与换表达，不允许编造数据、案例、结论。
+   **格式红线（2026-09-29 事故教训）**：改写稿必须是**结构完整的 markdown**——
+   保留原文的标题层级（`##`/`###`）、表格、有序/无序列表、
+   **加粗**；严禁把标题/列表/表格压平成纯文本段落（压平后 md→HTML 转换即丢失格式）。
+   md→HTML 转换一律由 MCP server 完成，agent 只交 markdown：禁止自己产 HTML。
+   **emoji 红线（2026-09-29 新增）**：渠道规则含 `noEmoji: true` 时，标题与正文
+   **禁用一切 emoji/表情符号**（含标题内的装饰 emoji、⚠️/✅ 类符号、1️⃣ 类键帽数字），
+   分隔与强调用编号、小标题和**加粗**实现；`channel_check` 会对命中项报 error。
 5. **硬校验**：`channel_check(platform, title, body)`。
    errors 非空 → 按错误修正重跑，最多 2 轮；仍不过 → 该篇标失败上报，不得发布。
 6. **推送**：`channel_publish(platform, site, articles=[{slug,title,contentMd,

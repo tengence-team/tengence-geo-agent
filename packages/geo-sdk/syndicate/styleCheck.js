@@ -17,6 +17,7 @@
  *   - required internal links (rewrite.internalLinks.required)
  *   - removeBlocks that must NOT appear
  *   - forbiddenPhrases (marketing phrases banned by the platform audit) that must NOT appear
+ *   - emoji ban: emoji/pictographs in title & body when rewrite.body.noEmoji is set
  *   - externalLinks: brand link classification (anti-drainage) — denied conversion
  *     URLs are always errors; article-page URLs are allowed up to maxBrandLinks
  *     and only inside the trailing 延伸阅读 area
@@ -31,6 +32,20 @@ const registry = require('./registry');
 /** Count characters with full Unicode (CJK) awareness. */
 function charLen(s) {
   return [...String(s)].length;
+}
+
+/**
+ * Emoji / pictograph matcher. Covers the common emoji Unicode blocks
+ * (misc symbols, dingbats, supplemental symbols & pictographs, transport &
+ * map, regional flags, keycaps, variation selectors, ZWJ). CJK, ASCII and
+ * typographic arrows (→) are unaffected. Used when a platform's style file
+ * sets rewrite.body.noEmoji — hits are hard errors.
+ */
+const EMOJI_RE = /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{1F1E6}-\u{1F1FF}\u{2049}\u{203C}\u{FE0F}\u{200D}\u{20E3}]/gu;
+
+function emojiHits(s) {
+  const m = String(s).match(EMOJI_RE);
+  return m ? [...new Set(m)] : [];
 }
 
 /**
@@ -57,6 +72,10 @@ function check({ platform, title, body }) {
     const forb = (rw.title && rw.title.forbidden) || [];
     for (const w of forb) {
       if (t.includes(w)) errors.push(`标题含违禁词『${w}』`);
+    }
+    if (rw.body && rw.body.noEmoji) {
+      const tHits = emojiHits(t);
+      if (tHits.length) errors.push(`标题含 emoji/表情符号（noEmoji=true）：${tHits.join(' ')}`);
     }
   }
 
@@ -106,6 +125,15 @@ function check({ platform, title, body }) {
     const phrases = rw.forbiddenPhrases || [];
     for (const ph of phrases) {
       if (ph && b.includes(ph)) errors.push(`禁用营销短语：『${ph}』`);
+    }
+
+    // emoji ban: when rewrite.body.noEmoji is true, any emoji/pictograph in the
+    // body is a hard error (platform wants a plain, non-"AI-flavored" texture).
+    if (rw.body && rw.body.noEmoji) {
+      const bHits = emojiHits(b);
+      if (bHits.length) {
+        errors.push(`正文含 emoji/表情符号（noEmoji=true，命中 ${bHits.length} 种）：${bHits.slice(0, 10).join(' ')}`);
+      }
     }
 
     // externalLinks: classify brand-domain links (anti-drainage rule).
