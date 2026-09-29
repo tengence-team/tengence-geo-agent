@@ -16,7 +16,7 @@ graph TB
         UI["scenario-capsules.md · ui-copy.md<br/>UI strings (zh/en)"]
     end
     subgraph L2["L2 · Skill layer (this directory)"]
-        SK["skills/ ×3<br/>reusable task instructions"]
+        SK["skills/ ×4<br/>reusable task instructions"]
     end
     subgraph L1["L1 · Knowledge layer (SSOT)"]
         ST["packages/geo-sdk/standards/<br/>8 docs + templates · 68,466 chars"]
@@ -65,6 +65,7 @@ Consequences:
 | `work-modes/monitoring.md` | Mode 4 — indexing baseline, AI visibility measurement, refresh |
 | `skills/geo-article-writing/SKILL.md` | Draft → gate → fix loop |
 | `skills/geo-search-submit/SKILL.md` | Push for indexing after publishing |
+| `skills/geo-channel-rewrite/SKILL.md` | Per-channel rewrite → hard gate → publish loop (platform-agnostic; rules fetched at runtime via `channel_style_get`) |
 | `skills/geo-visibility-monitor/SKILL.md` | Measure and report AI visibility |
 | `expert/geo-expert.md` | Expert persona: capabilities, terminology, high-risk confirmation rules |
 | `scenario-capsules.md` | Shortcut prompt templates shown above the input box (zh/en) |
