@@ -4,7 +4,7 @@
  * `better-sqlite3` was moved to optionalDependencies so a plain
  * `npx -y @tengence/geo-mcp` install stays pure JS (Node's built-in node:sqlite is the
  * default). These tests guard that the two backends behave identically:
- *   - both create the same schema (18 tables, user_version=4)
+ *   - both create the same schema (18 tables, user_version=5)
  *   - both support the registered NOW() function
  *   - GEO_SQLITE_DRIVER=builtin|native is honoured
  * Each backend runs in its own child process because the driver is chosen (and the
@@ -72,7 +72,7 @@ test('builtin backend (node:sqlite): schema + NOW() behave like the native one',
   assert.equal(r.kind, 'builtin');
   assert.equal(r.detect, 'builtin');
   assert.equal(r.tables, 18);
-  assert.equal(r.schema, 4);
+  assert.equal(r.schema, 5);
   assert.match(r.now, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 });
 
@@ -81,7 +81,7 @@ test('native backend (better-sqlite3): same schema + NOW() when installed', () =
   const r = runChild({ GEO_SQLITE_DRIVER: 'native' });
   assert.equal(r.kind, 'better-sqlite3');
   assert.equal(r.tables, 18);
-  assert.equal(r.schema, 4);
+  assert.equal(r.schema, 5);
   assert.match(r.now, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 });
 
