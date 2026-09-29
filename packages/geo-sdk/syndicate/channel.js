@@ -60,6 +60,26 @@ function appendLog(siteDir, entry) {
   fs.appendFileSync(file, `${JSON.stringify({ ts: new Date().toISOString(), ...entry })}\n`, 'utf8');
 }
 
+/**
+ * Strip a single leading level-1 heading (`# Title`) from a markdown body.
+ *
+ * Every channel carries the title in a dedicated field (front matter in Mode B,
+ * the platform's `title` argument in Mode A / API). Embedding `# Title` at the
+ * top of the body is therefore redundant and, on some renderers, produces a
+ * duplicated visible heading. We remove ONLY the very first H1 line; any other
+ * shape is returned unchanged (trimmed). Trailing blank lines are collapsed.
+ *
+ * @param {string} md markdown body
+ * @returns {string} body with the leading H1 removed
+ */
+function stripLeadingTitle(md) {
+  if (!md) return '';
+  const text = md.replace(/^\s+/, '');
+  const m = text.match(/^#\s+(.+?)\s*(?:\n|$)/);
+  if (!m) return text.replace(/\s+$/, '');
+  return text.slice(m[0].length).replace(/^\s+/, '').replace(/\s+$/, '');
+}
+
 /** Build the publish-package markdown (front matter + body). */
 function renderPublishPackage(platform, article) {
   const fm = {
@@ -75,7 +95,9 @@ function renderPublishPackage(platform, article) {
     mode: article.mode || 'harness',
   };
   const fmText = yaml.dump(fm, { lineWidth: -1 });
-  const body = article.contentMd || '';
+  // title lives in the front matter above — drop any leading "# Title" from the
+  // body so the exported package never shows the title twice.
+  const body = stripLeadingTitle(article.contentMd || '');
   return `---\n${fmText}---\n\n${body.trim()}\n`;
 }
 
@@ -279,7 +301,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // once at the top of publishFromSlugs, so every slug here is guaranteed
           // NOT yet published on this platform. No per-slug lookup needed.
 
-          fs.writeFileSync(mdPath, `# ${title}\n\n${article.contentMd.trim()}\n`, 'utf8');
+          // title is passed separately to publishJuejin; never embed it in the
+          // body — drop any leading "# Title" so the exported file stays clean.
+          fs.writeFileSync(mdPath, `${stripLeadingTitle(article.contentMd).trim()}\n`, 'utf8');
 
           const tagKws = (article.targetKeywords || '')
             .split(',')
@@ -361,7 +385,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             title: article.title,
             keywords: `[${(article.targetKeywords || '').split(',').map((k) => k.trim()).filter(Boolean).slice(0, 8).join(', ')}]`,
           };
-          fs.writeFileSync(mdPath, `---\n${yaml.dump(fm, { lineWidth: -1 }).trim()}\n---\n\n${article.contentMd.trim()}\n`, 'utf8');
+          // title is in the front matter above; drop any leading "# Title" from
+          // the body so the exported file never shows the title twice.
+          fs.writeFileSync(mdPath, `---\n${yaml.dump(fm, { lineWidth: -1 }).trim()}\n---\n\n${stripLeadingTitle(article.contentMd).trim()}\n`, 'utf8');
           const res = await publishDevto({ mdPath, dryRun });
           appendLog(site.siteDir, { action: dryRun ? 'dry-run' : 'publish', platform, slug, ok: true, detail: res });
           results.push({ slug, ok: true, detail: res });
@@ -371,7 +397,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // CSDN tags are free text: prefer the DB plan tags, fall back to the article
           // target_keywords (publishCsdn trims to the platform maximum of 5 and applies
           // the env fallback when there is none).
-          fs.writeFileSync(mdPath, `# ${article.title}\n\n${article.contentMd.trim()}\n`, 'utf8');
+          // title is passed separately to the platform pipeline; drop any leading
+          // "# Title" so the exported .md body stays clean.
+          fs.writeFileSync(mdPath, `${stripLeadingTitle(article.contentMd).trim()}\n`, 'utf8');
           const tags = articleTagsFor(article);
 
           if (dryRun) {
@@ -420,7 +448,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // reach the DRAFT box — `published` stays false and the slug remains
           // eligible in the publish log until a human publishes it, which is exactly
           // the WeChat channel's "draft box + human send" contract.
-          fs.writeFileSync(mdPath, `# ${article.title}\n\n${article.contentMd.trim()}\n`, 'utf8');
+          // title is passed separately to the platform pipeline; drop any leading
+          // "# Title" so the exported .md body stays clean.
+          fs.writeFileSync(mdPath, `${stripLeadingTitle(article.contentMd).trim()}\n`, 'utf8');
 
           if (dryRun) {
             appendLog(site.siteDir, {
@@ -466,7 +496,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // 2026-09-27: addArticle succeeds with no captcha). It does enter the
           // platform's review queue (status 0 = 审核中) and goes public once approved,
           // so `publish` follows `asDraft` like the other ungated channels.
-          fs.writeFileSync(mdPath, `# ${article.title}\n\n${article.contentMd.trim()}\n`, 'utf8');
+          // title is passed separately to the platform pipeline; drop any leading
+          // "# Title" so the exported .md body stays clean.
+          fs.writeFileSync(mdPath, `${stripLeadingTitle(article.contentMd).trim()}\n`, 'utf8');
           const tags = articleTagsFor(article);
 
           // Map OUR plan category onto the platform's 分类 id via the cached
@@ -671,7 +703,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
           : null;
 
         const res = await juejin.publishJuejin({
-          contentMd: `# ${title}\n\n${article.contentMd.trim()}\n`,
+          contentMd: stripLeadingTitle(article.contentMd).trim(),
           title,
           publish: !asDraft,
           tags,
@@ -734,7 +766,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
         }
 
         const res = await csdn.publishCsdn({
-          contentMd: `# ${article.title}\n\n${article.contentMd.trim()}\n`,
+          contentMd: stripLeadingTitle(article.contentMd).trim(),
           title: article.title,
           publish: !asDraft,
           tags,
@@ -783,7 +815,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
       if (!article.slug || !article.title || !article.contentMd) continue;
       try {
         const res = await aliyun.publishAliyun({
-          contentMd: `# ${article.title}\n\n${article.contentMd.trim()}\n`,
+          contentMd: stripLeadingTitle(article.contentMd).trim(),
           title: article.title,
           publish: false, // live publish is human-gated on this platform
           coverUrl: await featuredImageFor(article.slug, article.featuredImage),
@@ -854,7 +886,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
           : null;
 
         const res = await tencent.publishTencent({
-          contentMd: `# ${article.title}\n\n${article.contentMd.trim()}\n`,
+          contentMd: stripLeadingTitle(article.contentMd).trim(),
           title: article.title,
           publish: !asDraft, // not human-gated on this platform
           tags: Array.isArray(article.tags) && article.tags.length ? article.tags : null,
