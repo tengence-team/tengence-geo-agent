@@ -4,7 +4,7 @@ GEO 内容引擎的 MCP 服务：**56 个工具**，覆盖内容生产、发布�
 
 这是 `@tengence/geo-sdk` 的 MCP 桥接层；底层存储默认使用 Node 22.5+ 内置的 `node:sqlite`（零原生依赖），旧版 Node 或禁用内置模块时回退到可选的 `better-sqlite3`。
 
-> 命名空间：`io.github.tengence-team/geo` · 官方 Registry：`registry.modelcontextprotocol.io`
+> 命名空间：`com.tengence/geo` · 官方 Registry：`registry.modelcontextprotocol.io`
 
 ## 环境要求
 

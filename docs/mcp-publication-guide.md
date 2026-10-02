@@ -11,7 +11,7 @@
 | 事项 | 状态 | 说明 |
 | --- | --- | --- |
 | `@tengence/geo-sdk` / `geo-cli` / `geo-mcp` / `geo-agent` 发布 npm | ✅ 已发布（0.1.1） | `npm view @tengence/geo-mcp version` 返回 0.1.1 |
-| 发布到官方 MCP Registry | ✅ 已发布 | `io.github.tengence-team/geo`，0.1.0 + 0.1.1 并存，0.1.1 为 latest |
+| 发布到官方 MCP Registry | ✅ 已发布 | `com.tengence/geo`，0.1.1（GitHub org 命名空间）+ 0.1.2（域名命名空间）并存 |
 | `server.json`（MCP Registry 元数据） | ✅ 已就绪 | 根目录，2025-12-11 schema |
 | 锁步发布脚本 | ✅ 已有 | `scripts/release.js` |
 | 公网 HTTPS 部署 | ❌ 待做 | 仅 Coze / 豆包连接器需要 |
@@ -107,17 +107,17 @@ curl -H "Authorization: Bearer sk-geo-xxx" -H "Content-Type: application/json" \
 
 ## 3. 路径 A：发布到官方 MCP Registry（已完成）
 
-MCP Registry 只存元数据，制品仍托管在 npm。发布要求：npm 账号 + GitHub 账号
-（**必须能控制 `tengence-team` 组织**，因为 `mcpName` 前缀是 `io.github.tengence-team/`）。
+MCP Registry 只存元数据，制品仍托管在 npm。发布要求：npm 账号 + **域名所有权验证**
+（`com.tengence/*` 命名空间走 HTTP 认证，验证文件部署于 `https://tengence.com/.well-known/mcp-registry-auth`）。
 
 ### 3.1～3.4 发布流程（已完成，留档）
 
 ```bash
-brew install mcp-publisher
-cd /Users/tim/tengence/tengence-geo-agent
-mcp-publisher login github       # 用拥有 tengence-team 组织权限的账号
+# 域名认证私钥（勿提交 git）
+PRIVATE_KEY="$(openssl pkey -in ~/.tengence/mcp-registry-auth/key.pem -noout -text | grep -A3 'priv:' | tail -n +2 | tr -d ' :\n')"
+mcp-publisher login http --domain tengence.com --private-key "$PRIVATE_KEY"
 mcp-publisher publish            # 发布到 registry.modelcontextprotocol.io
-curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.tengence-team/geo"
+curl "https://registry.modelcontextprotocol.io/v0.1/servers?search=com.tengence/geo"
 ```
 
 后续版本升级（每次发版固定流程）：
@@ -136,7 +136,7 @@ mcp-publisher publish                 # 重新发布新版本元数据
 
 ```bash
 # 方式一：支持 MCP Registry 的工具（mcpm / getmcp / VS 2022「MCP 注册表」）
-mcpm install io.github.tengence-team/geo
+mcpm install com.tengence/geo
 
 # 方式二：任意支持 stdio MCP 的客户端
 npx -y -p @tengence/geo-mcp tengence-geo-mcp
@@ -157,7 +157,7 @@ npx -y -p @tengence/geo-mcp tengence-geo-mcp
 ### ⚠ 关于「搜索安装」的重要说明（2026-09-28 实测）
 
 1. **官方 Registry 的搜索是 server 名称前缀匹配，不是全文搜索**：
-   实测 `search=tengence` 命中 0，只有 `search=io.github.tengence-team/geo`（完整名称）才命中。
+   实测 `search=tengence` 命中 0，只有 `search=com.tengence/geo`（完整名称）才命中。
    即使客户端接了官方 Registry，也必须搜完整名称。
 2. **VS Code 的 `@mcp` 搜索 ≠ 官方 Registry**：VS Code 的 MCP 列表来自微软
    **人工策划的 MCP server gallery**（code.visualstudio.com/mcp 页面明确写着
@@ -269,10 +269,10 @@ npx -y -p @tengence/geo-mcp tengence-geo-mcp
 
 ## 7. 发布后验证清单
 
-- [ ] `curl https://registry.modelcontextprotocol.io/v0.1/servers?search=io.github.tengence-team/geo` 返回元数据（路径 A；注意必须用完整名称搜索）
+- [ ] `curl https://registry.modelcontextprotocol.io/v0.1/servers?search=com.tengence/geo` 返回元数据（路径 A；注意必须用完整名称搜索）
 - [ ] `npm view @tengence/geo-mcp version` 与 server.json 版本一致
 - [ ] 空机执行 `npx -y -p @tengence/geo-mcp tengence-geo-mcp` 能启动并完成 `initialize`（路径 A）
-- [ ] `mcpm search io.github.tengence-team/geo` / `mcpm install io.github.tengence-team/geo` 可用（路径 A，mcpm 客户端）
+- [ ] `mcpm search com.tengence/geo` / `mcpm install com.tengence/geo` 可用（路径 A，mcpm 客户端）
 - [ ] VS Code 用户侧：提供 `.vscode/mcp.json` 配置后能列出 56 个工具（路径 A 补充）
 - [ ] `curl https://<域名>/` 返回 `{ok:true,...}`，`initialize` + `tools/list` 返回 56 个工具（路径 B/C）
 - [ ] 扣子插件商店搜索到「Tengence GEO Agent」且工具可试运行（路径 B）

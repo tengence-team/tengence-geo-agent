@@ -1,6 +1,6 @@
 {
   "name": "@tengence/geo-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "GEO content engine MCP server: 56 tools across content, publishing, search-inclusion and AI-monitoring domains; stdio + Streamable HTTP transports, Bearer-token auth (the MCP bridge layer of @tengence/geo-sdk)",
   "bin": {
     "tengence-geo-mcp": "bin/geo-mcp.js",
@@ -25,7 +25,7 @@
   ],
   "license": "MIT",
   "author": "Tengence Team",
-  "mcpName": "io.github.tengence-team/geo",
+  "mcpName": "com.tengence/geo",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tengence-team/tengence-geo-agent.git"

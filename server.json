@@ -1,6 +1,6 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.tengence-team/geo",
+  "name": "com.tengence/geo",
   "title": "Tengence GEO Agent",
   "description": "GEO/SEO content pipeline MCP: plan, write, gate-check, publish, submit, monitor AI visibility.",
   "repository": {
@@ -12,12 +12,12 @@
   "license": {
     "id": "MIT"
   },
-  "version": "0.1.1",
+  "version": "0.1.2",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@tengence/geo-mcp",
-      "version": "0.1.1",
+      "version": "0.1.2",
       "transport": {
         "type": "stdio"
       },
