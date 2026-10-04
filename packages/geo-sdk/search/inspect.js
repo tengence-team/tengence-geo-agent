@@ -16,7 +16,7 @@ const API = 'https://searchconsole.googleapis.com/v1/urlInspection/index:inspect
 const { gFetch } = require('./http');
 
 /** Query a single URL's inclusion/indexing status */
-async function inspectUrl({ siteUrl, inspectionUrl, token, languageCode = 'zh-CN', proxy = null }) {
+async function inspectUrl({ siteUrl, inspectionUrl, token, languageCode = 'zh-cn', proxy = null }) {
   const res = await gFetch(API, {
     method: 'POST',
     headers: {

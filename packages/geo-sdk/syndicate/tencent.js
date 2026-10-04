@@ -147,7 +147,7 @@ function request(apiPath, { body = null } = {}) {
 
   const headers = {
     accept: 'application/json, text/plain, */*',
-    'accept-language': 'zh-CN,zh;q=0.9',
+    'accept-language': 'zh-cn,zh;q=0.9',
     'user-agent': UA,
     cookie,
     origin: `https://${HOST}`,

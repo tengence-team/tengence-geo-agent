@@ -35,7 +35,7 @@ check('top-level domains', JSON.stringify(Object.keys(t)) === '["site","db","pla
 
 const s = t.site.loadSite('site-template');
 check('t.site.loadSite()', s.siteKey === 'site-template', s.siteKey);
-check('t.site.contentPaths()', t.site.contentPaths(s).lang === 'zh-CN');
+check('t.site.contentPaths()', t.site.contentPaths(s).lang === 'zh-cn');
 check('t.db.TABLES.articles', t.db.TABLES.articles === 'tengence_geo_articles', t.db.TABLES.articles);
 check('t.db.withConn is a function', typeof t.db.withConn === 'function');
 check('t.db.CREATED_BY_DB_INIT = 16 (article_config retired 2026-09-20)', t.db.CREATED_BY_DB_INIT.length === 16, String(t.db.CREATED_BY_DB_INIT.length));

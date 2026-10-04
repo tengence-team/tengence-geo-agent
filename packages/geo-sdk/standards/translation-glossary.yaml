@@ -1,0 +1,43 @@
+# ============================================================================
+# Machine-readable glossary for the translation gate (SSOT for gate checks)
+# ----------------------------------------------------------------------------
+# Human-readable spec: translation-standards.md §6 (terms) and §7 (conversion
+# table). This file carries only what the gate can judge deterministically:
+# forbidden terms per target language. The agent-facing glossary stays in
+# translation-standards.md + the site-level config/translation-glossary.yaml.
+#
+# Merge order (later wins): this file (base) ← site config/translation-glossary.yaml
+# ============================================================================
+
+forbidden:
+  # en-us: direct-translation / pinyin / invented glosses of GEO-domain terms.
+  # Gate checks target text (case-insensitive) for these substrings.
+  en-us:
+    - "generated engine optimization"   # GEO 的错误直译
+    - "generative engine optimise"      # 英式拼写变体
+    - "tongzhi"                          # 品牌拼音
+    - "shengchengshi"                    # 生成式 拼音
+  # zh-hk: simplified-only terms that must never appear in HK-style output.
+  # Gate checks target text for these simplified glyphs.
+  zh-hk:
+    - "软件"
+    - "信息"
+    - "网络"
+    - "视频"
+    - "用户"
+    - "优化"
+    - "链接"
+    - "上传"
+    - "服务器"
+    - "算法"
+    - "邮箱"
+    - "菜单"
+    - "文件夹"
+    - "界面"
+    - "开源"
+    - "云计算"
+    - "视频会议"
+    - "设置"
+    - "浏览器"
+    - "注册"
+    - "登录"

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // Article content ingest (DB is the single source of truth since 2026-09-20;
 // md/brief are authoring workspace files, auto-archived after ingest)
-// Usage: tengence-geo article-ingest.js <slug> [<md-path>] [--lang zh-CN] [--research <path>] [--no-archive]
+// Usage: tengence-geo article-ingest.js <slug> [<md-path>] [--lang zh-cn] [--research <path>] [--no-archive]
 //   - md path defaults to: <site>/data/inbox/<lang>/<slug>.md
 //   - research path defaults to: <site>/data/inbox/<lang>/<slug>.research.md (ingested only if present)
-//   - when no articles row exists, creates one matching the plan title (lang defaults to zh-CN)
+//   - when no articles row exists, creates one matching the plan title (lang defaults to zh-cn)
 //   - working files are auto-archived to data/archive/<date>/ after ingest (skipped with --no-archive)
 // Exit code 0 = success, 1 = failure
 const fs = require('fs');
@@ -19,7 +19,7 @@ const APP_ID = Number(process.env.APP_ID || 1);
 function parseArgs(argv) {
   const { positionals, flags } = t.cli.args.parse(
     {
-      lang: { type: 'string', default: 'zh-CN' },
+      lang: { type: 'string', default: 'zh-cn' },
       research: { type: 'string' },
       'no-archive': { type: 'boolean' },
     },
@@ -36,10 +36,10 @@ async function main() {
   const { positional, opts } = parseArgs(process.argv.slice(2));
   const slug = positional[0];
   if (!slug) {
-    console.error('Usage: tengence-geo article-ingest.js <slug> [<md-path>] [--lang zh-CN] [--research <path>] [--no-archive]');
+    console.error('Usage: tengence-geo article-ingest.js <slug> [<md-path>] [--lang zh-cn] [--research <path>] [--no-archive]');
     process.exit(2);
   }
-  const lang = opts.lang || 'zh-CN';
+  const lang = opts.lang || 'zh-cn';
   const site = t.site.loadSite();
   const { content, extractTitle, stripFrontMatter } = t.content.md;
   const inboxDir = path.join(site.siteDir, 'data/inbox', lang);

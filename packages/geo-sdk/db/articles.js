@@ -46,24 +46,39 @@ async function getById(conn, articleId, appId) {
   };
 }
 
-/** Look up an article id by slug (returns null when not found) */
-async function findIdBySlug(conn, slug, appId) {
+/**
+ * Look up an article id by slug + lang. `lang` is optional for legacy callers:
+ * when omitted (null) the lookup matches any language (kept for single-language
+ * sites). Multi-language flows MUST pass lang so a slug is uniquely located.
+ */
+async function findIdBySlug(conn, slug, appId, lang = null) {
+  const params = lang
+    ? [appId, slug, lang]
+    : [appId, slug];
+  const langClause = lang ? ' AND lang = ?' : '';
   const [rows] = await conn.query(
-    `SELECT id FROM ${TABLES.articles} WHERE app_id = ? AND slug = ? LIMIT 1`,
-    [appId, slug]
+    `SELECT id FROM ${TABLES.articles} WHERE app_id = ? AND slug = ?${langClause} LIMIT 1`,
+    params
   );
   return rows.length ? rows[0].id : null;
 }
 
 /**
- * Check whether the slug already exists
+ * Check whether the slug already exists for the same language.
  * @param {string|null} slug pass null to filter only by the excluded id (legacy behavior, kept)
  * @param {number|null} excludeId article to exclude
+ * @param {string|null} lang when provided, conflicts are judged per (slug, lang);
+ *   when null, any-language conflict matches (legacy single-language behavior)
  * @returns {Promise<object|null>} the conflicting article record
  */
-async function checkSlugExists(conn, slug, excludeId, appId) {
+async function checkSlugExists(conn, slug, excludeId, appId, lang = null) {
   let query = `SELECT id, slug, wp_post_id FROM ${TABLES.articles} WHERE slug = ? AND app_id = ?`;
   const params = [slug, appId];
+
+  if (lang) {
+    query += ' AND lang = ?';
+    params.push(lang);
+  }
 
   if (excludeId) {
     query += ' AND id != ?';
@@ -158,11 +173,13 @@ async function markPublished(conn, articleId, appId, data) {
   );
 }
 
-/** Look up an article title by slug (returns null when not found) */
-async function findTitleBySlug(conn, slug, appId) {
+/** Look up an article title by slug (+ optional lang) */
+async function findTitleBySlug(conn, slug, appId, lang = null) {
+  const langClause = lang ? ' AND lang = ?' : '';
+  const params = lang ? [slug, appId, lang] : [slug, appId];
   const [rows] = await conn.query(
-    `SELECT title FROM ${TABLES.articles} WHERE slug = ? AND app_id = ?`,
-    [slug, appId]
+    `SELECT title FROM ${TABLES.articles} WHERE slug = ? AND app_id = ?${langClause}`,
+    params
   );
   return rows.length && rows[0].title ? rows[0].title : null;
 }
@@ -234,7 +251,9 @@ function normalizeCitation(c) {
  * seo/geo columns (the article_config table retired; legacy seo/geo/qa_pairs/citations
  * tables are no longer read). Returns null when the article is not found.
  */
-async function getDetail(conn, appId, slug) {
+async function getDetail(conn, appId, slug, lang = null) {
+  const langClause = lang ? ' AND a.lang = ?' : '';
+  const params = lang ? [appId, slug, lang] : [appId, slug];
   const [articles] = await conn.query(
     `SELECT a.*,
                 GROUP_CONCAT(DISTINCT c.name ORDER BY ac.position SEPARATOR ', ') as categories,
@@ -244,9 +263,9 @@ async function getDetail(conn, appId, slug) {
          LEFT JOIN ${TABLES.categories} c ON ac.category_id = c.id AND c.app_id = a.app_id
          LEFT JOIN ${TABLES.articleTags} at ON a.id = at.article_id AND at.app_id = a.app_id
          LEFT JOIN ${TABLES.tags} t ON at.tag_id = t.id AND t.app_id = a.app_id
-         WHERE a.app_id = ? AND a.slug = ?
+         WHERE a.app_id = ? AND a.slug = ?${langClause}
          GROUP BY a.id`,
-    [appId, slug]
+    params
   );
 
   if (articles.length === 0) {

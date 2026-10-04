@@ -60,9 +60,9 @@ test('articles.list: no filter → only the app_id param, with aggregation and o
 
 test('articles.list: status / lang / limit append params in order', async () => {
   const conn = makeStub();
-  await t.db.articles.list(conn, 1, { status: 'publish', lang: 'zh-CN', limit: '6' });
+  await t.db.articles.list(conn, 1, { status: 'publish', lang: 'zh-cn', limit: '6' });
   const { sql, params } = conn.calls[0];
-  assert.deepEqual(params, [1, 'publish', 'zh-CN', 6]); // limit is parseInt'd
+  assert.deepEqual(params, [1, 'publish', 'zh-cn', 6]); // limit is parseInt'd
   assert.match(sql, /AND a\.status = \?/);
   assert.match(sql, /AND a\.lang = \?/);
   assert.match(sql, /LIMIT \?$/);

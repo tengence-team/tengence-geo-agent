@@ -100,7 +100,8 @@ CREATE TABLE IF NOT EXISTS ${TABLES.articles} (
     target_word_count INT DEFAULT 1800 COMMENT 'target word count',
 
     -- language & region
-    lang VARCHAR(10) DEFAULT 'zh-CN' COMMENT 'content language',
+    lang VARCHAR(10) DEFAULT 'zh-cn' COMMENT 'content language',
+    translation_group VARCHAR(64) DEFAULT NULL COMMENT 'multilingual translation-group UUID shared by the languages of one article',
     region_market VARCHAR(10) DEFAULT 'cn' COMMENT 'target market',
     region_currency VARCHAR(10) DEFAULT 'CNY' COMMENT 'currency',
     region_compliance JSON COMMENT 'compliance requirements',
@@ -438,8 +439,8 @@ CREATE TABLE IF NOT EXISTS ${TABLES.articlePlan} (
     publish_order INT DEFAULT 0 COMMENT 'publish order (promote-daily ascends by this to pick the next due)',
     category VARCHAR(100) COMMENT 'category slug (allow-list from the categories table)',
     tags JSON COMMENT 'tag slug array (≤3, allow-list from the tags table)',
-    lang VARCHAR(10) NOT NULL DEFAULT 'zh-CN' COMMENT 'language (one slug x one language = one plan row; each language tracks its own schedule)',
-    languages JSON COMMENT 'languages planned for this topic (topic-level aggregation marker, e.g. ["zh-CN","en-US"]; maintained by import/upsert)',
+    lang VARCHAR(10) NOT NULL DEFAULT 'zh-cn' COMMENT 'language (one slug x one language = one plan row; each language tracks its own schedule)',
+    languages JSON COMMENT 'languages planned for this topic (topic-level aggregation marker, e.g. ["zh-cn","en-us","zh-hk"]; maintained by import/upsert)',
     article_id BIGINT UNSIGNED COMMENT 'linked articles.id (backfilled after the row is created)',
     wp_post_id BIGINT UNSIGNED COMMENT 'WordPress article id (redundant; backfilled after drafting/publishing, directly usable by the queue)',
     published_url VARCHAR(500) COMMENT 'post-publish online path (https://www.<domain>/blog/article/<slug>/)',

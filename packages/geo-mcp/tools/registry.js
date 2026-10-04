@@ -24,6 +24,7 @@
  */
 
 const { spawnSync } = require('child_process');
+const fs = require('fs');
 const { z } = require('zod');
 const t = require('@tengence/geo-sdk');
 
@@ -159,7 +160,7 @@ const tools = [
       key: z.string().describe('site key (lowercase letters, digits, underscore)'),
       domain: z.string().optional().describe('canonical domain, defaults to the key'),
       name: z.string().optional().describe('display name, defaults to the domain'),
-      lang: z.string().optional().describe('default language (default zh-CN)'),
+      lang: z.string().optional().describe('default language (default zh-cn)'),
     }),
     async run(args) {
       try {
@@ -235,10 +236,11 @@ const tools = [
   // ---------- article ----------
   {
     name: 'article_list',
-    description: 'List articles (articles table), with status/limit filters',
+    description: 'List articles (articles table), with status/lang/limit filters',
     inputSchema: z.object({
       site: siteField,
       status: z.string().optional().describe('draft|queued|published etc. (optional)'),
+      lang: z.string().optional().describe('language filter (zh-cn|en-us|zh-hk; default all)'),
       limit: z.number().optional().describe('max rows (default 50)'),
     }),
     async run(args) {
@@ -248,6 +250,7 @@ const tools = [
         const rows = await t.db.withConn((conn) =>
           t.db.articles.list(conn, appId, {
             status: args.status || undefined,
+            lang: args.lang || undefined,
             limit: args.limit || 50,
           })
         );
@@ -284,14 +287,17 @@ const tools = [
   },
   {
     name: 'article_export',
-    description: 'Export an article md + brief from the DB to the site data/inbox (for rewriting)',
+    description: 'Export an article md + brief from the DB to the site data/inbox (for rewriting / translation)',
     inputSchema: z.object({
       slug: z.string().describe('article slug'),
       site: siteField,
+      lang: z.string().optional().describe('language (zh-cn|en-us|zh-hk; default the site default)'),
     }),
     async run(args) {
       if (!args.slug) return fail(new Error('article_export requires slug'));
-      const r = runCli('article-export', [args.slug, '--site', cliSite(args)]);
+      const cliArgs = [args.slug, '--site', cliSite(args)];
+      if (args.lang) cliArgs.push('--lang', args.lang);
+      const r = runCli('article-export', cliArgs);
       return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
     },
   },
@@ -304,6 +310,7 @@ const tools = [
       slug: z.string().describe('article slug'),
       site: siteField,
       type: z.string().optional().describe('T1..T7 (hard word-count check by type when declared)'),
+      lang: z.string().optional().describe('article language (zh-cn|en-us|zh-hk; default the site default)'),
     }),
     async run(args) {
       if (!args.slug) return fail(new Error('check_article requires slug'));
@@ -313,9 +320,93 @@ const tools = [
         const result = await t.check.checkArticle({
           slug: args.slug,
           type: args.type || null,
+          lang: args.lang || null,
           site: S.siteKey,
         });
         return ok({ ok: result.ok, slug: result.slug, rows: result.rows, warns: result.warns });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+
+  // ---------- translation (multilingual v1) ----------
+  {
+    name: 'translation_glossary_get',
+    description: 'Translation glossary for a target language: merged global + site glossary (brands / phrases / product terms / forbidden words). ' +
+      'Read it via standards_read("translation-standards") once per article, then consult this tool for the concrete terms the harness must apply',
+    inputSchema: z.object({
+      site: siteField,
+      target_lang: z.string().describe('target language (en-us|zh-hk)'),
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const full = t.translate.glossary.loadFull(S.siteKey);
+        const lang = args.target_lang || 'en-us';
+        const out = {
+          brands: full.brands || {},
+          phrases: full.phrases || {},
+          product_terms: full.product_terms || {},
+          forbidden: (full.forbidden && full.forbidden[lang]) || [],
+        };
+        return ok({ ok: true, target_lang: lang, glossary: out });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'check_translation',
+    description: 'Mechanical gate for a translated article (T1–T8): structure/blocks/numbering, link-set & image-set & number-set parity with the source, ' +
+      'Simplified-Chinese & CJS residue, forbidden terms, per-section length, title & meta_description lengths. ' +
+      'The harness translates with its own LLM and runs this before article_ingest --lang',
+    inputSchema: z.object({
+      slug: z.string().describe('article slug (source and, when md_path is absent, target DB row)'),
+      source_lang: z.string().describe('source language (zh-cn)'),
+      target_lang: z.string().describe('target language (en-us|zh-hk)'),
+      md_path: z.string().optional().describe('absolute path to the translated Markdown (preferred; when absent the target is read from the DB row slug+target_lang)'),
+      site: siteField,
+    }),
+    async run(args) {
+      if (!args.slug || !args.target_lang) return fail(new Error('check_translation requires slug and target_lang'));
+      try {
+        const S = withSite(args);
+        const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
+        const sourceLang = args.source_lang || 'zh-cn';
+        const targetLang = args.target_lang;
+        let sourceMd = null;
+        let targetMd = null;
+        await t.db.withConn(async (conn) => {
+          const src = await t.db.articles.getDetail(conn, appId, args.slug, sourceLang);
+          sourceMd = src && src.content_longtext ? String(src.content_longtext) : '';
+          if (!args.md_path) {
+            const tgt = await t.db.articles.getDetail(conn, appId, args.slug, targetLang);
+            targetMd = tgt && tgt.content_longtext ? String(tgt.content_longtext) : '';
+          }
+        });
+        if (args.md_path) {
+          targetMd = fs.readFileSync(args.md_path, 'utf8');
+        }
+        if (!sourceMd || !targetMd) {
+          const missing = [];
+          if (!sourceMd) missing.push(`source ${sourceLang} (slug=${args.slug})`);
+          if (!targetMd) missing.push(args.md_path ? `file ${args.md_path}` : `target ${targetLang} (slug=${args.slug})`);
+          return fail(new Error(`check_translation: missing content for ${missing.join(', ')}`));
+        }
+        // 源正文无 front matter：把共享 featured_image 组装进源侧，
+        // 供 T3 校验目标 front matter 的 featured_image 与源一致（三语复用同一张图）。
+        if (src && src.featured_image) {
+          sourceMd = `---\nfeatured_image: "${String(src.featured_image).replace(/"/g, '\\"')}"\n---\n\n` + sourceMd;
+        }
+        const result = t.translate.checkTranslation({
+          sourceMd,
+          targetMd,
+          sourceLang,
+          targetLang,
+          siteKey: S.siteKey,
+        });
+        return ok({ ok: result.ok, slug: args.slug, source_lang: sourceLang, target_lang: targetLang, errors: result.errors, checks: result.checks });
       } catch (e) {
         return fail(e);
       }
@@ -347,12 +438,14 @@ const tools = [
       site: siteField,
       status: z.string().optional().describe('draft|publish (default draft)'),
       force: z.boolean().optional().describe('force-update when it already exists'),
+      translation_group: z.string().optional().describe('translation-group UUID shared by the languages of one article (multilingual v1)'),
     }),
     async run(args) {
       if (!args.article_id) return fail(new Error('publish_from_db requires article_id'));
       const cliArgs = [String(args.article_id), '--site', cliSite(args)];
       if (args.status) cliArgs.push('--status', args.status);
       if (args.force) cliArgs.push('--force');
+      if (args.translation_group) cliArgs.push('--translation-group', args.translation_group);
       const r = runCli('publish-from-db', cliArgs);
       return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
     },
@@ -370,6 +463,7 @@ const tools = [
       post_title: z.string().optional().describe('new WordPress post title itself (≤200 characters, also updates DB title column). Providing it switches to meta-only mode'),
       site: siteField,
       slug: z.string().optional().describe('target slug'),
+      lang: z.string().optional().describe('article language for slug lookup (zh-cn|en-us|zh-hk; default the site default)'),
       post_id: z.number().optional().describe('target WP post id (either slug or post_id)'),
     }),
     async run(args) {
@@ -386,6 +480,7 @@ const tools = [
       }
       cliArgs.push('--site', cliSite(args));
       if (args.slug) cliArgs.push('--slug', args.slug);
+      if (args.lang) cliArgs.push('--lang', args.lang);
       if (args.post_id) cliArgs.push('--post-id', String(args.post_id));
       const r = runCli('publish-update-article', cliArgs);
       return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });

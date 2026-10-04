@@ -554,18 +554,38 @@ async function getTag(tagEntry) {
  * Check whether the slug already exists in the DB
  * @returns {object|null} the duplicate article record, or null when none
  */
-function checkSlugExistsInDB(connection, slug, excludeId = null) {
+function checkSlugExistsInDB(connection, slug, excludeId = null, lang = null) {
   const s = getState();
-  return s.t.db.articles.checkSlugExists(connection, slug, excludeId, s.CONFIG.app_id);
+  return s.t.db.articles.checkSlugExists(connection, slug, excludeId, s.CONFIG.app_id, lang);
 }
 
 /**
- * Smart WordPress article lookup
- * Supports exact and fuzzy matching (handles slugs with numeric suffixes)
+ * Smart WordPress article lookup (per language)
+ * Supports exact and fuzzy matching (handles slugs with numeric suffixes).
+ * Multi-language: for translations (lang not zh-cn) the plugin multilingual query
+ * API resolves slug+lang and fuzzy matching is disabled (a wrong-language match
+ * is worse than no match); zh-cn keeps the legacy path.
+ * @param {string} slug
+ * @param {string|null} lang geo language code (default null → legacy behavior)
  */
-async function findPostBySlugSmart(slug) {
+async function findPostBySlugSmart(slug, lang = null) {
   const s = getState();
   try {
+    // 0. multi-language disambiguation: translations may share the slug across
+    // languages on the WP side, so the native lookup is ambiguous. The plugin
+    // multilingual query API (slug+lang) is authoritative; no fuzzy matching.
+    if (lang && lang !== 'zh-cn') {
+      try {
+        const byLang = await s.t.wp.posts.findPostByLanguage(slug, lang);
+        if (byLang && (byLang.id || byLang.wp_post_id)) {
+          s.logger(`  ✓ Language match: WP post for ${slug} (${lang})`);
+          return byLang;
+        }
+      } catch (e) {
+        s.logger(`  - Plugin language query unavailable for ${slug} (${lang}): ${e.message}`);
+      }
+      return null;
+    }
     // 1. exact match
     const exact = await s.t.wp.posts.findBySlug(slug);
     if (exact) {
@@ -636,7 +656,7 @@ async function findExistingPost(slug) {
 async function publishArticle(connection, articleId, options = {}) {
   const s = getState();
   if (options.log) s.logger = options.log;
-  const { status = 'draft', force = false, dryRun = false, skipDuplicateCheck = false, featuredMedia = null } = options;
+  const { status = 'draft', force = false, dryRun = false, skipDuplicateCheck = false, featuredMedia = null, translationGroup = null } = options;
 
   s.logger(`\n========================================`);
   s.logger(`Publishing article ID: ${articleId}`);
@@ -655,9 +675,10 @@ async function publishArticle(connection, articleId, options = {}) {
   s.logger(`  ✓ Title: ${article.title}`);
   s.logger(`  ✓ Slug: ${article.slug}`);
 
-  // 1.5 check whether the slug is used by another article
+  // 1.5 check whether the slug is used by another article (per language: the same
+  // slug may exist in other languages under the multilingual model)
   if (!skipDuplicateCheck) {
-    const dbDuplicate = await checkSlugExistsInDB(connection, article.slug, article.id);
+    const dbDuplicate = await checkSlugExistsInDB(connection, article.slug, article.id, article.lang);
     if (dbDuplicate) {
       console.error(`\n✗ Slug "${article.slug}" is already used by article ID ${dbDuplicate.id}`);
       console.error(`  Change the current article's slug before publishing`);
@@ -698,19 +719,38 @@ async function publishArticle(connection, articleId, options = {}) {
   s.logger(`  ✓ Tags: ${tagEntries.map((t) => t.name).join(', ')}`);
 
   // 3. process images (with dedupe detection); featured_image from front matter
-  // (config), takes priority over the first body image
+  // (config), takes priority over the first body image. When --featured-media is an
+  // explicit media ID, skip the featured_image URL download entirely: the same
+  // featured image is shared across languages and must not be re-downloaded/re-uploaded
+  // on every language publish. Same-slug reuse: if another language of this article is
+  // already published on this WP site with a featured image, reuse that media ID
+  // directly (multilingual articles share one featured image; no re-upload).
   s.logger('\n[3/8] Processing images (dedupe detection)...');
-  const featuredImageUrl = config.featured_image || null;
+  const explicitFmId = featuredMedia ? parseInt(featuredMedia, 10) : NaN;
+  let reusedFeaturedId = null;
+  if (isNaN(explicitFmId) && config.featured_image) {
+    try {
+      const sameSlugPosts = await wpAPI(`/posts?slug=${encodeURIComponent(article.slug)}&status=any&per_page=100`);
+      const withFm = (Array.isArray(sameSlugPosts) ? sameSlugPosts : []).find((p) => p && p.featured_media && Number(p.featured_media) > 0);
+      if (withFm) {
+        reusedFeaturedId = Number(withFm.featured_media);
+        s.logger(`  ♻️  Reusing the featured image (media ID ${reusedFeaturedId}) from the already-published same-slug article (${withFm.link || withFm.id || ''}); no download / re-upload`);
+      }
+    } catch (e) {
+      s.logger(`  ⚠️  Featured-image same-slug reuse lookup failed (falling back to the URL flow): ${e.message}`);
+    }
+  }
+  const featuredImageUrl = (reusedFeaturedId || !isNaN(explicitFmId)) ? null : (config.featured_image || null);
   const { content: processedContent, uploadedImages, featuredImage: bodyFeatured } = await processImages(article.content, articleId, dryRun, featuredImageUrl);
   let featuredImage = bodyFeatured;
   // an explicitly specified featured image (from the auto image pipeline) wins,
   // skipping the body-image-as-featured path
-  if (featuredMedia) {
-    const fmId = parseInt(featuredMedia, 10);
-    if (!isNaN(fmId)) {
-      featuredImage = { id: fmId, productionUrl: null };
-      s.logger(`  ✓ Using the specified featured image (media ID ${fmId})`);
-    }
+  if (!isNaN(explicitFmId)) {
+    featuredImage = { id: explicitFmId, productionUrl: null };
+    s.logger(`  ✓ Using the specified featured image (media ID ${explicitFmId})`);
+  } else if (reusedFeaturedId) {
+    featuredImage = { id: reusedFeaturedId, productionUrl: null };
+    s.logger(`  ✓ Featured image reused across languages (media ID ${reusedFeaturedId})`);
   }
 
   // 3.5 md authoritative: reverse-parse "summary / key takeaways / FAQ" from the
@@ -788,7 +828,7 @@ async function publishArticle(connection, articleId, options = {}) {
 
   // 6. find or create the article
   s.logger('\n[6/8] Checking whether it exists in WordPress...');
-  let existing = await findExistingPost(article.slug);
+  let existing = await findPostBySlugSmart(article.slug, article.lang || 'zh-cn');
 
   // prefer the DB's wp_post_id when present
   if (article.wpPostId) {
@@ -872,6 +912,39 @@ async function publishArticle(connection, articleId, options = {}) {
     } catch (e) {
       s.logger(`  ✗ SEO/GEO meta write failed: ${e.message}`);
       s.logger('    (the article body itself is published; re-run publish-update-article.js --slug later to backfill)');
+    }
+  }
+
+  // language + translation group (multilingual plugin API). 404 means the plugin
+  // is not yet multilingual: tolerated for the default language (legacy behavior),
+  // a hard failure for translations (they must be tagged to be reachable).
+  if (!dryRun) {
+    try {
+      await s.t.wp.posts.setPostLanguage(result.id, { language: article.lang, translationGroup });
+      s.logger(`  ✓ Language ${article.lang}${translationGroup ? ` / group ${translationGroup}` : ''} set on WP post ${result.id}`);
+
+      // slug correction: when creating a translation via REST, WP appends -2 to a
+      // slug already used by another language (the plugin's wp_unique_post_slug
+      // shares slugs only when the target language is known). The language term is
+      // now written, so a second update resolves the original slug and the plugin
+      // allows the cross-language share.
+      if (result.slug !== article.slug) {
+        s.logger(`  - WP slug "${result.slug}" ≠ DB "${article.slug}"; correcting after language set`);
+        const fixed = await wpAPI(`/posts/${result.id}`, 'POST', { slug: article.slug });
+        if (fixed && fixed.slug) {
+          result = fixed;
+          s.logger(`  ✓ WP slug corrected to "${fixed.slug}"`);
+        } else {
+          throw new Error(`slug correction failed for post ${result.id}: no slug in response`);
+        }
+      }
+    } catch (e) {
+      const is404 = /404/.test(String(e.message));
+      if (is404 && article.lang === 'zh-cn') {
+        s.logger(`  ⚠️ Plugin language API not available; default language assumed (${e.message})`);
+      } else {
+        throw e;
+      }
     }
   }
 
@@ -985,7 +1058,10 @@ async function publishArticle(connection, articleId, options = {}) {
   //     networks, no proxy.
   //     2026-09-20: the protocol layer sank into t.search.baidu.submitBatch
   //     (including the site-not-URL-encoded constraint); reused here.
-  if (!options.dryRun && !options.skipBaidu && result.status === 'publish' && process.env.BAIDU_TOKEN) {
+  // Baidu normal inclusion is a Simplified-Chinese engine (index built for zh-cn);
+  // only submit zh-cn URLs — en-us / zh-hk submissions waste the daily quota
+  // (see standards/translation-standards.md §6.4 rationale).
+  if (!options.dryRun && !options.skipBaidu && result.status === 'publish' && article.lang === 'zh-cn' && process.env.BAIDU_TOKEN) {
     s.logger('\n[11/11] Submitting to Baidu normal inclusion...');
     const baiduSite = process.env.BAIDU_SITE || `www.${s.SITE_DOMAIN || 'tengence.com'}`;
     try {

@@ -92,4 +92,25 @@ async function saveMeta(id, meta) {
   return plugin.updatePostMeta(id, meta);
 }
 
-module.exports = { findBySlug, get, list, update, create, getMeta, saveMeta };
+/**
+ * Set an article's language + translation group (plugin multilingual API).
+ * @param {number|string} id
+ * @param {{language:string, translationGroup?:string|null}} opts geo language code
+ * @returns {Promise<object>}
+ */
+async function setPostLanguage(id, opts) {
+  return plugin.setPostLanguage(id, opts);
+}
+
+/**
+ * Look up a WP article by slug + language via the plugin multilingual query API
+ * (the WP-native slug lookup is ambiguous once the same slug exists per language).
+ * @param {string} slug
+ * @param {string} lang geo language code
+ * @returns {Promise<object|null>}
+ */
+async function findPostByLanguage(slug, lang) {
+  return plugin.findPostByLanguage(slug, lang);
+}
+
+module.exports = { findBySlug, get, list, update, create, getMeta, saveMeta, setPostLanguage, findPostByLanguage };

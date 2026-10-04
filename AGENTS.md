@@ -76,3 +76,22 @@ The gate (`packages/geo-sdk/check/index.js`) is the *codified mirror* of
 2. Add it to `standards/INDEX.md` and to `geo-sdk/package.json` → `files`.
 3. If it tightens an existing gate, mirror the rule into `check/index.js` and record the
    link in `standards/block-conventions.md`.
+
+## 7. Multilingual publish — shared featured image (no re-upload)
+
+- An article's languages (zh-cn / en-us / zh-hk) share **one** featured image, and
+  `publishArticle` (`packages/geo-sdk/publish/index.js`) never re-uploads it per language:
+  1. `--featured-media <id>` forces a media ID directly — the URL download / media upload
+     is skipped entirely.
+  2. Otherwise, when another language of the **same slug** is already published on this WP
+     site, its `featured_media` is looked up via
+     `GET /wp-json/wp/v2/posts?slug=<slug>&status=any&per_page=100` and **reused** as-is
+     (multilingual shared featured image; no download, no re-upload).
+  3. Fallback (first language publish): the `featured_image` URL is downloaded and uploaded
+     to the media library once.
+- Translation rows (`en-us` / `zh-hk`) are gated by `check_translation` (T1–T8), which the
+  harness runs before ingest; `publish-from-db.js` therefore **skips the zh writing gate**
+  (`checkArticle`) for translation rows — do not run `checkArticle` on a translation.
+- Translation rows are ingested via `article-ingest.js <slug> <md> --lang en-us|zh-hk`
+  (file in `<site>/data/inbox/<lang>/<slug>.md`, YAML front matter per
+  `standards/translation-standards.md` §10).

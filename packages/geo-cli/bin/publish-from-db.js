@@ -91,6 +91,7 @@ async function main() {
       batch: { type: 'array' },
       all: { type: 'boolean' },
       'featured-media': { type: 'string' },
+      'translation-group': { type: 'string' },
       'skip-gsc': { type: 'boolean' },
       'skip-indexnow': { type: 'boolean' },
       'skip-baidu': { type: 'boolean' },
@@ -102,6 +103,7 @@ async function main() {
   const force = flags.force;
   const dryRun = flags['dry-run'];
   const featuredMedia = flags['featured-media'];
+  const translationGroup = flags['translation-group'] || null;
   const skipGsc = flags['skip-gsc'];
   const skipIndexnow = flags['skip-indexnow'];
   const skipBaidu = flags['skip-baidu'];
@@ -147,15 +149,29 @@ async function main() {
       // exits 1, batch mode skips that article and continues)
       const planRow = await t.plan.getByArticleId(articleId);
       let slug = planRow && planRow.slug;
+      let lang = null;
       if (!slug) {
         const [rows] = await connection.query(
-          'SELECT slug FROM tengence_geo_articles WHERE id = ? AND app_id = ? LIMIT 1',
+          'SELECT slug, lang FROM tengence_geo_articles WHERE id = ? AND app_id = ? LIMIT 1',
           [articleId, getState().CONFIG.app_id]
         );
         slug = rows[0] && rows[0].slug;
+        lang = rows[0] && rows[0].lang;
+      } else {
+        const [rows] = await connection.query(
+          'SELECT lang FROM tengence_geo_articles WHERE id = ? AND app_id = ? LIMIT 1',
+          [articleId, getState().CONFIG.app_id]
+        );
+        lang = rows[0] && rows[0].lang;
       }
+      // Translation rows (en-us / zh-hk) are gated by check_translation (T1–T8), which the
+      // harness runs before ingest; the zh writing gate (checkArticle) does not apply to them.
+      const isTranslation = lang && lang !== 'zh-CN' && lang !== 'zh-cn';
       const gateDir = (planRow && planRow.category) || 'industry-insights';
       if (slug) {
+        if (isTranslation) {
+          console.log(`  ⏭️  Translation row (lang=${lang}): writing gate skipped (check_translation T1–T8 already passed by the harness before ingest)`);
+        } else {
         const gateReport = await t.check.checkArticle({ slug, dir: gateDir });
         if (!gateReport.ok) {
           console.log(`\n⛔ Gate failed, skipping ID ${articleId} (${slug})`);
@@ -168,10 +184,11 @@ async function main() {
           continue;
         }
         console.log(`  ✅ Gate passed: ${slug}`);
+        }
       }
       try {
         const result = await publishArticle(connection, articleId, {
-          status, force, dryRun, featuredMedia, skipGsc, skipIndexnow, skipBaidu,
+          status, force, dryRun, featuredMedia, translationGroup, skipGsc, skipIndexnow, skipBaidu,
         });
         results.push({ articleId, success: !!result, result });
       } catch (error) {

@@ -86,7 +86,8 @@ function parseArgs(argv) {
  */
 async function createArticleRecord(slug, title) {
   return t.db.withConn(async (connection) => {
-    const existing = await t.db.articles.findIdBySlug(connection, slug, APP_ID);
+    // draft-publishing is a zh-cn authoring-flow step; the slug is per-language
+    const existing = await t.db.articles.findIdBySlug(connection, slug, APP_ID, 'zh-cn');
     if (existing) {
       await t.db.articles.updateTitle(connection, existing, title);
       return existing;

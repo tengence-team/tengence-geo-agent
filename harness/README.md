@@ -64,6 +64,7 @@ Consequences:
 | `work-modes/publishing.md` | Mode 3 — channel publishing, one-draft-many-places, entity claims |
 | `work-modes/monitoring.md` | Mode 4 — indexing baseline, AI visibility measurement, refresh |
 | `skills/geo-article-writing/SKILL.md` | Draft → gate → fix loop |
+| `skills/geo-article-translation/SKILL.md` | Translate gate-passing zh-cn articles to en-us / zh-hk (HK-style), mechanical gate, ingest & publish |
 | `skills/geo-search-submit/SKILL.md` | Push for indexing after publishing |
 | `skills/geo-channel-rewrite/SKILL.md` | Per-channel rewrite → hard gate → publish loop (platform-agnostic; rules fetched at runtime via `channel_style_get`) |
 | `skills/geo-visibility-monitor/SKILL.md` | Measure and report AI visibility |
@@ -107,6 +108,7 @@ retirements.
 | `work-modes/publishing.md` | `content-platform-integration`, `block-conventions` |
 | `work-modes/monitoring.md` | `llm-visibility-monitoring`, `search-engine-integration` |
 | `skills/geo-article-writing` | `article-writing-standards`, `block-conventions` |
+| `skills/geo-article-translation` | `translation-standards`, `block-conventions` |
 | `skills/geo-search-submit` | `search-engine-integration` |
 | `skills/geo-visibility-monitor` | `llm-visibility-monitoring`, `search-engine-integration` |
 | `expert/geo-expert.md` | `INDEX.md` first, then whichever the task needs |

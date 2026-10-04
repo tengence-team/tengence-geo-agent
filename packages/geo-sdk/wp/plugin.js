@@ -106,4 +106,45 @@ async function updatePostMeta(postId, meta) {
   return updated && typeof updated === 'object' ? updated : {};
 }
 
-module.exports = { pluginTarget, pluginApi, getPostMeta, updatePostMeta };
+/**
+ * geo language code → plugin language taxonomy code (multilingual v1).
+ * @param {string} lang geo DB language code (zh-cn / en-us / zh-hk)
+ * @returns {string} plugin taxonomy code (zh-hans / en / zh-hant)
+ */
+function toPluginLanguage(lang) {
+  const map = { 'zh-cn': 'zh-hans', 'en-us': 'en', 'zh-hk': 'zh-hant' };
+  return map[lang] || 'zh-hans';
+}
+
+/**
+ * Set an article's language + translation group via the plugin language API.
+ * Endpoint: PUT /posts/{id}/language  (multilingual v1, plugin-side).
+ * @param {number|string} postId the WP article ID
+ * @param {{language:string, translationGroup?:string|null}} opts
+ *        language is the geo DB code (mapped internally to the plugin taxonomy)
+ * @returns {Promise<object>} plugin API response
+ */
+async function setPostLanguage(postId, { language, translationGroup = null } = {}) {
+  const body = { language: toPluginLanguage(language || 'zh-cn') };
+  if (translationGroup) body.translation_group = translationGroup;
+  return pluginApi(`/posts/${postId}/language`, { method: 'PUT', body });
+}
+
+/**
+ * Look up a WP article by slug + language via the plugin multilingual query API
+ * (GET /language/posts?slug=&lang=). The same slug may exist once per language on
+ * the WP side, so the native WP slug lookup is ambiguous for translations — this
+ * is the disambiguation endpoint the plugin v1 exposes.
+ * @param {string} slug
+ * @param {string} lang geo language code (zh-cn|en-us|zh-hk)
+ * @returns {Promise<object|null>} the matching post (plugin response shape) or null
+ *   when the plugin API is unavailable (pre-multilingual plugin) / not found
+ */
+async function findPostByLanguage(slug, lang) {
+  const code = toPluginLanguage(lang || 'zh-cn');
+  const res = await pluginApi(`/language/posts?slug=${encodeURIComponent(slug)}&lang=${code}`);
+  const list = res && res.data ? (Array.isArray(res.data) ? res.data : [res.data]) : [];
+  return list.length ? list[0] : null;
+}
+
+module.exports = { pluginTarget, pluginApi, getPostMeta, updatePostMeta, setPostLanguage, toPluginLanguage, findPostByLanguage };

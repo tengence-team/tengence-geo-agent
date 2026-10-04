@@ -70,6 +70,7 @@ lazy('taxonomy', () => require('./taxonomy'));
 lazy('llm', () => require('./llm'));
 lazy('monitor', () => require('./monitor'));
 lazy('standards', () => require('./standards'));
+lazy('translate', () => require('./translate'));
 lazy('diagnose', () => require('./diagnose'));
 lazy('util', () => require('./util'));
 lazy('cli', () => ({

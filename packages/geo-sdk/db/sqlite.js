@@ -38,6 +38,7 @@ const path = require('path');
 const sqliteDriver = require('./sqlite-driver');
 
 const { createSqliteTablesSQL, SCHEMA_VERSION, CHANNEL_PLAN } = require('./sqlite-schema');
+const { TABLES } = require('./schema');
 
 let _db = null;
 let _dbPath = null;
@@ -105,6 +106,8 @@ function ensureSchema(db) {
   // exists with the right affinity whether the DB was created fresh or pre-dates this change.
   // article_id is a 19-digit Juejin Snowflake id: store as TEXT to avoid JS Number precision loss.
   ensureColumnType(db, CHANNEL_PLAN, 'article_id', 'TEXT');
+  // multilingual v1: translation-group UUID shared by the languages of one article
+  ensureColumnType(db, TABLES.articles, 'translation_group', 'TEXT');
 
   const version = Number(db.pragma('user_version', { simple: true }));
   if (version >= SCHEMA_VERSION) return { applied: false, version };

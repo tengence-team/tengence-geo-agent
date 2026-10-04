@@ -68,6 +68,7 @@ function parseArgs(argv) {
       'meta-title': { type: 'string' },
       'meta-desc': { type: 'string' },
       'post-title': { type: 'string' },
+      lang: { type: 'string', default: 'zh-cn' },
       site: { type: 'string', default: DEFAULT_SITE },
     },
     argv
@@ -84,6 +85,7 @@ function parseArgs(argv) {
     metaTitle: flags['meta-title'] || '',
     metaDesc: flags['meta-desc'] || '',
     postTitle: flags['post-title'] || '',
+    lang: flags.lang,
     site: flags.site,
     markdownFile: positionals.length ? path.resolve(positionals[0]) : null,
   };
@@ -143,7 +145,7 @@ async function loadGeoConfig(mdFile, slug) {
   if (slug) {
     try {
       const geo = await t.db.withConn(async (conn) => {
-        const articleId = await t.db.articles.findIdBySlug(conn, slug, appId);
+        const articleId = await t.db.articles.findIdBySlug(conn, slug, appId, options.lang);
         if (!articleId) return null;
         const config = await t.db.config.getFull(conn, articleId, appId);
         return config && config.geo ? config.geo : null;
@@ -255,8 +257,8 @@ async function metaOnlyUpdate(options) {
   let dbAffected = 0;
   await t.db.withConn(async (conn) => {
     const [rows] = await conn.query(
-      'SELECT id, seo, wp_post_id FROM tengence_geo_articles WHERE app_id = ? AND slug = ? LIMIT 1',
-      [appId, options.slug]
+      'SELECT id, seo, wp_post_id FROM tengence_geo_articles WHERE app_id = ? AND slug = ? AND lang = ? LIMIT 1',
+      [appId, options.slug, options.lang]
     );
     if (!rows.length) throw new Error(`Article not found in the DB: slug=${options.slug} app_id=${appId}`);
     dbRow = rows[0];

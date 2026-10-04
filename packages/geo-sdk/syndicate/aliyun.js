@@ -138,7 +138,7 @@ function rawRequest(fullUrl, { method = 'GET', body = null, csrf = null } = {}) 
   const cookieHeader = csrf ? `${cookie}; c_csrf=${csrf}` : cookie;
   const headers = {
     accept: 'application/json, text/plain, */*',
-    'accept-language': 'zh-CN,zh;q=0.9',
+    'accept-language': 'zh-cn,zh;q=0.9',
     'user-agent': UA,
     cookie: cookieHeader,
     origin: `https://${HOST}`,

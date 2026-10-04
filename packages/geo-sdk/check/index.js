@@ -30,17 +30,19 @@ const { buildPostHtml, parseGeoBlocks, parseFrontMatter } = require('../content/
 
 /**
  * Article gate check
- * @param {{slug:string, dir?:string, type?:string|null}} opts
+ * @param {{slug:string, dir?:string, type?:string|null, lang?:string, site?:string|null}} opts
  *   - slug  article slug (articles table / data/inbox fallback)
  *   - dir   directory name (word-count range inferred from the directory when --type
  *           is not explicit; default industry-insights)
  *   - type  T1..T7 (hard word-count check by type range when explicitly declared)
+ *   - lang  article language (defaults to the site default). Multi-language articles
+ *           must pass the gate with their own lang so the DB lookup is unambiguous.
  * @returns {Promise<{ok:boolean, slug:string, rows:Array<[string,string,boolean,boolean]>,
  *                    warns:string[], research:boolean, researchSource:string|null, counts:object}>}
  *   each rows item [label, value, ok, soft]: soft=true means it's informational only
  *   and does not affect the exit code.
  */
-async function checkArticle({ slug, dir = 'industry-insights', type = null, site = null } = {}) {
+async function checkArticle({ slug, dir = 'industry-insights', type = null, lang = null, site = null } = {}) {
   const t = require('../index');
   // site context: SITES_ROOT injected via env; app_id from the site .env's APP_ID
   // (default 1); lang from the site's default language. An explicit `site` key (e.g.
@@ -48,7 +50,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, site
   // default key so the CLI's single-site convention still works.
   const S = t.site.loadSite(site || undefined);
   const APP_ID = parseInt(process.env.APP_ID || '1', 10);
-  const LANG = (S.site && S.site.languages && S.site.languages.default) || 'zh-CN';
+  const LANG = lang || ((S.site && S.site.languages && S.site.languages.default) || 'zh-cn');
 
   if (!slug) {
     throw new Error('checkArticle requires slug');

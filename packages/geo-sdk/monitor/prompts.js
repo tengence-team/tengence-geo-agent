@@ -10,7 +10,7 @@
  *       question: "What company is Tengence?"
  *       variants:            # optional, synonymous rewrites (rotated to avoid overfitting)
  *         - "Please introduce the company Tengence."
- * NOTE: the example bank is English; for zh-CN sites write questions in the language
+ * NOTE: the example bank is English; for zh-cn sites write questions in the language
  * of the answers you monitor (extraction wordlists are language-specific).
  * ============================================================================
  */

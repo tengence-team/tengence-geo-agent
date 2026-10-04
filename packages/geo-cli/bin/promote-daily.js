@@ -75,7 +75,7 @@ async function extractInternalLinks(item) {
   const md = await t.db.withConn(async (conn) => {
     const [rows] = await conn.query(
       'SELECT content_longtext FROM tengence_geo_articles WHERE app_id = ? AND slug = ? AND lang = ? LIMIT 1',
-      [APP_ID, item.slug, 'zh-CN']
+      [APP_ID, item.slug, 'zh-cn']
     );
     return (rows[0] && rows[0].content_longtext) || '';
   });
