@@ -20,11 +20,15 @@ const { loadSite } = require('../site/config');
 
 /**
  * Resolve the WP API target
+ * @param {string} [siteKey] explicit site key. Required for in-process callers that
+ *   have no `--site` in argv (e.g. MCP tool calls): without it loadSite() falls back
+ *   to the `tengence` default, which does not exist in a multi-site workspace.
+ *   Omitting it keeps the previous behavior exactly (geo-cli bins pass --site).
  * @returns {{siteKey:string, wpUrl:string, wpApiUrl:string, apiUrl:string, authHeader:string}}
  * @throws when WP_URL / WP_USERNAME / WP_PASSWORD are missing (no fallback)
  */
-function wpTarget() {
-  const SITE = loadSite();
+function wpTarget(siteKey) {
+  const SITE = siteKey ? loadSite(siteKey) : loadSite();
   const username = process.env.WP_USERNAME;
   const password = process.env.WP_PASSWORD;
   const wpUrl = process.env.WP_URL || '';

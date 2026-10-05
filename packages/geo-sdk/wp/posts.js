@@ -23,8 +23,8 @@ const plugin = require('./plugin');
  * @param {string} slug
  * @returns {Promise<object|null>} the WP post object on a hit, otherwise null
  */
-async function findBySlug(slug) {
-  const posts = await api('/posts?slug=' + encodeURIComponent(slug));
+async function findBySlug(slug, options = {}) {
+  const posts = await api(`/posts?slug=` + encodeURIComponent(slug), { siteKey: options.siteKey });
   return Array.isArray(posts) && posts.length > 0 ? posts[0] : null;
 }
 
@@ -43,34 +43,37 @@ async function list(params = {}) {
  * Get an article by ID
  * @param {number|string} id
  * @param {string} [query] extra query string, e.g. '?context=edit&_fields=id,slug'
+ * @param {{siteKey?:string}} [options] siteKey — required for MCP tool calls
  */
-async function get(id, query = '') {
-  return api(`/posts/${id}${query}`);
+async function get(id, query = '', options = {}) {
+  return api(`/posts/${id}${query}`, { siteKey: options.siteKey });
 }
 
 /**
  * Update the article body (POST /posts/{id}; meta is stripped — use saveMeta)
  * @param {number|string} id
  * @param {object} data WP article fields (should not contain meta)
+ * @param {{siteKey?:string}} [options] siteKey — required for MCP tool calls
  */
-async function update(id, data) {
+async function update(id, data, options = {}) {
   const { meta, ...body } = data || {};
   if (meta !== undefined) {
     console.warn('[wp.posts.update] meta now goes through the plugin API; the WP meta field is ignored (use saveMeta)');
   }
-  return api(`/posts/${id}`, { method: 'POST', body });
+  return api(`/posts/${id}`, { method: 'POST', body, siteKey: options.siteKey });
 }
 
 /**
  * Create an article body (POST /posts; meta is stripped — use saveMeta)
  * @param {object} data WP article fields (should not contain meta)
+ * @param {{siteKey?:string}} [options] siteKey — required for MCP tool calls
  */
-async function create(data) {
+async function create(data, options = {}) {
   const { meta, ...body } = data || {};
   if (meta !== undefined) {
     console.warn('[wp.posts.create] meta now goes through the plugin API; the WP meta field is ignored (use saveMeta)');
   }
-  return api('/posts', { method: 'POST', body });
+  return api('/posts', { method: 'POST', body, siteKey: options.siteKey });
 }
 
 /**
@@ -78,18 +81,19 @@ async function create(data) {
  * @param {number|string} id
  * @returns {Promise<object>} meta object ({} when empty)
  */
-async function getMeta(id) {
-  return plugin.getPostMeta(id);
+async function getMeta(id, options = {}) {
+  return plugin.getPostMeta(id, options);
 }
 
 /**
  * Write an article's SEO/GEO meta (plugin API; empty object skipped)
  * @param {number|string} id
  * @param {object} meta unprefixed-key meta object
+ * @param {{siteKey?:string}} [options] siteKey — required for MCP tool calls
  * @returns {Promise<object>} the latest meta after writing
  */
-async function saveMeta(id, meta) {
-  return plugin.updatePostMeta(id, meta);
+async function saveMeta(id, meta, options = {}) {
+  return plugin.updatePostMeta(id, meta, options);
 }
 
 /**

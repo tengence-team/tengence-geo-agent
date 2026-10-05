@@ -65,7 +65,6 @@ function pluginTarget(siteKey) {
 async function pluginApi(endpoint, options = {}) {
   const { method = 'GET', body = null, timeout = 60000, siteKey } = options;
   const { baseUrl, siteId, secret } = pluginTarget(siteKey);
-
   const res = await request(`${baseUrl}${endpoint}`, {
     method,
     body,
@@ -89,8 +88,8 @@ async function pluginApi(endpoint, options = {}) {
  * @param {number|string} postId the article ID
  * @returns {Promise<object>} meta object (unprefixed keys; {} when empty)
  */
-async function getPostMeta(postId) {
-  const res = await pluginApi(`/posts/${postId}`);
+async function getPostMeta(postId, options = {}) {
+  const res = await pluginApi(`/posts/${postId}`, { siteKey: options.siteKey });
   const meta = res && res.data && res.data.meta;
   return meta && typeof meta === 'object' ? meta : {};
 }
@@ -101,11 +100,11 @@ async function getPostMeta(postId) {
  * @param {object} meta unprefixed-key meta object
  * @returns {Promise<object>} the latest meta after writing
  */
-async function updatePostMeta(postId, meta) {
+async function updatePostMeta(postId, meta, options = {}) {
   if (!meta || typeof meta !== 'object' || Object.keys(meta).length === 0) {
-    return getPostMeta(postId);
+    return getPostMeta(postId, options);
   }
-  const res = await pluginApi(`/posts/${postId}`, { method: 'PUT', body: { meta } });
+  const res = await pluginApi(`/posts/${postId}`, { method: 'PUT', body: { meta }, siteKey: options.siteKey });
   const updated = res && res.data && res.data.meta;
   return updated && typeof updated === 'object' ? updated : {};
 }

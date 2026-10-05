@@ -975,7 +975,7 @@ async function publishArticle(connection, articleId, options = {}) {
     //
     // Best-effort: a failure here must never lose an already-published article, so
     // it warns instead of throwing (the dates can be re-applied with
-    // publish_set_dates / copy_from at any time).
+    // publish_update_fields / copy_dates_from at any time).
     if (!dryRun && options.syncSourceDates !== false && article.lang && article.lang !== 'zh-cn') {
       try {
         const [srcRows] = await connection.query(
@@ -1006,7 +1006,7 @@ async function publishArticle(connection, articleId, options = {}) {
         }
       } catch (e) {
         s.logger(`  ⚠️ Date inheritance failed (article still published): ${e.message}`);
-        s.logger(`    (re-apply later: publish_set_dates article_id=${articleId} copy_from=<source wp id>)`);
+        s.logger(`    (re-apply later: publish_update_fields article_id=${articleId} copy_dates_from=<source wp id>)`);
       }
     }
   }

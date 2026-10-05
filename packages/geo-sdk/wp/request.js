@@ -55,9 +55,10 @@ function resolveOriginIp() {
  * Low-level request: any absolute URL
  * @param {string} url
  * @param {{method?:string, headers?:object, body?:any, auth?:boolean,
- *          timeout?:number}} [options]
+ *          timeout?:number, siteKey?:string}} [options]
  *   - auth: true attaches the Basic Auth header automatically
  *   - body: an object is JSON-serialized automatically with Content-Type added
+ *   - siteKey: explicit site for in-process callers without `--site` argv (MCP tools)
  * @returns {Promise<{status:number, ok:boolean, headers:object, text:string, data:any}>}
  */
 function request(url, options = {}) {
@@ -67,6 +68,7 @@ function request(url, options = {}) {
     body = null,
     auth = false,
     timeout = 60000,
+    siteKey,
   } = options;
 
   return resolveOriginIp().then((originIp) => new Promise((resolve, reject) => {
@@ -81,7 +83,7 @@ function request(url, options = {}) {
     const mod = useHttps ? https : http;
 
     const finalHeaders = { ...headers };
-    if (auth) finalHeaders.Authorization = wpTarget().authHeader;
+    if (auth) finalHeaders.Authorization = wpTarget(siteKey).authHeader;
 
     let payload = null;
     if (body !== null && body !== undefined) {
@@ -147,17 +149,20 @@ function request(url, options = {}) {
 /**
  * WP JSON API request (endpoints relative to /wp/v2)
  * @param {string} endpoint e.g. '/posts?slug=xxx'
- * @param {{method?:string, body?:any, auth?:boolean, timeout?:number, headers?:object}} [options]
+ * @param {{method?:string, body?:any, auth?:boolean, timeout?:number, headers?:object,
+ *          siteKey?:string}} [options]
+ *   siteKey: explicit site for in-process callers without `--site` argv (MCP tools)
  * @returns {Promise<any>} the parsed response body; throws on non-2xx
  */
 async function api(endpoint, options = {}) {
-  const { method = 'GET', body = null, auth = true, timeout = 60000, headers = {} } = options;
-  const { apiUrl } = wpTarget();
+  const { method = 'GET', body = null, auth = true, timeout = 60000, headers = {}, siteKey } = options;
+  const { apiUrl } = wpTarget(siteKey);
   const res = await request(`${apiUrl}${endpoint}`, {
     method,
     body,
     auth,
     timeout,
+    siteKey,
     headers: { Accept: 'application/json', ...headers },
   });
   if (!res.ok) {

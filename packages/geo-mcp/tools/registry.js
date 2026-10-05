@@ -133,6 +133,84 @@ const workspaceField = z
   .describe('absolute user workspace directory (`~` allowed); binds it for later calls when given');
 
 // ==================== tool definitions ====================
+// ==================== Article field routing (publish_update_fields) ====================
+
+/**
+ * Where each article field has to be written. One merged tool, three destinations —
+ * the split is forced by the platform, not by convenience:
+ *
+ *  - `wp`    → WP native REST (/wp/v2/posts/{id}). Only this API can write the post
+ *              body / title / excerpt / status / slug / taxonomy / featured_media
+ *              (media ID). It CANNOT write post_modified (readonly, verified).
+ *  - `meta`  → Tengence plugin API (PUT /tengence/v1/posts/{id}). The 21 registered
+ *              SEO/GEO/base keys. Native WP silently drops unregistered meta keys.
+ *  - `date`  → plugin dates API (POST /tengence/v1/posts/{id}/dates); the only way
+ *              to write post_modified.
+ *
+ * SEO (`seo_*`) and GEO (`geo_*`) stay separate groups on purpose — they are
+ * different concerns with different owners and are reported back separately, so a
+ * caller can update one without touching the other.
+ */
+const ARTICLE_FIELD_ROUTES = {
+  // --- WP native (post body / taxonomy / featured image media id) ---
+  title: 'wp',
+  content: 'wp',
+  excerpt: 'wp',
+  slug: 'wp',
+  status: 'wp',
+  categories: 'wp',
+  tags: 'wp',
+  sticky: 'wp',
+  featured_media: 'wp',
+
+  // --- plugin meta: base ---
+  image: 'meta',            // featured image URL (meta mirror of featured_media)
+  image_alt: 'meta',
+  reading_time: 'meta',
+  author: 'meta',
+
+  // --- plugin meta: SEO (independent group) ---
+  seo_meta_title: 'meta',
+  seo_meta_description: 'meta',
+  seo_meta_keywords: 'meta',
+  seo_canonical_url: 'meta',
+  seo_og_type: 'meta',
+  seo_og_locale: 'meta',
+  seo_noindex: 'meta',
+  seo_og_image: 'meta',
+
+  // --- plugin meta: GEO (independent group) ---
+  geo_ai_summary: 'meta',
+  geo_qa_pairs: 'meta',
+  geo_citations: 'meta',
+  geo_key_takeaways: 'meta',
+  geo_schema_data: 'meta',
+  geo_entity: 'meta',
+
+  // --- plugin meta: i18n / regions / cta ---
+  i18n: 'meta',
+  regions: 'meta',
+  cta: 'meta',
+
+  // --- plugin dates API ---
+  date: 'date',
+  date_gmt: 'date',
+  modified: 'date',
+  modified_gmt: 'date',
+};
+
+/** Meta keys handled by the plugin dates API rather than the meta endpoint. */
+const DATE_FIELD_KEYS = ['date', 'date_gmt', 'modified', 'modified_gmt'];
+
+/** Meta keys treated as SEO for reporting / DB mirroring. */
+const SEO_META_KEYS = Object.keys(ARTICLE_FIELD_ROUTES).filter(
+  (k) => ARTICLE_FIELD_ROUTES[k] === 'meta' && k.startsWith('seo_')
+);
+/** Meta keys treated as GEO for reporting. */
+const GEO_META_KEYS = Object.keys(ARTICLE_FIELD_ROUTES).filter(
+  (k) => ARTICLE_FIELD_ROUTES[k] === 'meta' && k.startsWith('geo_')
+);
+
 
 const tools = [
   // ---------- workspace ----------
@@ -489,21 +567,48 @@ const tools = [
     description: 'Bypass update of an existing article (title/content/status + sync SEO/GEO meta). ' +
       'When meta_title / meta_description / post_title is provided, runs meta-only mode: updates ONLY those fields ' +
       '(meta_title → DB seo.title + WP seo_meta_title; meta_description → DB seo.meta_description + WP seo_meta_description, 165–175 chars hard gate; ' +
-      'post_title → DB title + WP post_title itself); body/content/status/excerpt untouched.',
+      'post_title → DB title + WP post_title itself); body/content/status/excerpt untouched. ' +
+      'Target the article by article_id, slug (+lang) or post_id. For single-field edits prefer publish_update_fields ' +
+      '(one entry point for every attribute); this tool stays for whole-body rewrites from Markdown.',
     inputSchema: z.object({
       md_path: z.string().optional().describe('absolute path to the body Markdown (required for full update; omit in meta-only mode)'),
       meta_title: z.string().optional().describe('new SEO title (≤200 characters). Providing it switches to meta-only mode'),
       meta_description: z.string().optional().describe('new meta_description (165–175 characters). Providing it switches to meta-only mode'),
       post_title: z.string().optional().describe('new WordPress post title itself (≤200 characters, also updates DB title column). Providing it switches to meta-only mode'),
       site: siteField,
+      article_id: z.number().optional().describe('articles.id (DB) — resolved to its slug + lang + wp_post_id; the simplest way to target an article'),
       slug: z.string().optional().describe('target slug'),
       lang: z.string().optional().describe('article language for slug lookup (zh-cn|en-us|zh-hk; default the site default)'),
       post_id: z.number().optional().describe('target WP post id (either slug or post_id)'),
-    }),
+    }).passthrough(),
     async run(args) {
+      // resolve article_id → slug / lang / wp_post_id (the CLI only knows slug + post-id)
+      let slug = args.slug || null;
+      let lang = args.lang || null;
+      let postId = args.post_id || null;
+
+      if (args.article_id) {
+        const S = withSite(args);
+        const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
+        const rows = await t.db.withConn((conn) =>
+          conn.query(
+            'SELECT slug, lang, wp_post_id FROM tengence_geo_articles WHERE id = ? AND app_id = ? LIMIT 1',
+            [args.article_id, appId]
+          ).then(([r]) => r)
+        );
+        if (!rows.length) {
+          return fail(new Error(`Article ${args.article_id} not found (app_id=${appId})`));
+        }
+        const row = rows[0];
+        // an explicit slug/post_id still wins, so a caller can override the lookup
+        slug = slug || row.slug;
+        lang = lang || row.lang;
+        postId = postId || row.wp_post_id || null;
+      }
+
       const cliArgs = [];
       if (args.meta_title || args.meta_description || args.post_title) {
-        if (!args.slug && !args.post_id) return fail(new Error('meta-only mode requires slug or post_id'));
+        if (!slug && !postId) return fail(new Error('meta-only mode requires article_id, slug or post_id'));
         cliArgs.push('--meta-only');
         if (args.meta_title) cliArgs.push('--meta-title', args.meta_title);
         if (args.meta_description) cliArgs.push('--meta-desc', args.meta_description);
@@ -513,11 +618,16 @@ const tools = [
         cliArgs.push(args.md_path);
       }
       cliArgs.push('--site', cliSite(args));
-      if (args.slug) cliArgs.push('--slug', args.slug);
-      if (args.lang) cliArgs.push('--lang', args.lang);
-      if (args.post_id) cliArgs.push('--post-id', String(args.post_id));
+      if (slug) cliArgs.push('--slug', slug);
+      if (lang) cliArgs.push('--lang', lang);
+      if (postId) cliArgs.push('--post-id', String(postId));
       const r = runCli('publish-update-article', cliArgs);
-      return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
+      return ok({
+        ok: r.code === 0,
+        exit_code: r.code,
+        resolved: { slug, lang, post_id: postId },
+        output: r.stdout || r.stderr,
+      });
     },
   },
   {
@@ -536,81 +646,246 @@ const tools = [
     },
   },
   {
-    name: 'publish_set_dates',
-    description: "Set a WordPress article's publish time and/or update time (post_date / post_modified), via the Tengence " +
-      "plugin dates API (POST /tengence/v1/posts/{id}/dates). The native WP REST API treats `modified` as READONLY, so this is the " +
-      "only supported way to backdate a post_modified. Two modes: (1) explicit date/date_gmt/modified/modified_gmt; " +
-      "(2) copy_from=<wp_post_id> — inherit that post's four date values verbatim (used to align a translation with its source article).",
+    name: 'publish_update_fields',
+    description:
+      'Update ANY article attribute through ONE entry point. Fields are routed to the only API that can actually write them:\n' +
+      '  • WP native (/wp/v2): title, content, excerpt, slug, status, categories, tags, sticky, featured_media (media ID)\n' +
+      '  • plugin meta (PUT /tengence/v1/posts/{id}): image, image_alt, reading_time, author, i18n, regions, cta\n' +
+      '  • SEO (independent group): seo_meta_title, seo_meta_description, seo_meta_keywords, seo_canonical_url,\n' +
+      '    seo_og_type, seo_og_locale, seo_noindex, seo_og_image\n' +
+      '  • GEO (independent group): geo_ai_summary, geo_qa_pairs, geo_citations, geo_key_takeaways, geo_schema_data, geo_entity\n' +
+      '  • dates (plugin dates API — the ONLY way to write post_modified, which wp/v2 treats as readonly)\n' +
+      'Only the fields you pass are touched; everything else is left untouched. SEO and GEO are applied as one batch each and\n' +
+      'reported separately, so you can update one without touching the other. Optionally mirrors title / seo_meta_title /\n' +
+      'seo_meta_description into the DB row (sync_db, default true) to keep the DB as the SSOT.',
     inputSchema: z.object({
       site: siteField,
       article_id: z.number().optional().describe('articles.id (DB) — resolved to its wp_post_id; omit when wp_post_id is given'),
       wp_post_id: z.number().optional().describe('target WP post id; overrides the DB mapping when given'),
-      copy_from: z.number().optional().describe('WP post id to copy the four date values from (e.g. the zh-cn source article)'),
-      date: z.string().optional().describe('publish time, YYYY-MM-DDTHH:MM:SS in the site timezone'),
-      date_gmt: z.string().optional().describe('publish time (GMT), YYYY-MM-DDTHH:MM:SS'),
-      modified: z.string().optional().describe('update time, YYYY-MM-DDTHH:MM:SS in the site timezone'),
-      modified_gmt: z.string().optional().describe('update time (GMT), YYYY-MM-DDTHH:MM:SS'),
-    }),
+      lang: z.string().optional().describe('article language for the DB mirror (zh-cn|en-us|zh-hk; default the site default)'),
+
+      // --- WP native ---
+      title: z.string().optional().describe('post title (WP native)'),
+      content: z.string().optional().describe('post content HTML (WP native)'),
+      excerpt: z.string().optional().describe('post excerpt / summary (WP native)'),
+      slug: z.string().optional().describe('post slug (WP native)'),
+      status: z.string().optional().describe('draft|publish|pending|private (WP native)'),
+      categories: z.array(z.number()).optional().describe('category term IDs (WP native)'),
+      tags: z.array(z.number()).optional().describe('tag term IDs (WP native)'),
+      sticky: z.boolean().optional().describe('sticky flag (WP native)'),
+      featured_media: z.number().optional().describe('featured image MEDIA ID (WP native); pair with image (URL) to keep both in sync'),
+
+      // --- plugin meta: base ---
+      image: z.string().optional().describe('featured image URL (meta)'),
+      image_alt: z.string().optional().describe('featured image alt text'),
+      reading_time: z.number().optional().describe('reading time in minutes'),
+      author: z.string().optional().describe('author display name'),
+      i18n: z.any().optional().describe('i18n object (plugin meta)'),
+      regions: z.array(z.string()).optional().describe('regions array (plugin meta)'),
+      cta: z.any().optional().describe('cta object (plugin meta)'),
+
+      // --- SEO (independent) ---
+      seo_meta_title: z.string().optional().describe('SEO title'),
+      seo_meta_description: z.string().optional().describe('SEO meta description'),
+      seo_meta_keywords: z.array(z.string()).optional().describe('SEO keywords array'),
+      seo_canonical_url: z.string().optional().describe('canonical URL'),
+      seo_og_type: z.string().optional().describe('OG type'),
+      seo_og_locale: z.string().optional().describe('OG locale'),
+      seo_noindex: z.boolean().optional().describe('noindex flag'),
+      seo_og_image: z.string().optional().describe('OG image URL'),
+
+      // --- GEO (independent) ---
+      geo_ai_summary: z.string().optional().describe('GEO AI summary'),
+      geo_qa_pairs: z.array(z.any()).optional().describe('GEO QA pairs [{question,answer}]'),
+      geo_citations: z.any().optional().describe('GEO citations (array or object)'),
+      geo_key_takeaways: z.array(z.string()).optional().describe('GEO key takeaways array'),
+      geo_schema_data: z.any().optional().describe('GEO schema data (object or array)'),
+      geo_entity: z.any().optional().describe('GEO entity (object)'),
+
+      // --- dates ---
+      date: z.string().optional().describe('publish time, YYYY-MM-DDTHH:MM:SS (site timezone)'),
+      date_gmt: z.string().optional().describe('publish time (GMT)'),
+      modified: z.string().optional().describe('update time, YYYY-MM-DDTHH:MM:SS (site timezone)'),
+      modified_gmt: z.string().optional().describe('update time (GMT)'),
+      copy_dates_from: z.number().optional().describe('WP post id to copy all four date values from (e.g. the zh-cn source article)'),
+
+      // --- language / translation group ---
+      language: z.string().optional().describe('set the post language (zh-cn|en-us|zh-hk) via the plugin language API'),
+      translation_group: z.string().optional().describe('translation-group UUID shared by the languages of one article'),
+
+      // --- behavior ---
+      sync_db: z.boolean().optional().describe('mirror title / seo_meta_title / seo_meta_description into the DB row (default true)'),
+      dry_run: z.boolean().optional().describe('validate and report the routing without writing anything'),
+    }).passthrough(), // keep unknown keys so a typo'd field is reported by name, not silently dropped
     async run(args) {
       let connection = null;
       try {
         if (!args.article_id && !args.wp_post_id) {
-          return fail(new Error('publish_set_dates requires article_id (or wp_post_id)'));
+          return fail(new Error('publish_update_fields requires article_id (or wp_post_id)'));
         }
         const S = withSite(args);
         const siteKey = S.siteKey;
         const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
 
-        // resolve the target WP post id
+        // ---- 1. split the incoming fields by destination ----
+        const wpBody = {};
+        const metaPatch = {};
+        const datePatch = {};
+        const unknown = [];
+        const IGNORED = new Set(['site', 'article_id', 'wp_post_id', 'lang', 'copy_dates_from', 'sync_db', 'dry_run', 'language', 'translation_group']);
+
+        for (const [k, v] of Object.entries(args)) {
+          if (IGNORED.has(k) || v === undefined || v === null) continue;
+          const route = ARTICLE_FIELD_ROUTES[k];
+          if (!route) {
+            unknown.push(k);
+            continue;
+          }
+          if (route === 'wp') wpBody[k] = v;
+          else if (route === 'meta') metaPatch[k] = v;
+          else datePatch[k] = v;
+        }
+
+        const wantLang = args.language || null;
+        const wantGroup = args.translation_group || null;
+        // unknown fields first: a typo must name itself, not report "nothing to update"
+        if (unknown.length) {
+          return fail(new Error(
+            `unknown field(s): ${unknown.join(', ')} — call the tool with no arguments to see the supported list`
+          ));
+        }
+        if (!Object.keys(wpBody).length && !Object.keys(metaPatch).length && !Object.keys(datePatch).length &&
+            !args.copy_dates_from && !wantLang) {
+          return fail(new Error('nothing to update: pass at least one field'));
+        }
+
+        const seoRequested = SEO_META_KEYS.filter((k) => metaPatch[k] !== undefined);
+        const geoRequested = GEO_META_KEYS.filter((k) => metaPatch[k] !== undefined);
+        const baseMetaRequested = Object.keys(metaPatch).filter(
+          (k) => !seoRequested.includes(k) && !geoRequested.includes(k)
+        );
+
+        const plan = {
+          wp_native: Object.keys(wpBody),
+          plugin_meta_seo: seoRequested,
+          plugin_meta_geo: geoRequested,
+          plugin_meta_base: baseMetaRequested,
+          plugin_dates: Object.keys(datePatch),
+          dates_copied_from: args.copy_dates_from || null,
+          language: wantLang,
+          translation_group: wantGroup,
+          sync_db: args.sync_db !== false,
+        };
+
+        if (args.dry_run) {
+          return ok({ ok: true, dry_run: true, wp_post_id: args.wp_post_id || null, plan });
+        }
+
+        // ---- 2. resolve the target WP post id ----
         let postId = args.wp_post_id || null;
+        let dbRow = null;
         if (!postId) {
           connection = await t.db.createConnection();
           const [rows] = await connection.query(
-            'SELECT wp_post_id FROM tengence_geo_articles WHERE id = ? AND app_id = ? LIMIT 1',
+            'SELECT id, wp_post_id, title, seo, lang FROM tengence_geo_articles WHERE id = ? AND app_id = ? LIMIT 1',
             [args.article_id, appId]
           );
-          postId = rows[0] && rows[0].wp_post_id;
+          dbRow = rows[0] || null;
+          postId = dbRow && dbRow.wp_post_id;
           if (!postId) {
             return fail(new Error(`Article ${args.article_id} has no wp_post_id (not published yet)`));
           }
         }
 
-        // read the live dates (plugin API — the WP-native read works too, but the
-        // plugin route keeps one auth path for both read and write)
-        const before = await t.wp.posts.getPostDates(postId, { siteKey });
+        const applied = {};
+        const before = {};
+        let after_dates = null;
 
-        // build the date payload: explicit fields, or copy_from inheritance
-        let dates = {
-          date: args.date || null,
-          date_gmt: args.date_gmt || null,
-          modified: args.modified || null,
-          modified_gmt: args.modified_gmt || null,
-        };
-        let copiedFrom = null;
-        if (args.copy_from) {
-          const src = await t.wp.posts.getPostDates(args.copy_from, { siteKey });
-          dates = {
-            date: src.date || null,
-            date_gmt: src.date_gmt || null,
-            modified: src.modified || null,
-            modified_gmt: src.modified_gmt || null,
+        // ---- 3. WP native fields (one call) ----
+        if (Object.keys(wpBody).length) {
+          const pre = await t.wp.posts.get(postId, '?context=edit&_fields=id,title,excerpt,slug,status,featured_media', { siteKey });
+          before.wp_native = {
+            title: pre && pre.title && pre.title.raw !== undefined ? pre.title.raw : (pre.title || {}).rendered,
+            excerpt: pre && pre.excerpt && pre.excerpt.raw !== undefined ? pre.excerpt.raw : (pre.excerpt || {}).rendered,
+            slug: pre && pre.slug,
+            status: pre && pre.status,
+            featured_media: pre && pre.featured_media,
           };
-          copiedFrom = args.copy_from;
-        }
-        if (!dates.date && !dates.date_gmt && !dates.modified && !dates.modified_gmt) {
-          return fail(new Error('nothing to set: pass copy_from, or at least one of date / date_gmt / modified / modified_gmt'));
+          await t.wp.posts.update(postId, wpBody, { siteKey });
+          applied.wp_native = Object.keys(wpBody);
         }
 
-        const res = await t.wp.posts.setPostDates(postId, dates, { siteKey });
-        const after = (res && res.data && res.data.dates) || (await t.wp.posts.getPostDates(postId, { siteKey }));
+        // ---- 4. plugin meta (one call; SEO / GEO reported separately) ----
+        if (Object.keys(metaPatch).length) {
+          const pre = await t.wp.posts.getMeta(postId, { siteKey });
+          before.plugin_meta = {};
+          for (const k of Object.keys(metaPatch)) before.plugin_meta[k] = pre ? pre[k] : undefined;
+          await t.wp.posts.saveMeta(postId, metaPatch, { siteKey });
+          applied.plugin_meta_seo = seoRequested;
+          applied.plugin_meta_geo = geoRequested;
+          applied.plugin_meta_base = baseMetaRequested;
+        }
+
+        // ---- 5. dates (plugin dates API — the only writer of post_modified) ----
+        if (Object.keys(datePatch).length || args.copy_dates_from) {
+          const pre = await t.wp.posts.getPostDates(postId, { siteKey });
+          before.dates = { date: pre.date, modified: pre.modified };
+          if (args.copy_dates_from) {
+            const src = await t.wp.posts.getPostDates(args.copy_dates_from, { siteKey });
+            datePatch.date = src.date;
+            datePatch.date_gmt = src.date_gmt;
+            datePatch.modified = src.modified;
+            datePatch.modified_gmt = src.modified_gmt;
+          }
+          if (Object.keys(datePatch).length) {
+            const r = await t.wp.posts.setPostDates(postId, datePatch, { siteKey });
+            const post = (r && r.data && r.data.dates) || (await t.wp.posts.getPostDates(postId, { siteKey }));
+            applied.plugin_dates = Object.keys(datePatch);
+            after_dates = { date: post.date, modified: post.modified };
+          }
+        }
+
+        // ---- 6. language / translation group ----
+        if (wantLang) {
+          await t.wp.posts.setPostLanguage(postId, { language: wantLang, translationGroup: wantGroup });
+          applied.language = wantLang;
+          applied.translation_group = wantGroup;
+        }
+
+        // ---- 7. mirror into the DB (SSOT) ----
+        const dbMirrored = {};
+        if (args.sync_db !== false && (args.title !== undefined || args.seo_meta_title !== undefined || args.seo_meta_description !== undefined)) {
+          if (!connection) connection = await t.db.createConnection();
+          let row = dbRow;
+          if (!row) {
+            const [rows] = await connection.query(
+              'SELECT id, seo, title, lang FROM tengence_geo_articles WHERE wp_post_id = ? AND app_id = ? LIMIT 1',
+              [postId, appId]
+            );
+            row = rows[0] || null;
+          }
+          if (row) {
+            const seo = JSON.parse(row.seo || '{}');
+            if (args.seo_meta_title !== undefined) seo.title = args.seo_meta_title;
+            if (args.seo_meta_description !== undefined) seo.meta_description = args.seo_meta_description;
+            const saveFields = { seo: JSON.stringify(seo) };
+            if (args.title !== undefined) saveFields.title = args.title;
+            await t.db.articles.saveContent(connection, row.id, appId, saveFields);
+            dbMirrored.article_id = row.id;
+            dbMirrored.fields = Object.keys(saveFields);
+          } else {
+            dbMirrored.warning = 'no DB row matched this post; nothing mirrored';
+          }
+        }
+
         return ok({
           ok: true,
           wp_post_id: postId,
-          slug: (res && res.data && res.data.slug) || null,
-          copied_from: copiedFrom,
-          applied: (res && res.updated) || dates,
-          before: { date: before.date, modified: before.modified },
-          after: { date: after.date, modified: after.modified },
+          plan,
+          applied,
+          before,
+          after_dates: after_dates,
+          db_mirrored: dbMirrored,
         });
       } catch (e) {
         return fail(e);
