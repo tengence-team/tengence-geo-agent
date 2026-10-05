@@ -171,10 +171,10 @@ function toPluginLanguage(lang) {
  *        language is the geo DB code (mapped internally to the plugin taxonomy)
  * @returns {Promise<object>} plugin API response
  */
-async function setPostLanguage(postId, { language, translationGroup = null } = {}) {
+async function setPostLanguage(postId, { language, translationGroup = null } = {}, options = {}) {
   const body = { language: toPluginLanguage(language || 'zh-cn') };
   if (translationGroup) body.translation_group = translationGroup;
-  return pluginApi(`/posts/${postId}/language`, { method: 'PUT', body });
+  return pluginApi(`/posts/${postId}/language`, { method: 'PUT', body, siteKey: options.siteKey });
 }
 
 /**
@@ -187,9 +187,11 @@ async function setPostLanguage(postId, { language, translationGroup = null } = {
  * @returns {Promise<object|null>} the matching post (plugin response shape) or null
  *   when the plugin API is unavailable (pre-multilingual plugin) / not found
  */
-async function findPostByLanguage(slug, lang) {
+async function findPostByLanguage(slug, lang, options = {}) {
   const code = toPluginLanguage(lang || 'zh-cn');
-  const res = await pluginApi(`/language/posts?slug=${encodeURIComponent(slug)}&lang=${code}`);
+  const res = await pluginApi(`/language/posts?slug=${encodeURIComponent(slug)}&lang=${code}`, {
+    siteKey: options.siteKey,
+  });
   const list = res && res.data ? (Array.isArray(res.data) ? res.data : [res.data]) : [];
   return list.length ? list[0] : null;
 }

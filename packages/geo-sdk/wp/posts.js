@@ -102,8 +102,8 @@ async function saveMeta(id, meta, options = {}) {
  * @param {{language:string, translationGroup?:string|null}} opts geo language code
  * @returns {Promise<object>}
  */
-async function setPostLanguage(id, opts) {
-  return plugin.setPostLanguage(id, opts);
+async function setPostLanguage(id, opts, options = {}) {
+  return plugin.setPostLanguage(id, opts, options);
 }
 
 /**
@@ -134,10 +134,11 @@ async function getPostDates(id, options = {}) {
  * (the WP-native slug lookup is ambiguous once the same slug exists per language).
  * @param {string} slug
  * @param {string} lang geo language code
+ * @param {{siteKey?:string}} [options] siteKey — required for MCP tool calls
  * @returns {Promise<object|null>}
  */
-async function findPostByLanguage(slug, lang) {
-  return plugin.findPostByLanguage(slug, lang);
+async function findPostByLanguage(slug, lang, options = {}) {
+  return plugin.findPostByLanguage(slug, lang, options);
 }
 
 module.exports = { findBySlug, get, list, update, create, getMeta, saveMeta, setPostLanguage, setPostDates, getPostDates, findPostByLanguage };
