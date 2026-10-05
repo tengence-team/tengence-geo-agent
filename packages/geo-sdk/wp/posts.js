@@ -21,10 +21,16 @@ const plugin = require('./plugin');
 /**
  * Find an article exactly by slug
  * @param {string} slug
- * @returns {Promise<object|null>} the WP post object on a hit, otherwise null
+ * @param {{siteKey?:string, status?:string}} [options]
+ *   status — optional WP status filter; WP only exposes published posts by default,
+ *   so pass 'draft' (or 'any') to reach drafts.
+ * @returns {Promise<object|null>} first matching post
  */
 async function findBySlug(slug, options = {}) {
-  const posts = await api(`/posts?slug=` + encodeURIComponent(slug), { siteKey: options.siteKey });
+  const { siteKey, status } = options || {};
+  let path = '/posts?slug=' + encodeURIComponent(slug);
+  if (status) path += '&status=' + encodeURIComponent(status);
+  const posts = await api(path, { siteKey });
   return Array.isArray(posts) && posts.length > 0 ? posts[0] : null;
 }
 

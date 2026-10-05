@@ -444,21 +444,39 @@ function normalizeHeading(text) {
     .trim();
 }
 
-/** Takeaways block heading (includes legacy numbered forms) */
+/**
+ * Takeaways block heading (includes legacy numbered forms).
+ * zh-hk forms are listed explicitly: without them every Traditional-Chinese article
+ * silently lost its takeaways / FAQ / citations blocks on ingest (2026-10-05).
+ */
 function isTakeawaysHeading(text) {
-  return /^(关键要点|核心要点|要点速览|Key Takeaways)$/.test(normalizeHeading(text));
+  return /^(关键要点|核心要点|要点速览|關鍵要點|核心要點|要點速覽|Key Takeaways)$/.test(
+    normalizeHeading(text)
+  );
 }
 
 /** FAQ block heading (includes legacy numbered forms) */
 function isFaqHeading(text) {
   const t = normalizeHeading(text);
-  return t === '常见问题' || t === 'FAQ' || t === 'Frequently Asked Questions' || /常见问题$/.test(t);
+  return (
+    t === '常见问题' ||
+    t === '常見問題' ||
+    t === 'FAQ' ||
+    t === 'Frequently Asked Questions' ||
+    /常见问题$/.test(t) ||
+    /常見問題$/.test(t)
+  );
 }
 
 /** Data-source block heading (## 数据来源, includes legacy numbered forms) */
 function isCitationsHeading(text) {
   const n = normalizeHeading(text);
-  return n === '数据来源' || n === 'Data Sources';
+  return (
+    n === '数据来源' ||
+    n === '資料來源' ||
+    n === '引用來源' ||
+    n === 'Data Sources'
+  );
 }
 
 /**
@@ -546,7 +564,7 @@ function parseGeoBlocks(md) {
 
     // legacy notation: `**数据来源**` (bold single line, not an H2) also starts the
     // data-source section
-    if (/^\s*\*\*(数据来源|Data Sources)\*\*\s*$/.test(line)) {
+    if (/^\s*\*\*(数据来源|資料來源|Data Sources)\*\*\s*$/.test(line)) {
       closeFaq();
       section = 'citations';
       continue;
@@ -576,7 +594,7 @@ function parseGeoBlocks(md) {
 
     if (section === 'faq') {
       const clean = line.replace(/^\s*>+\s?/, '').replace(/\*+/g, '').trim();
-      const qm = /^(?:问|Q)\s*[：:]\s*(.+)$/i.exec(clean);
+      const qm = /^(?:问|問|Q)\s*[：:]\s*(.+)$/i.exec(clean);
       if (qm) {
         closeFaq();
         current = { q: [qm[1].trim()], a: [] };

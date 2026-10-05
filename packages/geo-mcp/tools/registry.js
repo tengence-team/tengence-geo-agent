@@ -339,6 +339,71 @@ const tools = [
     },
   },
   {
+    name: 'wp_post_get',
+    description:
+      'Read-only WordPress post lookup (id / slug / status / link / date / modified). ' +
+      'Look up by wp_post_id, or by slug + lang (resolved through the plugin language endpoint). ' +
+      'Use this to check whether an article is still an unpublished draft before promoting it — ' +
+      'the articles table status is NOT authoritative for that.',
+    inputSchema: z.object({
+      site: siteField,
+      wp_post_id: z.number().optional().describe('WordPress post ID'),
+      slug: z.string().optional().describe('article slug (required when wp_post_id is omitted)'),
+      lang: z
+        .string()
+        .optional()
+        .describe('language code for a slug lookup: zh-cn | en-us | zh-hk (default zh-cn)'),
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const siteKey = S.siteKey || S.key;
+        let postId = args.wp_post_id ? Number(args.wp_post_id) : null;
+        const lang = args.lang || 'zh-cn';
+        if (!postId) {
+          if (!args.slug) return fail(new Error('either wp_post_id or slug is required'));
+          const found = await t.wp.posts.findPostByLanguage(args.slug, lang, { siteKey });
+          if (found && found.id) postId = found.id;
+          if (!postId) {
+            // WP hides drafts from a plain slug query; ask for them explicitly.
+            const draft = await t.wp.posts.findBySlug(args.slug, { siteKey, status: 'draft' });
+            if (draft && draft.id) postId = draft.id;
+          }
+          if (!postId) {
+            const any = await t.wp.posts.findBySlug(args.slug, { siteKey });
+            if (any && any.id) postId = any.id;
+          }
+          if (!postId) {
+            return ok({
+              ok: false,
+              found: false,
+              slug: args.slug,
+              lang,
+              reason: 'no WordPress post found for this slug + lang',
+            });
+          }
+        }
+        const post = await t.wp.posts.get(postId, '?_fields=id,slug,status,link,date,modified', {
+          siteKey,
+        });
+        return ok({
+          ok: true,
+          found: true,
+          post: {
+            id: post.id,
+            slug: post.slug,
+            status: post.status,
+            link: post.link,
+            date: post.date,
+            modified: post.modified,
+          },
+        });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
     name: 'article_ingest',
     description: 'Content ingest (single entry): body md + research brief → articles table (CLI canonical orchestration)',
     inputSchema: z.object({
