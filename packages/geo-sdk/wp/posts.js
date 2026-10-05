@@ -103,6 +103,29 @@ async function setPostLanguage(id, opts) {
 }
 
 /**
+ * Set an article's publish / update time (plugin dates API).
+ * The native WP REST API treats `modified` (post_modified) as READONLY, so this
+ * plugin endpoint is the only supported way to backdate a post_modified.
+ * @param {number|string} id the WP post ID
+ * @param {{date?:string, date_gmt?:string, modified?:string, modified_gmt?:string}} dates
+ * @param {{siteKey?:string}} [options] siteKey — required for MCP tool calls
+ * @returns {Promise<object>} plugin API response ({ id, updated })
+ */
+async function setPostDates(id, dates, options = {}) {
+  return plugin.setPostDates(id, dates, options);
+}
+
+/**
+ * Read an article's publish / update times (plugin dates API, GET).
+ * @param {number|string} id the WP post ID
+ * @param {{siteKey?:string}} [options]
+ * @returns {Promise<object>} { date, date_gmt, modified, modified_gmt, status, slug }
+ */
+async function getPostDates(id, options = {}) {
+  return plugin.getPostDates(id, options);
+}
+
+/**
  * Look up a WP article by slug + language via the plugin multilingual query API
  * (the WP-native slug lookup is ambiguous once the same slug exists per language).
  * @param {string} slug
@@ -113,4 +136,4 @@ async function findPostByLanguage(slug, lang) {
   return plugin.findPostByLanguage(slug, lang);
 }
 
-module.exports = { findBySlug, get, list, update, create, getMeta, saveMeta, setPostLanguage, findPostByLanguage };
+module.exports = { findBySlug, get, list, update, create, getMeta, saveMeta, setPostLanguage, setPostDates, getPostDates, findPostByLanguage };

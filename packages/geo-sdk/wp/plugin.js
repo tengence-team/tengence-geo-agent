@@ -111,6 +111,46 @@ async function updatePostMeta(postId, meta) {
 }
 
 /**
+ * Set an article's publish / update time via the plugin dates API.
+ * Endpoint: POST /posts/{id}/dates  (dates v1, plugin-side).
+ *
+ * Why this exists: the native WP REST API treats `modified` (post_modified) as
+ * READONLY — POSTing it to /wp/v2/posts/{id} is silently ignored and the value
+ * resets to "now". So a translation (en-us / zh-hk) could never be given its
+ * source zh-cn article's update time through /wp/v2. The plugin endpoint writes
+ * post_date / post_date_gmt / post_modified / post_modified_gmt directly, using
+ * the same Site-Id + Secret credential check as the rest of /tengence/v1.
+ *
+ * @param {number|string} postId the WP article ID
+ * @param {{date?:string, date_gmt?:string, modified?:string, modified_gmt?:string}} dates
+ *        each field optional; 'YYYY-MM-DD HH:MM:SS' or 'YYYY-MM-DDTHH:MM:SS'
+ * @param {{siteKey?:string}} [options]
+ * @returns {Promise<object>} plugin API response ({ id, updated })
+ */
+async function setPostDates(postId, dates = {}, options = {}) {
+  const body = {};
+  for (const k of ['date', 'date_gmt', 'modified', 'modified_gmt']) {
+    if (dates[k]) body[k] = String(dates[k]).replace('T', ' ');
+  }
+  if (Object.keys(body).length === 0) {
+    throw new Error('setPostDates requires at least one of date / date_gmt / modified / modified_gmt');
+  }
+  return pluginApi(`/posts/${postId}/dates`, { method: 'POST', body, siteKey: options.siteKey });
+}
+
+/**
+ * Read an article's four date values (plugin dates API, GET).
+ * @param {number|string} postId the WP article ID
+ * @param {{siteKey?:string}} [options]
+ * @returns {Promise<{date:string, date_gmt:string, modified:string, modified_gmt:string, status:string, slug:string}>}
+ */
+async function getPostDates(postId, options = {}) {
+  const res = await pluginApi(`/posts/${postId}/dates`, { method: 'GET', siteKey: options.siteKey });
+  const data = res && res.data ? res.data : res;
+  return (data && data.dates) || {};
+}
+
+/**
  * geo language code → plugin language taxonomy code (multilingual v1).
  * @param {string} lang geo DB language code (zh-cn / en-us / zh-hk)
  * @returns {string} plugin taxonomy code (zh-hans / en / zh-hant)
@@ -151,4 +191,4 @@ async function findPostByLanguage(slug, lang) {
   return list.length ? list[0] : null;
 }
 
-module.exports = { pluginTarget, pluginApi, getPostMeta, updatePostMeta, setPostLanguage, toPluginLanguage, findPostByLanguage };
+module.exports = { pluginTarget, pluginApi, getPostMeta, updatePostMeta, setPostLanguage, setPostDates, getPostDates, toPluginLanguage, findPostByLanguage };

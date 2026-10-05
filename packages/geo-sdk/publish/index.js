@@ -657,6 +657,9 @@ async function findExistingPost(slug) {
  *   - skipDuplicateCheck  skip the slug duplicate check (when the caller already ran
  *                         the idempotence gate)
  *   - featuredMedia force a specific WP media ID as the featured image
+ *   - syncSourceDates  inherit the zh-cn source article's publish/update time
+ *                       (default true; only applies to en-us / zh-hk rows, needs the
+ *                       plugin dates API because wp/v2 cannot write post_modified)
  *   - skipGsc / skipIndexnow / skipBaidu  skip the corresponding post-publish
  *                                         inclusion submission
  *   - log           override the progress-log sink
@@ -958,6 +961,52 @@ async function publishArticle(connection, articleId, options = {}) {
         s.logger(`  ⚠️ Plugin language API not available; default language assumed (${e.message})`);
       } else {
         throw e;
+      }
+    }
+
+    // 7.1 date inheritance: a translation (en-us / zh-hk) must carry its source
+    // zh-cn article's publish time AND update time, so the three languages of one
+    // article form a single timeline.
+    //
+    // The native WP REST API treats `modified` (post_modified) as READONLY — it is
+    // silently dropped and reset to "now" — so the write has to go through the
+    // plugin dates API (POST /tengence/v1/posts/{id}/dates). `date` is also written
+    // there rather than in postData, so both values land in one atomic call.
+    //
+    // Best-effort: a failure here must never lose an already-published article, so
+    // it warns instead of throwing (the dates can be re-applied with
+    // publish_set_dates / copy_from at any time).
+    if (!dryRun && options.syncSourceDates !== false && article.lang && article.lang !== 'zh-cn') {
+      try {
+        const [srcRows] = await connection.query(
+          `SELECT a.wp_post_id, a.slug
+             FROM tengence_geo_articles a
+            WHERE a.slug = ? AND a.lang = 'zh-cn' AND a.app_id = ? AND a.wp_post_id > 0
+            LIMIT 1`,
+          [article.slug, s.CONFIG.app_id]
+        );
+        if (!srcRows.length) {
+          s.logger(`  ⚠️ No zh-cn source article found for "${article.slug}"; dates left as-is`);
+        } else {
+          const sourceWpId = srcRows[0].wp_post_id;
+          const srcDates = await s.t.wp.posts.getPostDates(sourceWpId);
+          if (srcDates && srcDates.date) {
+            await s.t.wp.posts.setPostDates(result.id, {
+              date: srcDates.date,
+              date_gmt: srcDates.date_gmt,
+              modified: srcDates.modified,
+              modified_gmt: srcDates.modified_gmt,
+            });
+            s.logger(
+              `  ✓ Dates inherited from zh-cn WP ${sourceWpId}: date ${srcDates.date} / modified ${srcDates.modified}`
+            );
+          } else {
+            s.logger(`  ⚠️ Could not read dates of zh-cn WP ${sourceWpId}; dates left as-is`);
+          }
+        }
+      } catch (e) {
+        s.logger(`  ⚠️ Date inheritance failed (article still published): ${e.message}`);
+        s.logger(`    (re-apply later: publish_set_dates article_id=${articleId} copy_from=<source wp id>)`);
       }
     }
   }

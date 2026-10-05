@@ -462,13 +462,16 @@ const tools = [
   },
   {
     name: 'publish_from_db',
-    description: 'Publish an article from the DB to WordPress (--force updates an existing article)',
+    description: 'Publish an article from the DB to WordPress (--force updates an existing article). ' +
+      'For translations (en-us / zh-hk) the zh-cn source article\'s publish + update time is inherited by default ' +
+      '(via the plugin dates API); pass sync_source_dates=false to opt out.',
     inputSchema: z.object({
       article_id: z.number().describe('articles.id'),
       site: siteField,
       status: z.string().optional().describe('draft|publish (default draft)'),
       force: z.boolean().optional().describe('force-update when it already exists'),
       translation_group: z.string().optional().describe('translation-group UUID shared by the languages of one article (multilingual v1)'),
+      sync_source_dates: z.boolean().optional().describe('inherit the zh-cn source publish/update time (default true; translations only)'),
     }),
     async run(args) {
       if (!args.article_id) return fail(new Error('publish_from_db requires article_id'));
@@ -476,6 +479,7 @@ const tools = [
       if (args.status) cliArgs.push('--status', args.status);
       if (args.force) cliArgs.push('--force');
       if (args.translation_group) cliArgs.push('--translation-group', args.translation_group);
+      if (args.sync_source_dates === false) cliArgs.push('--no-sync-dates');
       const r = runCli('publish-from-db', cliArgs);
       return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
     },
@@ -529,6 +533,90 @@ const tools = [
       if (args.date) cliArgs.push('--date', args.date);
       const r = runCli('promote-daily', cliArgs);
       return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
+    },
+  },
+  {
+    name: 'publish_set_dates',
+    description: "Set a WordPress article's publish time and/or update time (post_date / post_modified), via the Tengence " +
+      "plugin dates API (POST /tengence/v1/posts/{id}/dates). The native WP REST API treats `modified` as READONLY, so this is the " +
+      "only supported way to backdate a post_modified. Two modes: (1) explicit date/date_gmt/modified/modified_gmt; " +
+      "(2) copy_from=<wp_post_id> — inherit that post's four date values verbatim (used to align a translation with its source article).",
+    inputSchema: z.object({
+      site: siteField,
+      article_id: z.number().optional().describe('articles.id (DB) — resolved to its wp_post_id; omit when wp_post_id is given'),
+      wp_post_id: z.number().optional().describe('target WP post id; overrides the DB mapping when given'),
+      copy_from: z.number().optional().describe('WP post id to copy the four date values from (e.g. the zh-cn source article)'),
+      date: z.string().optional().describe('publish time, YYYY-MM-DDTHH:MM:SS in the site timezone'),
+      date_gmt: z.string().optional().describe('publish time (GMT), YYYY-MM-DDTHH:MM:SS'),
+      modified: z.string().optional().describe('update time, YYYY-MM-DDTHH:MM:SS in the site timezone'),
+      modified_gmt: z.string().optional().describe('update time (GMT), YYYY-MM-DDTHH:MM:SS'),
+    }),
+    async run(args) {
+      let connection = null;
+      try {
+        if (!args.article_id && !args.wp_post_id) {
+          return fail(new Error('publish_set_dates requires article_id (or wp_post_id)'));
+        }
+        const S = withSite(args);
+        const siteKey = S.siteKey;
+        const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
+
+        // resolve the target WP post id
+        let postId = args.wp_post_id || null;
+        if (!postId) {
+          connection = await t.db.createConnection();
+          const [rows] = await connection.query(
+            'SELECT wp_post_id FROM tengence_geo_articles WHERE id = ? AND app_id = ? LIMIT 1',
+            [args.article_id, appId]
+          );
+          postId = rows[0] && rows[0].wp_post_id;
+          if (!postId) {
+            return fail(new Error(`Article ${args.article_id} has no wp_post_id (not published yet)`));
+          }
+        }
+
+        // read the live dates (plugin API — the WP-native read works too, but the
+        // plugin route keeps one auth path for both read and write)
+        const before = await t.wp.posts.getPostDates(postId, { siteKey });
+
+        // build the date payload: explicit fields, or copy_from inheritance
+        let dates = {
+          date: args.date || null,
+          date_gmt: args.date_gmt || null,
+          modified: args.modified || null,
+          modified_gmt: args.modified_gmt || null,
+        };
+        let copiedFrom = null;
+        if (args.copy_from) {
+          const src = await t.wp.posts.getPostDates(args.copy_from, { siteKey });
+          dates = {
+            date: src.date || null,
+            date_gmt: src.date_gmt || null,
+            modified: src.modified || null,
+            modified_gmt: src.modified_gmt || null,
+          };
+          copiedFrom = args.copy_from;
+        }
+        if (!dates.date && !dates.date_gmt && !dates.modified && !dates.modified_gmt) {
+          return fail(new Error('nothing to set: pass copy_from, or at least one of date / date_gmt / modified / modified_gmt'));
+        }
+
+        const res = await t.wp.posts.setPostDates(postId, dates, { siteKey });
+        const after = (res && res.data && res.data.dates) || (await t.wp.posts.getPostDates(postId, { siteKey }));
+        return ok({
+          ok: true,
+          wp_post_id: postId,
+          slug: (res && res.data && res.data.slug) || null,
+          copied_from: copiedFrom,
+          applied: (res && res.updated) || dates,
+          before: { date: before.date, modified: before.modified },
+          after: { date: after.date, modified: after.modified },
+        });
+      } catch (e) {
+        return fail(e);
+      } finally {
+        if (connection) await connection.end();
+      }
     },
   },
 

@@ -15,6 +15,9 @@
  *   --batch=1,2,3         publish multiple articles in batch
  *   --all                 publish all draft articles
  *   --featured-media <id>  force a specific WP media ID as the featured image
+ *   --no-sync-dates        do NOT inherit the zh-cn source article's publish/update
+ *                         time (by default a translation en-us/zh-hk always does, via
+ *                         the plugin dates API — wp/v2 cannot write post_modified)
  *   --skip-gsc            skip Google Search Console sitemap submission after publishing
  *                         (default: submitted on publish)
  *   --skip-indexnow       skip IndexNow submission after publishing (default: submitted
@@ -56,6 +59,7 @@ function usage() {
   console.log('  --batch=1,2,3         publish multiple articles in batch');
   console.log('  --all                 publish all draft articles');
   console.log('  --featured-media <id>  force a specific WP media ID as the featured image (produced by the image pipeline)');
+  console.log('  --no-sync-dates        do not inherit the zh-cn source publish/update time (translations do by default)');
   console.log('  --skip-gsc            skip Google Search Console sitemap submission after publishing');
   console.log('  --skip-indexnow       skip IndexNow submission after publishing (default: submitted, requires INDEXNOW_KEY)');
   console.log('  --skip-baidu          skip Baidu normal-inclusion submission after publishing (default: submitted, requires BAIDU_TOKEN)');
@@ -92,6 +96,7 @@ async function main() {
       all: { type: 'boolean' },
       'featured-media': { type: 'string' },
       'translation-group': { type: 'string' },
+      'no-sync-dates': { type: 'boolean' },
       'skip-gsc': { type: 'boolean' },
       'skip-indexnow': { type: 'boolean' },
       'skip-baidu': { type: 'boolean' },
@@ -104,6 +109,7 @@ async function main() {
   const dryRun = flags['dry-run'];
   const featuredMedia = flags['featured-media'];
   const translationGroup = flags['translation-group'] || null;
+  const syncSourceDates = !flags['no-sync-dates'];
   const skipGsc = flags['skip-gsc'];
   const skipIndexnow = flags['skip-indexnow'];
   const skipBaidu = flags['skip-baidu'];
@@ -188,7 +194,8 @@ async function main() {
       }
       try {
         const result = await publishArticle(connection, articleId, {
-          status, force, dryRun, featuredMedia, translationGroup, skipGsc, skipIndexnow, skipBaidu,
+          status, force, dryRun, featuredMedia, translationGroup, syncSourceDates,
+          skipGsc, skipIndexnow, skipBaidu,
         });
         results.push({ articleId, success: !!result, result });
       } catch (error) {
