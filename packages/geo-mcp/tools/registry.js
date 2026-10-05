@@ -633,14 +633,22 @@ const tools = [
   {
     name: 'publish_daily',
     description: 'Run the daily promotion task (promotes due drafts to publish by plan publish_order; default 1/day). ' +
-      'Optional date sets the promoted article publish/modified time (YYYY-MM-DDTHH:MM:SS, site timezone).',
+      'Optional date sets the promoted article publish/modified time (YYYY-MM-DDTHH:MM:SS, site timezone). ' +
+      'Optional slug switches to SLUG MODE: publish that slug with every language version it has in the draft box ' +
+      '(zh-cn / en-us / zh-hk), still running the internal-link check and the gate re-check; comma-separated slugs allowed.',
     inputSchema: z.object({
       site: siteField,
       date: z.string().optional().describe('publish/modified time for the promoted article, YYYY-MM-DDTHH:MM:SS in the site timezone; omit to leave WordPress untouched'),
+      slug: z.string().optional().describe('slug mode: publish this slug in all of its languages (comma-separated for several slugs); omit for the normal plan-order queue'),
+      count: z.number().optional().describe('how many articles to promote in queue mode (default: wordpress.publish.per_day, usually 1)'),
+      dry_run: z.boolean().optional().describe('report only, do not write'),
     }),
     async run(args) {
       const cliArgs = ['--site', cliSite(args)];
+      if (args.slug) cliArgs.push('--slug', args.slug);
+      if (args.count) cliArgs.push('--count', String(args.count));
       if (args.date) cliArgs.push('--date', args.date);
+      if (args.dry_run) cliArgs.push('--dry-run');
       const r = runCli('promote-daily', cliArgs);
       return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
     },
@@ -846,8 +854,14 @@ const tools = [
         }
 
         // ---- 6. language / translation group ----
+        // siteKey is mandatory here: the MCP server process has no `--site` argv, so
+        // without it the plugin target falls back to a non-existent default site.
         if (wantLang) {
-          await t.wp.posts.setPostLanguage(postId, { language: wantLang, translationGroup: wantGroup });
+          await t.wp.posts.setPostLanguage(
+            postId,
+            { language: wantLang, translationGroup: wantGroup },
+            { siteKey }
+          );
           applied.language = wantLang;
           applied.translation_group = wantGroup;
         }
