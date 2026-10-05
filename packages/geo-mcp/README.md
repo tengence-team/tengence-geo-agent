@@ -1,6 +1,6 @@
 # @tengence/geo-mcp
 
-GEO 内容引擎的 MCP 服务：**56 个工具**，覆盖内容生产、发布、搜索引擎收录提交、AI 可见性监测与多平台分发。支持 **stdio**（本地客户端）与 **Streamable HTTP**（远程/自托管）两种传输。
+GEO 内容引擎的 MCP 服务：**68 个工具**，覆盖内容生产、发布、搜索引擎收录提交、AI 可见性监测、多平台分发与多语言术语名称管理（类目 / 标签 / 作者）。支持 **stdio**（本地客户端）与 **Streamable HTTP**（远程/自托管）两种传输。
 
 这是 `@tengence/geo-sdk` 的 MCP 桥接层；底层存储默认使用 Node 22.5+ 内置的 `node:sqlite`（零原生依赖），旧版 Node 或禁用内置模块时回退到可选的 `better-sqlite3`。
 
@@ -66,7 +66,7 @@ GEO_MCP_PORT=8787 GEO_MCP_TOKEN=sk-xxx SITES_ROOT=~/tengence/sites \
 
 ## 工具概览（按域）
 
-内容（ingest/draft/check/publish/standards/plan）、WordPress 发布、搜索引擎收录（GSC/Bing/IndexNow/Baidu）、AI 监测、微信/掘金/Dev.to 等分发、站点诊断与图片采集。完整清单以 `tools/registry.js` 导出为准。
+内容（ingest/draft/check/publish/standards/plan）、WordPress 发布、搜索引擎收录（GSC/Bing/IndexNow/Baidu）、AI 监测、微信/掘金/Dev.to 等分发、站点诊断与图片采集。多语言术语名称管理：`term_name_set` / `term_names_list` / `term_name_get` / `term_name_delete` / `term_names_batch` 操作 WordPress 分类（category）与标签（post_tag）的多语言显示名，`author_name_set` 等 5 个工具操作作者多语言显示名（底层为插件 `tengence/v1` 的 `/term-names`、`/author-names` 端点，凭据来自站点 `.env` 的 `TENGENCE_SITE_ID` / `TENGENCE_SECRET`）。完整清单以 `tools/registry.js` 导出为准。
 
 ## 许可
 

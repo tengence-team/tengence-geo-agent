@@ -68,8 +68,9 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   try {
     dbArticle = await t.db.withConn(async (conn) => {
       const [rows] = await conn.query(
-        `SELECT a.content_longtext, a.research_md, a.featured_image, a.seo, a.geo,
-                p.focus_keyword AS plan_focus_keyword
+        `SELECT a.content_longtext, a.research_md, a.featured_image, a.seo, a.geo, a.status,
+              a.wp_post_id,
+              p.focus_keyword AS plan_focus_keyword
            FROM tengence_geo_articles a
            LEFT JOIN tengence_geo_article_plan p
                   ON p.app_id = a.app_id AND p.slug = a.slug AND p.lang = a.lang
@@ -96,6 +97,17 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // (for legacy bodies that don't write the three blocks)
   const geo = dbArticle ? parseJson(dbArticle.geo, {}) : (meta.geo || {});
   const qaPairs = (geo && geo.qa_pairs) || [];
+
+  // ===== already-published article → the editorial gate becomes advisory =====
+  // Publishing an article for the first time must pass every hard rule. But an article
+  // that already went out under the WP (wp_post_id > 0) can no longer be "un-published"
+  // by failing today's stricter rules: re-publishing it is what adds the trilingual
+  // translation_group / fixes metadata, and its body is a legacy artifact written
+  // before the current standards existed. `status` is NOT a usable signal here — the
+  // production DB has 77 zh-cn rows still marked `draft` that already carry a
+  // wp_post_id, so status alone would hard-block live articles. Drafts (no
+  // wp_post_id) keep the full hard gate, research brief included.
+  const isPublished = Boolean(dbArticle && Number(dbArticle.wp_post_id) > 0);
 
   const cn = (md.match(/[一-龥]/g) || []).length;
   const BAD = ['我国', '国内', '海外', '本土', '国外'];
@@ -249,6 +261,14 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     ['body data-source banned homepage/channel-level (hard)', srcItemTotal ? (srcNonSpecItems ? srcNonSpecItems + ' violations' : 'none') : 'no block', srcNonSpecItems === 0],
   ];
 
+  // Already on WordPress → every editorial row above is informational only (see the
+  // isPublished note). Reporting is preserved; the hard verdict is dropped so the row
+  // can be re-published (translation_group, metadata fixes) without rewriting a body
+  // that is already live. First-time publishes (no wp_post_id) are unaffected.
+  if (isPublished) {
+    for (const row of rows) row[3] = true;
+  }
+
   // Soft warnings (no publish block, cleanup advice only; homepage/channel-level
   // citations were upgraded to a hard check on 2026-09-20, see the "banned
   // homepage/channel-level (hard)" rows)
@@ -285,7 +305,10 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   if (!hasResearch) {
     warns.push('No pre-writing research brief found (file or articles.research_md; AGENTS.md §9: the mandatory pre-writing research gate — missing blocks publish)');
   }
-  rows.push(['pre-writing research brief (AGENTS.md §9 mandatory gate)', hasResearch ? (researchSource || 'present') : 'missing', hasResearch]);
+  // Same advisory rule for an already-published row: the research brief gates *writing*,
+  // so it only ever applies to a first publish. Re-publishing a translated group must
+  // not require re-authoring the brief.
+  rows.push(['pre-writing research brief (AGENTS.md §9 mandatory gate)', hasResearch ? (researchSource || 'present') : 'missing', hasResearch, isPublished]);
 
   // ===== heading-level soft checks (added 2026-09-16 plan A, no publish block) =====
   // 1. H2 Chinese-numbered continuity (一、二、三… must be continuous, no skipped or
@@ -353,6 +376,9 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   for (const [, , rowOk, soft] of rows) {
     if (!rowOk && !soft) ok = false;
   }
+  if (isPublished) {
+    warns.push('Already published (wp_post_id=' + dbArticle.wp_post_id + '): editorial checks are advisory for this re-publish, including the research brief. Drafts (no wp_post_id) remain hard-gated.');
+  }
 
   return {
     ok,
@@ -361,6 +387,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     warns,
     research: hasResearch,
     researchSource,
+    isPublished,
     counts: { cn },
     // unknown --type notice (CLI rendering; byte-identical to pre-sink-down)
     unknownType: typeArg && !typeExplicit ? typeArg : null,

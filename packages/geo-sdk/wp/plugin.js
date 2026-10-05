@@ -22,11 +22,13 @@ const { request } = require('./request');
 
 /**
  * Resolve the plugin API target
+ * @param {string} [siteKey] explicit site key (MCP tools pass the resolved one);
+ *   defaults to the CLI --site argument / 'tengence' (geo-cli convention)
  * @returns {{siteKey:string, baseUrl:string, siteId:string, secret:string}}
  * @throws when TENGENCE_SITE_ID / TENGENCE_SECRET are missing (no fallback)
  */
-function pluginTarget() {
-  const SITE = loadSite();
+function pluginTarget(siteKey) {
+  const SITE = siteKey ? loadSite(siteKey) : loadSite();
   const siteId = process.env.TENGENCE_SITE_ID;
   const secret = process.env.TENGENCE_SECRET;
   const wpUrl = process.env.WP_URL || '';
@@ -55,12 +57,14 @@ function pluginTarget() {
 /**
  * Plugin API request (endpoints relative to /tengence/v1)
  * @param {string} endpoint e.g. '/posts/993'
- * @param {{method?:string, body?:any, timeout?:number}} [options]
+ * @param {{method?:string, body?:any, timeout?:number, siteKey?:string}} [options]
+ *        siteKey: explicit site key — required when the caller is not a geo-cli bin
+ *        (no --site in argv), e.g. MCP tool calls
  * @returns {Promise<any>} the response body's data or the full response; throws on non-2xx
  */
 async function pluginApi(endpoint, options = {}) {
-  const { method = 'GET', body = null, timeout = 60000 } = options;
-  const { baseUrl, siteId, secret } = pluginTarget();
+  const { method = 'GET', body = null, timeout = 60000, siteKey } = options;
+  const { baseUrl, siteId, secret } = pluginTarget(siteKey);
 
   const res = await request(`${baseUrl}${endpoint}`, {
     method,

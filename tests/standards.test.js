@@ -132,10 +132,10 @@ test('parseGeoBlocks (ZH regression): Chinese headings still parse', () => {
 
 // ==================== MCP registry ====================
 
-test('MCP registry: exposes 58 tools including the 3 standards tools, 6 channel tools, 7 wechat tools, 2 GSC read tools, 2 translation tools', () => {
+test('MCP registry: exposes 68 tools including the 3 standards tools, 6 channel tools, 7 wechat tools, 2 GSC read tools, 2 translation tools, 10 term/author-name tools', () => {
   // The count grows with every new domain tool; if it changes, update this number and
   // add the corresponding per-domain assertion below (do not just bump blindly).
-  assert.equal(tools.length, 58, 'expected 58 tools (standards + channel + wechat + csdn/aliyun + gsc read + taxonomy + translation)');
+  assert.equal(tools.length, 68, 'expected 68 tools (standards + channel + wechat + csdn/aliyun + gsc read + taxonomy + translation + term/author names)');
   for (const n of ['standards_list', 'standards_read', 'article_draft']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
@@ -155,6 +155,12 @@ test('MCP registry: exposes 58 tools including the 3 standards tools, 6 channel 
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
   for (const n of ['translation_glossary_get', 'check_translation']) {
+    assert.ok(registry.has(n), `registry missing ${n}`);
+  }
+  for (const n of ['term_names_list', 'term_name_get', 'term_name_set', 'term_name_delete', 'term_names_batch']) {
+    assert.ok(registry.has(n), `registry missing ${n}`);
+  }
+  for (const n of ['author_names_list', 'author_name_get', 'author_name_set', 'author_name_delete', 'author_names_batch']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
   // every tool has the run contract

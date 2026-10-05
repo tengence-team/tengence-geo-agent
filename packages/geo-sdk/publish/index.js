@@ -297,21 +297,24 @@ async function processImages(content, articleId, dryRun = false, featuredImageUr
   const urls = extractImageUrls(content);
   const firstBodyImg = extractFirstImage(content);
   if (urls.length === 0) {
-    // featured image from front matter (canonical URL): body images all kept, no
-    // first-image promotion
+    // no Unsplash external links in the body: when a canonical featured-image URL
+    // exists, resolve the featured image from it and keep ALL body images (the
+    // first body image may be a genuine content figure, never auto-promote it).
     if (featuredImageUrl) {
       const featuredImage = await resolveFeaturedFromUrl(featuredImageUrl, articleId, dryRun);
-      s.logger(`  Featured image from front matter: ${featuredImageUrl.substring(0, 60)}...`);
+      // the URL comes from articles.featured_image (DB column, populated at ingest);
+      // the logger used to say "from front matter" — stale wording, misleading.
+      s.logger(`  Featured image from articles.featured_image (DB): ${featuredImageUrl.substring(0, 60)}...`);
       return { content, uploadedImages: [], featuredImage };
     }
-    // no Unsplash external links in the body: if the first image is an owned URL,
-    // set it as the featured image and remove it from the body
-    if (firstBodyImg && !isExternalImageUrl(firstBodyImg.url)) {
-      const wpMediaId = await resolveWPMediaId(firstBodyImg.url);
-      const updated = removeFirstImage(content, firstBodyImg);
-      s.logger(`  First body image is an owned URL; set as featured image (media ID ${wpMediaId}) and removed from the body`);
-      return { content: updated, uploadedImages: [], featuredImage: { id: wpMediaId, productionUrl: firstBodyImg.url } };
-    }
+  // no canonical featured URL and no external images: if the first image is an
+  // owned URL, set it as the featured image and remove it from the body
+  if (firstBodyImg && !isExternalImageUrl(firstBodyImg.url)) {
+    const wpMediaId = await resolveWPMediaId(firstBodyImg.url);
+    const updated = removeFirstImage(content, firstBodyImg);
+    s.logger(`  First body image is an owned URL; set as featured image (media ID ${wpMediaId}) and removed from the body`);
+    return { content: updated, uploadedImages: [], featuredImage: { id: wpMediaId, productionUrl: firstBodyImg.url } };
+  }
     // no body image, or first image external without an Unsplash marker: keep the
     // DB's existing featured image so it's never overwritten/lost
     const featuredImage = await getExistingFeaturedImage(articleId);
@@ -571,20 +574,27 @@ function checkSlugExistsInDB(connection, slug, excludeId = null, lang = null) {
 async function findPostBySlugSmart(slug, lang = null) {
   const s = getState();
   try {
-    // 0. multi-language disambiguation: translations may share the slug across
-    // languages on the WP side, so the native lookup is ambiguous. The plugin
-    // multilingual query API (slug+lang) is authoritative; no fuzzy matching.
-    if (lang && lang !== 'zh-cn') {
+    // 0. multi-language disambiguation: all three languages share the same slug
+    // on the WP side, so the native slug lookup is ambiguous for every language
+    // (not just translations). The plugin multilingual query API (slug+lang) is
+    // authoritative; no fuzzy matching.
+    if (lang) {
+      let byLang = null;
       try {
-        const byLang = await s.t.wp.posts.findPostByLanguage(slug, lang);
-        if (byLang && (byLang.id || byLang.wp_post_id)) {
-          s.logger(`  ✓ Language match: WP post for ${slug} (${lang})`);
-          return byLang;
-        }
+        byLang = await s.t.wp.posts.findPostByLanguage(slug, lang);
       } catch (e) {
         s.logger(`  - Plugin language query unavailable for ${slug} (${lang}): ${e.message}`);
       }
-      return null;
+      if (byLang && (byLang.id || byLang.wp_post_id)) {
+        s.logger(`  ✓ Language match: WP post for ${slug} (${lang})`);
+        return byLang;
+      }
+      // translations: never fall back to the ambiguous slug lookup (would risk
+      // matching another language's post) — absence means "create new".
+      // zh-cn keeps the legacy exact/fuzzy fallback below only when the plugin
+      // query itself is unavailable; the DB wp_post_id override at the call
+      // site still takes precedence either way.
+      if (lang !== 'zh-cn') return null;
     }
     // 1. exact match
     const exact = await s.t.wp.posts.findBySlug(slug);
@@ -740,7 +750,11 @@ async function publishArticle(connection, articleId, options = {}) {
       s.logger(`  ⚠️  Featured-image same-slug reuse lookup failed (falling back to the URL flow): ${e.message}`);
     }
   }
-  const featuredImageUrl = (reusedFeaturedId || !isNaN(explicitFmId)) ? null : (config.featured_image || null);
+  // always pass the canonical featured-image URL when present: for owned URLs
+  // resolveFeaturedFromUrl is a cheap media lookup (no download), and it lets
+  // processImages keep all body images instead of promoting the first one.
+  // The explicit/reused media-ID overrides below still win over bodyFeatured.
+  const featuredImageUrl = config.featured_image || null;
   const { content: processedContent, uploadedImages, featuredImage: bodyFeatured } = await processImages(article.content, articleId, dryRun, featuredImageUrl);
   let featuredImage = bodyFeatured;
   // an explicitly specified featured image (from the auto image pipeline) wins,

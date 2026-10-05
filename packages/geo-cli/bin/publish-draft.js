@@ -346,7 +346,9 @@ async function main() {
     console.log('\n[7/7] Archiving working files to data/archive (DB is the single source of truth)...');
     const archiveDir = path.join(SITE.siteDir, 'data/archive', new Date().toISOString().slice(0, 10));
     fs.mkdirSync(archiveDir, { recursive: true });
-    const archivePath = path.join(archiveDir, `${slug}.md`);
+    // Language suffix, same rule as article-ingest.js: the archive dir is keyed by
+    // date only, so `<slug>.md` let a same-day translation ingest overwrite this file.
+    const archivePath = path.join(archiveDir, `${slug}.${CONTENT.lang}.md`);
     fs.renameSync(draftPath, archivePath);
     console.log(`  ✅ Archived to ${path.relative(ROOT, archivePath)}`);
   } else {

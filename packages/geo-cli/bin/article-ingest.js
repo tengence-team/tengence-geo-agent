@@ -105,7 +105,13 @@ async function main() {
     const moved = [mdPath];
     if (researchIngested) moved.push(researchPath);
     for (const f of moved) {
-      const dest = path.join(archiveDir, path.basename(f));
+      // Language suffix (2026-10-05): the same slug is ingested once per language, and
+      // the archive dir is keyed by date only — `<slug>.md` meant the zh-hk ingest
+      // silently overwrote the en-us archive of the same day. Insert `.<lang>` before
+      // the extension: `<slug>.en-us.md`, `<slug>.research.zh-hk.md`.
+      const ext = path.extname(f);
+      const base = path.basename(f, ext);
+      const dest = path.join(archiveDir, `${base}.${lang}${ext}`);
       fs.renameSync(f, dest);
       console.log(`  📦 Archived: ${path.relative(root, dest)}`);
     }

@@ -65,7 +65,54 @@ const MARKDOWN_RESIDUE_RE = /\*\*[ \t]*\*\*|\(\s*\)|\[\s*\]/;
 /** Numbered-H2 line: `## 1. …` (en, dot+space) or `## 一、…` (zh, 顿号直接跟标题). */
 const NUM_H2_RE = /^##\s+([0-9]+)[.、．]\s+/;
 const CN_NUM_H2_RE = /^##\s+([一二三四五六七八九十]+)[、．]/;
-const CN_NUMS = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9, 十: 10 };
+/** Roman-numeral H2 (`## I.`, `## IV.`): the English rendering of 一、二、… . Without
+ *  this the en-us target counted 0 numbered sections and T7 reported a false
+ *  section-count mismatch against the Chinese source. */
+const ROMAN_H2_RE = /^##\s+([IVXLCDM]+)[.、．]\s+/i;
+const CN_DIGITS = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+const ROMAN_VALUES = { I: 1, V: 5, X: 10, L: 50, C: 100, D: 500, M: 1000 };
+
+/** Parse a Roman numeral (I … MMMDCCCLXXXVIII). Returns null when invalid. */
+function parseRoman(s) {
+  if (!s) return null;
+  const up = s.toUpperCase();
+  let total = 0;
+  for (let i = 0; i < up.length; i++) {
+    const v = ROMAN_VALUES[up[i]];
+    if (v === undefined) return null;
+    // subtractive pair (IV / IX / XL …): smaller before larger means subtract
+    const next = ROMAN_VALUES[up[i + 1]];
+    total += (next !== undefined && next > v) ? -v : v;
+  }
+  return total;
+}
+
+/**
+ * Parse a Chinese numeral up to 99 (一 … 九十九). Articles number far beyond 十, and
+ * the old fixed 一–十 lookup returned null for 十一/十二/二十, which made the
+ * numbering check report a false break. Returns null for anything unparseable.
+ */
+function parseCnNumber(s) {
+  if (!s) return null;
+  // pure digit form without 十 (一二三四五六七八九)
+  if (s.length === 1) return CN_DIGITS[s] !== undefined ? CN_DIGITS[s] : (s === '十' ? 10 : null);
+  const tenIdx = s.indexOf('十');
+  if (tenIdx === -1) {
+    // e.g. 二十 handled below; a multi-char run with no 十 is not a valid numeral here
+    let n = 0;
+    for (const ch of s) {
+      if (CN_DIGITS[ch] === undefined) return null;
+      n = n * 10 + CN_DIGITS[ch];
+    }
+    return n;
+  }
+  const head = s.slice(0, tenIdx);
+  const tail = s.slice(tenIdx + 1);
+  const tens = head === '' ? 1 : CN_DIGITS[head];
+  const ones = tail === '' ? 0 : CN_DIGITS[tail];
+  if (tens === undefined || ones === undefined) return null;
+  return tens * 10 + ones;
+}
 
 // ---- glossary loading (shared with the MCP `translation_glossary_get` tool;
 // merge order: global standards/translation-glossary.yaml ← site config wins) ----
@@ -75,6 +122,13 @@ const CN_NUMS = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8
 
 function stripFm(content) {
   return md.stripFrontMatter(content || '');
+}
+
+/** Remove fenced code blocks (```...```) so that `#` comments, `()` call signatures,
+ *  example URLs, and numeric literals inside code are NOT mistaken for Markdown
+ *  structure / residue. Fixes T1 (H1) and T5 (`()`) false positives. */
+function stripFencedCode(mdText) {
+  return (mdText || '').replace(/```[\s\S]*?```/g, '');
 }
 
 function extractHrefs(mdText) {
@@ -152,22 +206,29 @@ function extractFrontMatterMap(content) {
   return fm.data;
 }
 
+/** True when a `##` heading carries a section number in any supported notation:
+ *  arabic (`## 1.`), Chinese (`## 一、`) or Roman (`## I.`). */
+function isNumberedHeading(heading) {
+  return /^##\s+(?:[0-9]+[.、．]|[一二三四五六七八九十]+[、．]|[IVXLCDM]+[.、．]\s)/i.test(heading);
+}
+
 /** Split md into numbered-H2 sections. Any `##` heading ends the current section;
- *  only numbered sections (T1-conformant `## 1.` / `## 一、`) are collected, so
- *  GEO block headings (Key Takeaways, FAQ, …) never inflate a section's length. */
+ *  only numbered sections (T1-conformant `## 1.` / `## 一、` / `## I.`) are
+ *  collected, so GEO block headings (Key Takeaways, FAQ, …) never inflate a
+ *  section's length. */
 function splitNumberedSections(mdText) {
   const lines = mdText.split('\n');
   const sections = [];
   let current = null;
   for (const line of lines) {
     if (/^##\s+/.test(line)) {
-      if (current && /^##\s+[0-9一二三四五六七八九十]+[.、．]/.test(current.heading)) sections.push(current);
+      if (current && isNumberedHeading(current.heading)) sections.push(current);
       current = { heading: line, body: '' };
     } else if (current) {
       current.body += line + '\n';
     }
   }
-  if (current && /^##\s+[0-9一二三四五六七八九十]+[.、．]/.test(current.heading)) sections.push(current);
+  if (current && isNumberedHeading(current.heading)) sections.push(current);
   return sections;
 }
 
@@ -186,9 +247,14 @@ function checkNumbering(mdText, targetLang) {
     if (m) { nums.push(parseInt(m[1], 10)); continue; }
     m = line.match(CN_NUM_H2_RE);
     if (m) {
-      const cn = m[1];
-      const v = CN_NUMS[cn] !== undefined ? CN_NUMS[cn] : cn.length === 2 && cn.endsWith('十') ? 10 : null;
-      nums.push(v);
+      const v = parseCnNumber(m[1]);
+      if (v !== null) nums.push(v);
+      continue;
+    }
+    m = line.match(ROMAN_H2_RE);
+    if (m) {
+      const v = parseRoman(m[1]);
+      if (v !== null) nums.push(v);
     }
   }
   if (nums.length === 0) return { ok: true, nums: [] };
@@ -212,7 +278,7 @@ function checkNumbering(mdText, targetLang) {
  * @param {string} [opts.siteKey]  site key (for site-level glossary)
  * @returns {{ok:boolean, errors:Array<{id:string,message:string}>, checks:object}}
  */
-function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn', siteKey } = {}) {
+function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn', siteKey, targetSeo } = {}) {
   const errors = [];
   const checks = {};
   if (!targetMd || typeof targetMd !== 'string') {
@@ -221,17 +287,21 @@ function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn'
   const targetLangNorm = targetLang || 'en-us';
   const sourceBody = stripFm(sourceMd || '');
   const targetBody = stripFm(targetMd || '');
-  const sourceFm = extractFrontMatterMap(sourceMd || '');
+  // Structural / link / image / number / residue analysis runs on the code-stripped
+  // body: `#` comments, `()` calls, example URLs and numeric literals inside fenced
+  // code are content, not Markdown structure (fixes T1 H1 and T5 `()` false positives).
+  const sourceClean = stripFencedCode(sourceBody);
+  const targetClean = stripFencedCode(targetBody);
   const targetFm = extractFrontMatterMap(targetMd || '');
   const forbidden = loadForbidden(siteKey);
 
   // ---- T1 structure -------------------------------------------------------
   const t1 = [];
-  const h1s = targetBody.match(H1_RE) || [];
+  const h1s = targetClean.match(H1_RE) || [];
   if (h1s.length !== 1) t1.push(`H1 must appear exactly once (found ${h1s.length})`);
   for (const role of ['summary', 'takeaways', 'faq', 'data_sources', 'related', 'get_started', 'about']) {
-    const srcHas = hasBlock(sourceBody, sourceLang, role);
-    const tgtHas = hasBlock(targetBody, targetLangNorm, role);
+    const srcHas = hasBlock(sourceClean, sourceLang, role);
+    const tgtHas = hasBlock(targetClean, targetLangNorm, role);
     if (srcHas && !tgtHas) t1.push(`block "${role}" missing in the target (source has it)`);
   }
   const numbering = checkNumbering(targetBody, targetLangNorm);
@@ -240,8 +310,8 @@ function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn'
   if (t1.length) errors.push(...t1.map((message) => ({ id: 'T1', message })));
 
   // ---- T2 link fidelity ----------------------------------------------------
-  const srcLinks = extractHrefs(sourceBody);
-  const tgtLinks = extractHrefs(targetBody);
+  const srcLinks = extractHrefs(sourceClean);
+  const tgtLinks = extractHrefs(targetClean);
   const t2 = [];
   for (const u of srcLinks) if (!tgtLinks.has(u)) t2.push(`source link missing in target: ${u}`);
   for (const u of tgtLinks) if (!srcLinks.has(u)) t2.push(`target link not in source: ${u}`);
@@ -249,8 +319,8 @@ function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn'
   if (t2.length) errors.push(...t2.map((message) => ({ id: 'T2', message })));
 
   // ---- T3 image fidelity ---------------------------------------------------
-  const srcImages = extractImages(sourceBody, sourceMd || '');
-  const tgtImages = extractImages(targetBody, targetMd || '');
+  const srcImages = extractImages(sourceClean, sourceMd || '');
+  const tgtImages = extractImages(targetClean, targetMd || '');
   const t3 = [];
   for (const u of srcImages) if (!tgtImages.has(u)) t3.push(`source image missing in target: ${u}`);
   for (const u of tgtImages) if (!srcImages.has(u)) t3.push(`target image not in source: ${u}`);
@@ -258,8 +328,8 @@ function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn'
   if (t3.length) errors.push(...t3.map((message) => ({ id: 'T3', message })));
 
   // ---- T4 number fidelity --------------------------------------------------
-  const srcNums = extractNumbers(sourceBody);
-  const tgtNums = extractNumbers(targetBody);
+  const srcNums = extractNumbers(sourceClean);
+  const tgtNums = extractNumbers(targetClean);
   const t4 = [];
   for (const n of srcNums) if (!tgtNums.has(n)) t4.push(`source number missing in target: ${n}`);
   for (const n of tgtNums) if (!srcNums.has(n)) t4.push(`target number not in source: ${n}`);
@@ -280,18 +350,18 @@ function findForbiddenZh(body, w) {
 
 const t5 = [];
   if (targetLangNorm === 'en-us') {
-    const cjk = targetBody.match(CJK_RE);
-    if (cjk) t5.push(`CJK characters present in en-us body (near: …${targetBody.slice(Math.max(0, cjk.index - 20), cjk.index + 20)}…)`);
-    const cp = targetBody.match(CN_PUNCT_RE);
-    if (cp) t5.push(`Chinese punctuation present in en-us body (near: …${targetBody.slice(Math.max(0, cp.index - 20), cp.index + 20)}…)`);
+    const cjk = targetClean.match(CJK_RE);
+    if (cjk) t5.push(`CJK characters present in en-us body (near: …${targetClean.slice(Math.max(0, cjk.index - 20), cjk.index + 20)}…)`);
+    const cp = targetClean.match(CN_PUNCT_RE);
+    if (cp) t5.push(`Chinese punctuation present in en-us body (near: …${targetClean.slice(Math.max(0, cp.index - 20), cp.index + 20)}…)`);
   } else if (targetLangNorm === 'zh-hk') {
     const fb = forbidden['zh-hk'] || [];
     for (const w of fb) {
-      const idx = findForbiddenZh(targetBody, w);
-      if (idx >= 0) t5.push(`simplified term "${w}" present in zh-hk body (near: …${targetBody.slice(Math.max(0, idx - 15), idx + 15)}…)`);
+      const idx = findForbiddenZh(targetClean, w);
+      if (idx >= 0) t5.push(`simplified term "${w}" present in zh-hk body (near: …${targetClean.slice(Math.max(0, idx - 15), idx + 15)}…)`);
     }
   }
-  const residue = targetBody.match(MARKDOWN_RESIDUE_RE);
+  const residue = targetClean.match(MARKDOWN_RESIDUE_RE);
   if (residue) t5.push(`Markdown residue: ${JSON.stringify(residue[0].trim())}`);
   checks.T5 = { ok: t5.length === 0, issues: t5 };
   if (t5.length) errors.push(...t5.map((message) => ({ id: 'T5', message })));
@@ -302,14 +372,14 @@ const t5 = [];
     // en-us list is case-insensitive
     return targetLangNorm === 'en-us' ? true : true;
   });
-  const bodyLower = targetBody.toLowerCase();
+  const bodyLower = targetClean.toLowerCase();
   for (const w of fbTarget) {
-    const haystack = targetLangNorm === 'en-us' ? bodyLower : targetBody;
+    const haystack = targetLangNorm === 'en-us' ? bodyLower : targetClean;
     const needle = targetLangNorm === 'en-us' ? w.toLowerCase() : w;
-    const idx = targetLangNorm === 'zh-hk' ? findForbiddenZh(targetBody, w) : haystack.indexOf(needle);
+    const idx = targetLangNorm === 'zh-hk' ? findForbiddenZh(targetClean, w) : haystack.indexOf(needle);
     if (idx >= 0) {
       const start = Math.max(0, idx - 15);
-      t6.push(`forbidden term "${w}" present in ${targetLangNorm} body (near: …${targetBody.slice(start, start + 40)}…)`);
+      t6.push(`forbidden term "${w}" present in ${targetLangNorm} body (near: …${targetClean.slice(start, start + 40)}…)`);
     }
   }
   checks.T6 = { ok: t6.length === 0, issues: t6 };
@@ -317,8 +387,8 @@ const t5 = [];
 
   // ---- T7 section length floor ---------------------------------------------
   const t7 = [];
-  const srcSections = splitNumberedSections(sourceBody);
-  const tgtSections = splitNumberedSections(targetBody);
+  const srcSections = splitNumberedSections(sourceClean);
+  const tgtSections = splitNumberedSections(targetClean);
   const ratio = SECTION_RATIO[targetLangNorm] || 0.5;
   if (srcSections.length !== tgtSections.length) {
     t7.push(`numbered-section count differs (source ${srcSections.length} vs target ${tgtSections.length})`);
@@ -342,11 +412,15 @@ const t5 = [];
     const fb = forbidden['zh-hk'] || [];
     for (const w of fb) if (h1.includes(w)) t8.push(`H1 contains simplified term "${w}"`);
   }
-  const metaDesc = targetFm && targetFm.seo && targetFm.seo.meta_description;
+  // meta_description lives in the `articles.seo` column (front matter is stripped at
+  // ingest — article-save.js), so `targetSeo` is authoritative. The target .md front
+  // matter is only a fallback for the pre-ingest (md_path) workflow.
+  const metaDesc = (targetSeo && targetSeo.meta_description) ||
+    (targetFm && targetFm.seo && targetFm.seo.meta_description) || null;
   const bounds = META_DESC_LEN[targetLangNorm];
   if (bounds) {
     if (!metaDesc || typeof metaDesc !== 'string') {
-      t8.push(`seo.meta_description missing in front matter (${targetLangNorm} needs ${bounds[0]}–${bounds[1]} chars)`);
+      t8.push(`seo.meta_description missing (${targetLangNorm} needs ${bounds[0]}–${bounds[1]} chars)`);
     } else if (metaDesc.length < bounds[0] || metaDesc.length > bounds[1]) {
       t8.push(`seo.meta_description length ${metaDesc.length} outside ${bounds[0]}–${bounds[1]} (${targetLangNorm})`);
     }

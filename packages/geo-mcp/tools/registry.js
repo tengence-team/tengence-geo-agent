@@ -323,7 +323,17 @@ const tools = [
           lang: args.lang || null,
           site: S.siteKey,
         });
-        return ok({ ok: result.ok, slug: result.slug, rows: result.rows, warns: result.warns });
+        return ok({
+          ok: result.ok,
+          slug: result.slug,
+          rows: result.rows,
+          warns: result.warns,
+          // an already-published row (wp_post_id > 0) is gated advisory: re-publishing
+          // it (translation_group, metadata fixes) must not be blocked by editorial
+          // rules that postdate the body. Drafts stay hard-gated.
+          isPublished: result.isPublished,
+          research: result.research,
+        });
       } catch (e) {
         return fail(e);
       }
@@ -377,16 +387,30 @@ const tools = [
         const targetLang = args.target_lang;
         let sourceMd = null;
         let targetMd = null;
+        let src = null;
+        let targetSeo = null;
+        let targetFeaturedImage = null;
         await t.db.withConn(async (conn) => {
-          const src = await t.db.articles.getDetail(conn, appId, args.slug, sourceLang);
+          src = await t.db.articles.getDetail(conn, appId, args.slug, sourceLang);
           sourceMd = src && src.content_longtext ? String(src.content_longtext) : '';
           if (!args.md_path) {
             const tgt = await t.db.articles.getDetail(conn, appId, args.slug, targetLang);
             targetMd = tgt && tgt.content_longtext ? String(tgt.content_longtext) : '';
+            targetSeo = (tgt && tgt.seo) || null;
+            targetFeaturedImage = (tgt && tgt.featured_image) || null;
           }
         });
         if (args.md_path) {
           targetMd = fs.readFileSync(args.md_path, 'utf8');
+          // pre-ingest workflow: the translated .md may not carry the seo/featured_image
+          // yet, so fall back to the already-ingested target row when one exists.
+          await t.db.withConn(async (conn) => {
+            const tgt = await t.db.articles.getDetail(conn, appId, args.slug, targetLang);
+            if (tgt) {
+              targetSeo = targetSeo || (tgt.seo || null);
+              targetFeaturedImage = targetFeaturedImage || (tgt.featured_image || null);
+            }
+          });
         }
         if (!sourceMd || !targetMd) {
           const missing = [];
@@ -399,12 +423,18 @@ const tools = [
         if (src && src.featured_image) {
           sourceMd = `---\nfeatured_image: "${String(src.featured_image).replace(/"/g, '\\"')}"\n---\n\n` + sourceMd;
         }
+        // 目标侧同理注入 featured_image：DB 模式下 content_longtext 无 front matter，
+        // 注入后 T3 才能校验三语复用同一张图（无注入时目标图集合为空会误报）。
+        if (targetFeaturedImage && !/^\s*---\s*[\s\S]*?^featured_image\s*:/m.test(targetMd)) {
+          targetMd = `---\nfeatured_image: "${String(targetFeaturedImage).replace(/"/g, '\\"')}"\n---\n\n` + targetMd;
+        }
         const result = t.translate.checkTranslation({
           sourceMd,
           targetMd,
           sourceLang,
           targetLang,
           siteKey: S.siteKey,
+          targetSeo,
         });
         return ok({ ok: result.ok, slug: args.slug, source_lang: sourceLang, target_lang: targetLang, errors: result.errors, checks: result.checks });
       } catch (e) {
@@ -1520,6 +1550,230 @@ const tools = [
           autoSync: false,
         });
         return ok({ ok: true, ...res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  // ---------- term names (multilingual category / tag / author display names) ----------
+  // Thin MCP wrappers: all domain logic (language-code mapping, validation, endpoint/body
+  // construction) lives in @tengence/geo-sdk/wp/termnames (t.wp.termnames), which talks to
+  // the plugin's /tengence/v1/term-names + /author-names REST endpoints
+  // (tengence-wordpress-plugin modules/multilingual/RestTermNames.php).
+  {
+    name: 'term_names_list',
+    description:
+      'List the multilingual display-name table for WP categories & tags (plugin option tengence_ml_term_names). ' +
+      'taxonomy optional: omit for both category and post_tag, or pass category|post_tag to filter. Read-only.',
+    inputSchema: z.object({
+      taxonomy: z.enum(['category', 'post_tag']).optional().describe('filter to one taxonomy; omit for both'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.listTermNames({ siteKey: S.siteKey, taxonomy: args.taxonomy });
+        return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'term_name_get',
+    description:
+      'Read the multilingual display names of ONE WP term (GET /term-names/{taxonomy}/{slug}): returns original_name ' +
+      'plus the configured per-language names. Read-only.',
+    inputSchema: z.object({
+      taxonomy: z.enum(['category', 'post_tag']).describe('category (类目) or post_tag (标签)'),
+      slug: z.string().describe('term slug, e.g. geo-ai-search'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.getTermName({ siteKey: S.siteKey, taxonomy: args.taxonomy, slug: args.slug });
+        return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'term_name_set',
+    description:
+      'Set (UPSERT) the multilingual display names of ONE category/tag term — PUT /term-names/{taxonomy}/{slug} with ' +
+      '{"names":{"en":"GEO & AI Search","zh-hans":"GEO与AI搜索","zh-hant":"GEO與AI搜尋"}}. Idempotent partial update: ' +
+      'only the passed language keys change, the others are kept; an EMPTY STRING ("") for a language CLEARS that ' +
+      'language (display falls back to the original term name). Language keys accept plugin codes en / zh-hans / ' +
+      'zh-hant and geo codes en-us / zh-cn / zh-hk (auto-mapped). Fails 404 when the term slug does not exist on WP.',
+    inputSchema: z.object({
+      taxonomy: z.enum(['category', 'post_tag']).describe('category (类目) or post_tag (标签)'),
+      slug: z.string().describe('term slug, e.g. geo-ai-search'),
+      names: z.record(z.string(), z.string()).describe('language code → display name; "" clears that language'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.setTermName({
+          siteKey: S.siteKey,
+          taxonomy: args.taxonomy,
+          slug: args.slug,
+          names: args.names,
+        });
+        return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'term_name_delete',
+    description:
+      'Delete the multilingual display names of ONE WP term (DELETE /term-names/{taxonomy}/{slug}). Without lang the ' +
+      'whole entry is removed; pass lang (en / zh-hans / zh-hant or en-us / zh-cn / zh-hk) to remove only that language. ' +
+      'The WP term itself is never touched.',
+    inputSchema: z.object({
+      taxonomy: z.enum(['category', 'post_tag']).describe('category (类目) or post_tag (标签)'),
+      slug: z.string().describe('term slug'),
+      lang: z.string().optional().describe('remove only this language (omit to remove all configured names)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.deleteTermName({
+          siteKey: S.siteKey,
+          taxonomy: args.taxonomy,
+          slug: args.slug,
+          lang: args.lang,
+        });
+        return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'term_names_batch',
+    description:
+      'Batch-set multilingual display names for many WP terms in one call (POST /term-names/batch). Body shape: ' +
+      '{"category":{"<slug>":{"<lang>":"<name>",...}},"post_tag":{...}} — pass categories and/or tags. Merge semantics ' +
+      'per term (empty string clears that language); per-item validation; response reports updated count + per-item ' +
+      'failures (e.g. term not found).',
+    inputSchema: z.object({
+      category: z.record(z.string(), z.record(z.string(), z.string())).optional().describe('category slug → {lang: name}'),
+      post_tag: z.record(z.string(), z.record(z.string(), z.string())).optional().describe('tag slug → {lang: name}'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.batchTermNames({
+          siteKey: S.siteKey,
+          category: args.category,
+          post_tag: args.post_tag,
+        });
+        return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'author_names_list',
+    description:
+      'List the multilingual display names for all WP authors (GET /author-names): configured per-language names plus ' +
+      'the original display_names. Read-only.',
+    inputSchema: z.object({ site: siteField }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.listAuthorNames({ siteKey: S.siteKey });
+        return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'author_name_get',
+    description:
+      'Read the multilingual display names of ONE WP author (GET /author-names/{id}): returns display_name (original) ' +
+      'plus the configured per-language names. Read-only.',
+    inputSchema: z.object({
+      id: z.number().int().positive().describe('WP author/user ID'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.getAuthorName({ siteKey: S.siteKey, id: args.id });
+        return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'author_name_set',
+    description:
+      'Set (UPSERT) the multilingual display names of ONE WP author — PUT /author-names/{id} with ' +
+      '{"names":{"en":"John Doe","zh-hans":"张三"}}. Idempotent partial update; an EMPTY STRING ("") for a language ' +
+      'CLEARS that language (falls back to the original display_name). Language keys accept plugin codes en / zh-hans / ' +
+      'zh-hant and geo codes en-us / zh-cn / zh-hk (auto-mapped). Fails 404 when the author id does not exist.',
+    inputSchema: z.object({
+      id: z.number().int().positive().describe('WP author/user ID'),
+      names: z.record(z.string(), z.string()).describe('language code → display name; "" clears that language'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.setAuthorName({ siteKey: S.siteKey, id: args.id, names: args.names });
+        return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'author_name_delete',
+    description:
+      'Delete the multilingual display names of ONE WP author (DELETE /author-names/{id}). Without lang the whole entry ' +
+      'is removed; pass lang (en / zh-hans / zh-hant or en-us / zh-cn / zh-hk) to remove only that language. The WP user ' +
+      'itself is never touched.',
+    inputSchema: z.object({
+      id: z.number().int().positive().describe('WP author/user ID'),
+      lang: z.string().optional().describe('remove only this language (omit to remove all configured names)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.deleteAuthorName({ siteKey: S.siteKey, id: args.id, lang: args.lang });
+        return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'author_names_batch',
+    description:
+      'Batch-set multilingual display names for many WP authors in one call (POST /author-names/batch). Body shape: ' +
+      '{"authors":{"<id>":{"<lang>":"<name>",...}}} — author ids are numeric strings. Merge semantics per author (empty ' +
+      'string clears that language); per-item validation; response reports updated count + per-item failures.',
+    inputSchema: z.object({
+      authors: z.record(z.string(), z.record(z.string(), z.string())).describe('author id (numeric string) → {lang: name}'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const data = await t.wp.termnames.batchAuthorNames({ siteKey: S.siteKey, authors: args.authors });
+        return ok({ ok: true, data });
       } catch (e) {
         return fail(e);
       }
