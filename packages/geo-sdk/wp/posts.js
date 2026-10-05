@@ -9,7 +9,7 @@
  * Responsibility split (2026-09-16, batch E):
  *   - article body (title / content / excerpt / status / categories / tags / featured
  *     image) still goes through the WP native API (/wp/v2).
- *   - SEO/GEO meta fields now go through the plugin API (tengence/v1/posts/{id}):
+ *   - SEO/GEO meta fields now go through the plugin API (tengence/v1/posts/{id}/meta):
  *       saveMeta(id, meta) / getMeta(id). `create` / `update` no longer accept meta;
  *       any passed-in meta is stripped (anti-misuse).
  * ============================================================================

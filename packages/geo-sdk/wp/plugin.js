@@ -8,8 +8,11 @@
  * never reliable.
  *
  * Now unified on the plugin config API (/wp-json/tengence/v1/posts/{id}):
- *   - GET /posts/{id}  reads all 21 SEO/GEO meta keys (no prefix; arrays/objects decoded)
- *   - PUT /posts/{id}  batch write (body {"meta": {...}}; absent fields stay unchanged)
+ *   - GET /posts/{id}/meta  reads all 21 SEO/GEO meta keys (no prefix; arrays/objects decoded)
+ *   - PUT /posts/{id}/meta  batch write (body {"meta": {...}}; absent fields stay unchanged)
+ *
+ * Article-body attributes (title / excerpt / featured image / publish + update time) are a
+ * separate endpoint on purpose: PUT /posts/{id}/attributes.
  * Auth: X-Tengence-Site-Id + X-Tengence-Secret (not WP Basic Auth).
  *
  * Credentials: TENGENCE_SITE_ID / TENGENCE_SECRET in sites/<site>/.env; endpoint:
@@ -89,7 +92,7 @@ async function pluginApi(endpoint, options = {}) {
  * @returns {Promise<object>} meta object (unprefixed keys; {} when empty)
  */
 async function getPostMeta(postId, options = {}) {
-  const res = await pluginApi(`/posts/${postId}`, { siteKey: options.siteKey });
+  const res = await pluginApi(`/posts/${postId}/meta`, { siteKey: options.siteKey });
   const meta = res && res.data && res.data.meta;
   return meta && typeof meta === 'object' ? meta : {};
 }
@@ -104,49 +107,50 @@ async function updatePostMeta(postId, meta, options = {}) {
   if (!meta || typeof meta !== 'object' || Object.keys(meta).length === 0) {
     return getPostMeta(postId, options);
   }
-  const res = await pluginApi(`/posts/${postId}`, { method: 'PUT', body: { meta }, siteKey: options.siteKey });
+  const res = await pluginApi(`/posts/${postId}/meta`, { method: 'PUT', body: { meta }, siteKey: options.siteKey });
   const updated = res && res.data && res.data.meta;
   return updated && typeof updated === 'object' ? updated : {};
 }
 
 /**
- * Set an article's publish / update time via the plugin dates API.
- * Endpoint: POST /posts/{id}/dates  (dates v1, plugin-side).
+ * Set an article's publish / update time via the plugin post-attributes API.
+ * Endpoint: PUT /posts/{id}/attributes  (attributes v1, plugin-side).
  *
- * Why this exists: the native WP REST API treats `modified` (post_modified) as
- * READONLY — POSTing it to /wp/v2/posts/{id} is silently ignored and the value
- * resets to "now". So a translation (en-us / zh-hk) could never be given its
- * source zh-cn article's update time through /wp/v2. The plugin endpoint writes
- * post_date / post_date_gmt / post_modified / post_modified_gmt directly, using
- * the same Site-Id + Secret credential check as the rest of /tengence/v1.
+ * Why this exists: `post_modified` has NO official WordPress writer.
+ * wp_update_post() forwards to wp_insert_post(), which for updates forces
+ * post_modified to current_time() (wp-includes/post.php:4789) and discards any
+ * passed value; /wp/v2 declares `modified` readonly; and no filter in wp-includes
+ * can intervene. A translation therefore could never be given its source zh-cn
+ * article's update time through the native API. The plugin endpoint writes the
+ * value and then READS IT BACK, failing loudly if it did not stick — so this can
+ * never silently degrade into "wrote now instead of the requested time".
  *
  * @param {number|string} postId the WP article ID
- * @param {{date?:string, date_gmt?:string, modified?:string, modified_gmt?:string}} dates
+ * @param {{date?:string, modified?:string}} dates
  *        each field optional; 'YYYY-MM-DD HH:MM:SS' or 'YYYY-MM-DDTHH:MM:SS'
  * @param {{siteKey?:string}} [options]
- * @returns {Promise<object>} plugin API response ({ id, updated })
+ * @returns {Promise<object>} plugin API response
  */
 async function setPostDates(postId, dates = {}, options = {}) {
   const body = {};
-  for (const k of ['date', 'date_gmt', 'modified', 'modified_gmt']) {
-    if (dates[k]) body[k] = String(dates[k]).replace('T', ' ');
-  }
+  if (dates.date) body.date = String(dates.date).replace('T', ' ');
+  if (dates.modified) body.modified = String(dates.modified).replace('T', ' ');
   if (Object.keys(body).length === 0) {
-    throw new Error('setPostDates requires at least one of date / date_gmt / modified / modified_gmt');
+    throw new Error('setPostDates requires at least one of date / modified');
   }
-  return pluginApi(`/posts/${postId}/dates`, { method: 'POST', body, siteKey: options.siteKey });
+  return pluginApi(`/posts/${postId}/attributes`, { method: 'PUT', body, siteKey: options.siteKey });
 }
 
 /**
- * Read an article's four date values (plugin dates API, GET).
+ * Read an article's publish / update time (plugin attributes API, GET).
  * @param {number|string} postId the WP article ID
  * @param {{siteKey?:string}} [options]
  * @returns {Promise<{date:string, date_gmt:string, modified:string, modified_gmt:string, status:string, slug:string}>}
  */
 async function getPostDates(postId, options = {}) {
-  const res = await pluginApi(`/posts/${postId}/dates`, { method: 'GET', siteKey: options.siteKey });
+  const res = await pluginApi(`/posts/${postId}/attributes`, { method: 'GET', siteKey: options.siteKey });
   const data = res && res.data ? res.data : res;
-  return (data && data.dates) || {};
+  return (data && data.attributes) || {};
 }
 
 /**

@@ -883,7 +883,7 @@ async function publishArticle(connection, articleId, options = {}) {
   const postExcerpt = s.t.content.meta.deriveExcerpt(config, article.excerpt);
 
   // SEO/GEO metadata (Tengence plugin keys): goes through the plugin API
-  // (tengence/v1/posts/{id}) instead of mixing into the WP postData (the native WP
+  // (tengence/v1/posts/{id}/meta) instead of mixing into the WP postData (the native WP
   // API silently drops unregistered keys).
   let existingMeta = {};
   if (existing && existing.id) {
@@ -970,7 +970,7 @@ async function publishArticle(connection, articleId, options = {}) {
     //
     // The native WP REST API treats `modified` (post_modified) as READONLY — it is
     // silently dropped and reset to "now" — so the write has to go through the
-    // plugin dates API (POST /tengence/v1/posts/{id}/dates). `date` is also written
+    // plugin attributes API (PUT /tengence/v1/posts/{id}/attributes). `date` is also written
     // there rather than in postData, so both values land in one atomic call.
     //
     // Best-effort: a failure here must never lose an already-published article, so
