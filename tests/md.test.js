@@ -25,6 +25,9 @@ const {
   restoreRawHtml,
   mapOutsideFences,
   mermaidFencesToMerpress,
+  merpressBlockHtml,
+  MERPRESS_BLOCK_OPEN,
+  MERPRESS_BLOCK_CLOSE,
   fixMermaidLabelQuotes,
   mermaidBareParenIssues,
   geoBlockLabels,
@@ -735,12 +738,21 @@ test('removeImageByUrl: empty URL returns as-is (guards against empty values cle
 
 // ==================== ⑨ mermaidFencesToMerpress (2026-10-06) ====================
 //
-// Live problem: whether a Mermaid diagram renders depends on the class on the HTML.
-// Both front ends only key off `pre.mermaid` / `.wp-block-merpress-mermaidjs`;
-// `<pre><code class="language-mermaid">` falls into the plain code-block branch and
-// leaves raw source on the page. zh-cn post 570 renders while its zh-hk / en-us
-// translations (1658 / 1652) do not, because holdRawHtml only *protects* existing
-// MerPress blocks — it never turns a fence into one.
+// Live problem: whether a Mermaid diagram renders depends on TWO gates, and the
+// first implementation only satisfied one of them.
+//   1. the class — both front ends key off `pre.mermaid` /
+//      `.wp-block-merpress-mermaidjs`; `<pre><code class="language-mermaid">` falls
+//      into the plain code-block branch and leaves raw source on the page;
+//   2. the Gutenberg block delimiter — the `merpress/merpress` plugin's block.json
+//      declares `script` / `viewScript`, and WordPress enqueues those only for
+//      blocks that are actually rendered, i.e. `has_block('merpress/mermaidjs')`
+//      must be true. No delimiter ⇒ nothing ever calls `mermaid.run()`.
+//
+// ★ The first diagnosis (same day) claimed the class was the whole story and that
+// zh-cn post 570 "renders" while its zh-hk / en-us translations (1658 / 1652) do
+// not. Refuted live: post 570 had `anyBlock = 0` too. All six affected posts
+// (523/570/1587/1593/1652/1658) enqueued no mermaid asset until the delimiter was
+// added. The class alone never rendered anything.
 
 const MERMAID_FENCE_MD = [
   '这个过程中，**并查集算法**发挥着关键作用。',
@@ -767,6 +779,36 @@ test('mermaidFencesToMerpress: ```mermaid fence → MerPress block (with diagram
   assert.ok(!out.includes('```mermaid'), 'the fence should be fully consumed');
 });
 
+test('mermaidFencesToMerpress: emits the Gutenberg block delimiter (the plugin asset gate)', () => {
+  const out = mermaidFencesToMerpress(MERMAID_FENCE_MD);
+  assert.ok(out.includes(MERPRESS_BLOCK_OPEN), 'missing <!-- wp:merpress/mermaidjs --> — has_block() stays false');
+  assert.ok(out.includes(MERPRESS_BLOCK_CLOSE), 'missing the closing delimiter');
+  assert.equal(
+    (out.match(/<!--\s*wp:merpress\/mermaidjs\s*-->/g) || []).length,
+    (out.match(/<!--\s*\/wp:merpress\/mermaidjs\s*-->/g) || []).length,
+    'delimiters must be balanced'
+  );
+  // the delimiter must sit on its own line, outside the div — WP's block parser
+  // and wpautop both key off that
+  assert.ok(
+    /\n<!-- wp:merpress\/mermaidjs -->\n<div class="wp-block-merpress-mermaidjs diagram-source-mermaid">/.test(out),
+    'the open delimiter must immediately precede the div on its own line'
+  );
+  assert.ok(
+    /<\/pre><\/div>\n<!-- \/wp:merpress\/mermaidjs -->/.test(out),
+    'the close delimiter must follow the div on its own line'
+  );
+  // and the whole thing must still be guarded by RAW_HTML_BLOCKS[0]
+  assert.ok(holdRawHtml(out).blocks.length === 1, 'the delimited block must be protected as one raw-HTML block');
+});
+
+test('merpressBlockHtml: no JSON attributes on the delimiter (all attrs sourced or default)', () => {
+  const html = merpressBlockHtml('graph TD\nA-->B');
+  assert.ok(html.startsWith(MERPRESS_BLOCK_OPEN), 'must open with the bare delimiter');
+  assert.ok(!/<!-- wp:merpress\/mermaidjs \{/.test(html), 'no JSON payload should be serialized');
+  assert.ok(html.endsWith(MERPRESS_BLOCK_CLOSE));
+});
+
 test('mermaidFencesToMerpress: diagram source is escaped (< & " cannot break the HTML structure)', () => {
   const out = mermaidFencesToMerpress(MERMAID_FENCE_MD);
   assert.ok(out.includes('&lt;含尖括号&gt;'), '< and > in the source must be escaped');
@@ -787,6 +829,11 @@ test('mermaidFencesToMerpress: paragraphs outside the fence and other code block
 test('mermaidFencesToMerpress: idempotent (re-running on converted content is a no-op)', () => {
   const once = mermaidFencesToMerpress(MERMAID_FENCE_MD);
   assert.equal(mermaidFencesToMerpress(once), once, 'a second pass must not change anything');
+  assert.equal(
+    (mermaidFencesToMerpress(once).match(/<!--\s*wp:merpress/g) || []).length,
+    1,
+    'a second pass must not double the delimiter'
+  );
 });
 
 test('mermaidFencesToMerpress: info string that is not exactly mermaid (mermaidjs / with args) is not converted', () => {

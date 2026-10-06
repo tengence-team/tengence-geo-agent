@@ -184,23 +184,35 @@ function restoreRawHtml(html, blocks) {
 
 // ==================== ```mermaid fence → MerPress block ====================
 //
-// Background (2026-10-06): a Mermaid diagram only actually renders when the HTML
-// carries a specific class. The front ends (blog-web/assets/js/code-block.js and
-// the mobile site's RichContent) both key off `pre.mermaid` /
-// `.wp-block-merpress-mermaidjs`; a `<pre><code class="language-mermaid">` falls
-// through to the plain code-block branch and stays raw source text on the page.
+// Background (2026-10-06): a Mermaid diagram only renders when the body carries the
+// **Gutenberg block delimiter** `<!-- wp:merpress/mermaidjs -->`, not merely the
+// class. Two independent gates have to pass:
+//   1. the theme's blog-web/assets/js/code-block.js (and the mobile RichContent)
+//      must recognise `pre.mermaid` / `.wp-block-merpress-mermaidjs`, otherwise the
+//      diagram falls into the plain code-block branch and stays raw source text;
+//   2. the `merpress/merpress` plugin (v1.1.11) must enqueue its renderer —
+//      `register_block_type(build/)` declares `"script": ["mermaid", ...]` /
+//      `"viewScript": ["file:./mermaid-init.js"]`, and WordPress enqueues those only
+//      for blocks that are *actually rendered*, i.e. `has_block('merpress/mermaidjs')`
+//      must be true. Without the delimiter nothing ever calls `mermaid.run()`.
+//
+// ★ CORRECTION of the first diagnosis (2026-10-06, same day): it concluded that the
+// class was the whole story and that the zh-cn `oneid-cross-platform-identity`
+// (post 570) "renders" because it had been hand-inserted in Gutenberg while its
+// zh-hk / en-us translations (1658 / 1652) did not. That was wrong — post 570 had
+// `anyBlock = 0` too, so it was equally dead. Verified live: before the fix none of
+// the six affected posts (523/570/1587/1593/1652/1658) loaded `mermaid.min.js`;
+// after adding the delimiter all six enqueue mermaid.min.js + build/mermaid.js +
+// build/mermaid-init.js. The class alone never rendered anything.
 //
 // `holdRawHtml` above only *protects* MerPress blocks that already exist (it never
 // creates them), so a fence written as ```mermaid in the .md used to degrade into a
-// dead code block the moment the body went through marked. Confirmed live: the
-// zh-cn `oneid-cross-platform-identity` (post 570) renders, while its zh-hk / en-us
-// translations (1658 / 1652) show raw source — the zh-cn body had been inserted as a
-// MerPress block by hand in Gutenberg, the translations went through md.
+// delimiter-less div the moment the body went through marked.
 //
 // Conversion is therefore applied on the WP write path only (`buildPostHtml`), NOT
 // inside `markdownToHtml` — the latter is shared with the WeChat / CSDN syndication
-// code, where a WordPress-only <div class="wp-block-merpress-mermaidjs"> would be
-// meaningless foreign markup.
+// code, where WordPress-only block comments and
+// <div class="wp-block-merpress-mermaidjs"> would be meaningless foreign markup.
 
 /**
  * Label text that contains a bare paren is wrapped in double quotes; anything
@@ -282,6 +294,37 @@ function mermaidBareParenIssues(md) {
 }
 
 /**
+ * The Gutenberg block delimiter pair of the `merpress/mermaidjs` block.
+ *
+ * It carries **no JSON attributes on purpose**, exactly like Gutenberg's own
+ * serialization: `content` is a *sourced* attribute (`"source":"text"`,
+ * `"selector":"pre.mermaid"`) so it is read back from the markup, and
+ * `diagramSource` / `imgs` equal their defaults, so nothing needs serializing.
+ * These two comments are what makes `has_block('merpress/mermaidjs')` true — and
+ * therefore what makes WordPress enqueue the plugin's `mermaid.min.js` +
+ * `build/mermaid.js` + `build/mermaid-init.js`. Omit them and the diagram never
+ * renders, however correct the inner markup is.
+ */
+const MERPRESS_BLOCK_OPEN = '<!-- wp:merpress/mermaidjs -->';
+const MERPRESS_BLOCK_CLOSE = '<!-- /wp:merpress/mermaidjs -->';
+
+/**
+ * Serialize one MerPress Mermaid block: delimiter + saved HTML + delimiter.
+ * The wrapper class mirrors the plugin's `src/save.js`
+ * (`diagram-source-${diagramSource}`).
+ * @param {string} source diagram source text (unescaped)
+ * @returns {string} the block as it would be stored in `post_content`
+ */
+function merpressBlockHtml(source) {
+  return (
+    MERPRESS_BLOCK_OPEN +
+    '\n<div class="wp-block-merpress-mermaidjs diagram-source-mermaid">' +
+    `<pre class="mermaid">${escapeHtml(source)}</pre></div>\n` +
+    MERPRESS_BLOCK_CLOSE
+  );
+}
+
+/**
  * Convert every ```mermaid fenced block into a MerPress Mermaid block.
  * Idempotent: an already-converted body contains no mermaid fence, so it is a no-op.
  * @param {string} md
@@ -307,11 +350,7 @@ function mermaidFencesToMerpress(md) {
     }
     // auto-repair un-parseable labels (bare parens) before writing — live incident
     // 2026-10-06: en post 1652 died on `D[Node 1 (phone number …)]`
-    const fixed = fixMermaidLabelQuotes(body.join('\n'));
-    out.push(
-      '<div class="wp-block-merpress-mermaidjs diagram-source-mermaid">' +
-        `<pre class="mermaid">${escapeHtml(fixed)}</pre></div>`
-    );
+    out.push(merpressBlockHtml(fixMermaidLabelQuotes(body.join('\n'))));
   }
   return out.join('\n');
 }
@@ -1181,6 +1220,9 @@ module.exports = {
   // WP-only: ```mermaid fence → MerPress block (2026-10-06). Not applied inside
   // markdownToHtml on purpose — that is shared with the WeChat / CSDN syndication path.
   mermaidFencesToMerpress,
+  merpressBlockHtml,
+  MERPRESS_BLOCK_OPEN,
+  MERPRESS_BLOCK_CLOSE,
   // mermaid label auto-repair (2026-10-06): write path fixes, gate (T9) reports
   fixMermaidLabelQuotes,
   mermaidBareParenIssues,
