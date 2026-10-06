@@ -27,7 +27,12 @@ const {
   mermaidFencesToMerpress,
   fixMermaidLabelQuotes,
   mermaidBareParenIssues,
+  geoBlockLabels,
+  isTakeawaysHeading,
+  isFaqHeading,
+  h2List,
   removeImageByUrl,
+  stripInlineMarkdown,
 } = require('../packages/geo-sdk/content/md');
 
 // ==================== ① fixCjkBold ====================
@@ -246,6 +251,164 @@ test('composeBody: without "关于Tengence", FAQ appends to the end of the body 
   assert.ok(iFaq > iBody, 'FAQ should append after the body');
 });
 
+// ==================== ④b language-aware materialization (2026-10-06 zh-hk duplicate incident) ====================
+// Live symptom: /zh-hant/blog/article/<slug>/ showed TWO "key takeaways" sections —
+// the first one Simplified with its `**` markdown printed literally — and a second
+// Simplified FAQ appended at the very end of the body (after the CTA).
+// Root cause: every idempotency check in composeBody, the landing anchors in
+// insertFaq and the copy emitted by renderTakeaways / renderFaq were Simplified-only
+// (or Simplified + English), so a Traditional body matched nothing and the fallback
+// added a second, Simplified copy of both blocks.
+// These tests pin: (a) Traditional bodies are recognised as already carrying the
+// blocks, (b) when the fallback does run it writes the article's own language, and
+// (c) takeaway items render their inline Markdown exactly like the visible body.
+
+const ZH_HK_MD = [
+  '# 標題',
+  '',
+  '> **摘要**：一句摘要。',
+  '',
+  '導言段落。',
+  '',
+  '## 關鍵要點',
+  '',
+  '- **GEO 是新渠道**：說明一。',
+  '- **CITE 四槓桿**：說明二。',
+  '',
+  '## 一、正文節',
+  '',
+  '正文。',
+  '',
+  '## 常見問題',
+  '',
+  '> **問：問題一？**',
+  '>',
+  '> 答：答案一。',
+  '',
+  '---',
+  '',
+  '## 關於通智雲',
+  '',
+  '品牌段落。',
+  '',
+  '## 相關閱讀',
+  '',
+  '- [連結](https://example.com/a)',
+  '',
+  '## 資料來源',
+  '',
+  '1. [來源](https://example.com/b)：說明。',
+  '',
+  '## 立即行動',
+  '',
+  '[免費試用](https://console.example.com/login)',
+].join('\n');
+
+test('buildPostHtml(zh-hk): a Traditional body is NOT injected a second time (no Simplified duplicate)', () => {
+  const geo = syncGeoFromMarkdown(ZH_HK_MD, {}).geo;
+  const html = buildPostHtml(ZH_HK_MD, geo, 'zh-hk');
+  const heads = h2List(html);
+  assert.equal(heads.filter((h) => isTakeawaysHeading(h.text)).length, 1, 'exactly one takeaways block');
+  assert.equal(heads.filter((h) => isFaqHeading(h.text)).length, 1, 'exactly one FAQ block');
+  assert.ok(!html.includes('关键要点'), 'no Simplified takeaways heading');
+  assert.ok(!html.includes('常见问题'), 'no Simplified FAQ heading');
+  assert.equal((html.match(/\*\*/g) || []).length, 0, 'no unrendered ** left in the HTML');
+});
+
+test('buildPostHtml(zh-hk): the fallback writes Traditional copy and lands before 關於通智雲', () => {
+  const geo = {
+    key_takeaways: ['**要點**：說明。'],
+    qa_pairs: [{ question: '問題？', answer: '答案。' }],
+  };
+  const md = [
+    '# 標題', '', '導言。', '',
+    '## 一、節', '', '正文。', '',
+    '## 關於通智雲', '', '品牌。', '',
+    '## 相關閱讀', '', '- [x](https://example.com)', '',
+    '## 資料來源', '', '1. [s](https://example.com/s)：說明。', '',
+    '## 立即行動', '', '[CTA](https://example.com/cta)',
+  ].join('\n');
+  const html = buildPostHtml(md, geo, 'zh-hk');
+  const iFaq = html.indexOf('<h2>常見問題</h2>');
+  const iTake = html.indexOf('<h2>關鍵要點</h2>');
+  const iAbout = html.indexOf('關於通智雲');
+  const iCta = html.indexOf('立即行動');
+  assert.ok(iTake > -1 && iTake < html.indexOf('一、節'), 'takeaways precede the first body H2');
+  assert.ok(iFaq > -1, 'FAQ block is materialized');
+  assert.ok(iFaq < iAbout, 'FAQ precedes 關於通智雲');
+  assert.ok(iFaq < iCta, 'FAQ precedes the CTA (regression: it used to append after it)');
+  assert.ok(html.includes('<p><strong>問：問題？</strong></p>'), 'Traditional "問：" prefix');
+  assert.ok(html.includes('<p>答：答案。</p>'), 'Traditional "答：" prefix');
+  assert.ok(
+    html.includes('<li><strong>要點</strong>：說明。</li>'),
+    'takeaway items render inline Markdown bold (was printed as literal ** before)'
+  );
+  assert.equal((html.match(/\*\*/g) || []).length, 0, 'no literal ** anywhere');
+});
+
+test('buildPostHtml(en-us): the fallback copy is English, never Simplified Chinese', () => {
+  const geo = {
+    key_takeaways: ['**Point** one.'],
+    qa_pairs: [{ question: 'Why?', answer: 'Because.' }],
+  };
+  const md = [
+    '# Title', '', 'Lead.', '',
+    '## 1. Section', '', 'Body.', '',
+    '## About TENGENCE Cloud', '', 'Brand.', '',
+    '## Get Started', '', '[CTA](https://example.com/cta)',
+  ].join('\n');
+  const html = buildPostHtml(md, geo, 'en-us');
+  assert.ok(html.includes('<h2>Key Takeaways</h2>'));
+  assert.ok(html.includes('<h2>FAQ</h2>'));
+  assert.ok(html.includes('<p><strong>Q: Why?</strong></p>'));
+  assert.ok(html.includes('<p>A: Because.</p>'));
+  assert.ok(!html.includes('关键要点') && !html.includes('常见问题'), 'no Simplified copy on an English page');
+  assert.ok(html.indexOf('<h2>FAQ</h2>') < html.indexOf('About TENGENCE Cloud'), 'FAQ lands before "About"');
+});
+
+test('buildPostHtml(zh-cn): omitted lang is unchanged legacy behaviour', () => {
+  const geo = { key_takeaways: ['要点一'], qa_pairs: [{ question: '问题一', answer: '答案一' }] };
+  const md = '# 标题\n\n导言。\n\n## 第一节\n\n正文。';
+  const html = buildPostHtml(md, geo);
+  assert.ok(html.includes('<h2>关键要点</h2>'));
+  assert.ok(html.includes('<h2>常见问题</h2>'));
+  assert.ok(html.includes('<p><strong>问：问题一</strong></p>'));
+  assert.equal(html, buildPostHtml(md, geo, 'zh-cn'), 'explicit zh-cn === omitted lang');
+});
+
+test('composeBody(zh-hk): idempotent — the Traditional blocks are never doubled', () => {
+  const geo = syncGeoFromMarkdown(ZH_HK_MD, {}).geo;
+  const once = buildPostHtml(ZH_HK_MD, geo, 'zh-hk');
+  const twice = composeBody(once, geo, 'zh-hk');
+  assert.equal(twice, once, 're-running the fallback on a Traditional body is byte-identical');
+});
+
+test('composeBody: numbered / 解答-style FAQ headings also suppress injection', () => {
+  const geo = { key_takeaways: ['要点'], qa_pairs: [{ question: 'q', answer: 'a' }] };
+  for (const heading of ['## 五、常見問題', '## 常見問題解答', '## 常见问题（FAQ）']) {
+    const out = composeBody(
+      markdownToHtml(`# 標題\n\n## 第一節\n\n正文。\n\n${heading}\n\n手寫內容。`),
+      geo,
+      'zh-hk'
+    );
+    assert.ok(out.includes('手寫內容'), 'the handwritten section survives');
+    assert.equal(
+      (out.match(/<h2>[^<]*(常見問題|常见问题)[^<]*<\/h2>/g) || []).length,
+      1,
+      `exactly one FAQ section for "${heading}"`
+    );
+  }
+});
+
+test('geoBlockLabels: language resolution (Traditional / English / fallback)', () => {
+  assert.equal(geoBlockLabels('zh-hk').takeaways, '關鍵要點');
+  assert.equal(geoBlockLabels('zh-hant').faq, '常見問題');
+  assert.equal(geoBlockLabels('en-us').takeaways, 'Key Takeaways');
+  assert.equal(geoBlockLabels('en').faq, 'FAQ');
+  assert.equal(geoBlockLabels(undefined).takeaways, '关键要点');
+  assert.equal(geoBlockLabels('zh-CN').takeaways, '关键要点');
+});
+
 // ==================== ⑤ parseGeoBlocks / syncGeoFromMarkdown (md is authoritative) ====================
 // Decided 2026-09-16: the summary / key-takeaways / FAQ blocks are written directly
 // into the Markdown; at publish time they're reverse-parsed into
@@ -292,9 +455,67 @@ test('parseGeoBlocks: parses the summary / takeaways / FAQ blocks', () => {
   assert.deepEqual(r.takeaways, ['要点一：先做诊断再谈优化。', '要点二：结构决定可被引用率。']);
   assert.equal(r.faq.length, 2);
   assert.equal(r.faq[0].question, 'GEO 和 SEO 的区别是什么？');
-  assert.equal(r.faq[0].answer, '<p>SEO 面向排名，GEO 面向被 AI 引用。</p>', 'the 答： prefix should be stripped (renderFaq re-adds it at render time)');
+  assert.equal(r.faq[0].answer, 'SEO 面向排名，GEO 面向被 AI 引用。', 'the 答： prefix is stripped (renderFaq re-adds it) and the answer is plain text (no <p>)');
   assert.equal(r.faq[1].question, '多久能看到效果？');
-  assert.equal(r.faq[1].answer, '<p>通常 8 到 12 周。</p>');
+  assert.equal(r.faq[1].answer, '通常 8 到 12 周。');
+});
+
+// ==================== ④.5 GEO metadata must be plain text ====================
+// Decided 2026-10-06: geo_key_takeaways / geo_qa_pairs / geo_ai_summary are emitted
+// verbatim by the plugin as JSON-LD (ItemList.name, FAQPage.acceptedAnswer.text) and
+// as the meta-description fallback. Anything Markdown-shaped there leaks to search
+// engines / AI answer engines as literal characters, so extraction normalizes it.
+
+test('stripInlineMarkdown: drops Markdown markers and tags, keeps the text', () => {
+  assert.equal(stripInlineMarkdown('**底座共用、策略分离**：数据共用。'), '底座共用、策略分离：数据共用。');
+  assert.equal(stripInlineMarkdown('见[技术指南](https://example.com/a)一节'), '见技术指南一节');
+  assert.equal(stripInlineMarkdown('保留 `JSON-LD` 与 __加粗__'), '保留 JSON-LD 与 加粗');
+  assert.equal(stripInlineMarkdown('<p>第一段</p><p>第二段</p>'), '第一段\n\n第二段');
+  assert.equal(stripInlineMarkdown('a < b & c'), 'a < b & c', 'a bare "<" is not a tag');
+  assert.equal(stripInlineMarkdown('增长率 <5%，>10%'), '增长率 <5%，>10%', 'a tag regex anchored on a letter must not eat "<5%"');
+  // every remaining inline form (defect found 2026-10-06: 5 rows still carried `` ` ``)
+  assert.equal(stripInlineMarkdown('写 `DigitalSourceType` = `TrainedAlgorithmicMedia`'), '写 DigitalSourceType = TrainedAlgorithmicMedia');
+  assert.equal(stripInlineMarkdown('## 小节标题'), '小节标题');
+  assert.equal(stripInlineMarkdown('#1 原因'), '#1 原因', 'no space after the hash → not a heading');
+  assert.equal(stripInlineMarkdown('- 第一条\n- 第二条'), '第一条\n第二条');
+  assert.equal(stripInlineMarkdown('正文\n\n---\n\n后面'), '正文\n\n后面');
+});
+
+test('parseGeoBlocks: takeaways / answers / summary come out as plain text', () => {
+  const md = [
+    '> **摘要**：见[技术指南](https://example.com/a)的 `crawl` 段。',
+    '',
+    '## 关键要点',
+    '',
+    '- **结论先行**：先做诊断，再谈优化。',
+    '- 引用 [Google 文档](https://developers.google.com/x) 并保留 `JSON-LD`。',
+    '',
+    '## 常见问题',
+    '',
+    '> **问：多久见效？**',
+    '>',
+    '> 答：通常 **8–12 周**。',
+    '>',
+    '> 第二段带 <strong>标签</strong>。',
+    '',
+  ].join('\n');
+  const r = parseGeoBlocks(md);
+  assert.equal(r.summary, '见技术指南的 crawl 段。');
+  assert.deepEqual(r.takeaways, ['结论先行：先做诊断，再谈优化。', '引用 Google 文档 并保留 JSON-LD。']);
+  assert.equal(r.faq[0].question, '多久见效？');
+  assert.equal(r.faq[0].answer, '通常 8–12 周。\n\n第二段带 标签。', 'paragraphs are preserved as plain text, not concatenated');
+  assert.equal(JSON.stringify(r).includes('**'), false);
+  assert.equal(/<\/?(?:p|strong)>/.test(JSON.stringify(r)), false);
+});
+
+test('buildPostHtml: plain-text metadata in the fallback block still renders as bullets, and the body keeps its own bold', () => {
+  // body without a takeaways block → the block is materialized from the metadata
+  const md = '# 标题\n\n## 一、正文\n\n正文。\n';
+  const geo = syncGeoFromMarkdown(md, { key_takeaways: [], qa_pairs: [] }).geo;
+  geo.key_takeaways = ['**结论**：先做诊断。'];
+  const html = buildPostHtml(md, geo, 'zh-cn');
+  assert.ok(html.includes('<h2>关键要点</h2>'));
+  assert.ok(html.includes('<li>'), 'takeaways fallback still renders a list');
 });
 
 test('parseGeoBlocks: compatible with legacy numbered headings (八、常见问题) and the (FAQ) suffix', () => {

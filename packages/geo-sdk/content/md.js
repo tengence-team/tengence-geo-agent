@@ -415,17 +415,15 @@ function geoBlockLabels(lang) {
 }
 
 /**
- * Render one GEO plain-text field (a takeaway item) as **inline HTML**.
+ * Render one GEO field as **inline HTML**, using the same renderer as the body.
  *
- * Why not `escapeHtml`: `parseGeoBlocks` stores the takeaway bullet **verbatim as
- * the Markdown line** (`**结论**：说明`), and the visible body renders that same line
- * through marked. Escaping alone therefore printed a literal `**` in the fallback
- * block while the body block next to it showed real bold — the formatting defect
- * reported on the zh-hant enterprise-geo-playbook page (2026-10-06).
- * Routing it through the same inline renderer keeps the two blocks identical, and
- * still escapes `<` / `&` exactly as before (`a < b & c` → `a &lt; b &amp; c`).
+ * The input is already plain text (`parseGeoBlocks` normalizes metadata through
+ * {@link stripInlineMarkdown}), so this returns escaped text in the normal case and
+ * only escalates when a caller passes legacy Markdown. Note the earlier rationale
+ * (2026-10-06, `**` shown literally in the fallback block) no longer applies once
+ * metadata stopped carrying Markdown markers at all.
  *
- * @param {string} text raw Markdown inline text
+ * @param {string} text plain text (legacy Markdown tolerated)
  * @returns {string} inline HTML
  */
 function renderInlineMarkdown(text) {
@@ -442,7 +440,7 @@ function renderInlineMarkdown(text) {
  * subset, so structure and style survive with the content; the head-layer FAQPage
  * JSON-LD is emitted separately by the plugin and unrelated.
  *
- * @param {string[]} items raw Markdown bullet texts (from `geo.key_takeaways`)
+ * @param {string[]} items plain-text bullet texts (from `geo.key_takeaways`)
  * @param {string} [lang] article language for the heading; defaults to zh-cn
  */
 function renderTakeaways(items, lang) {
@@ -494,8 +492,8 @@ function renderFaq(qaPairs, lang) {
     const a = String(qa.answer == null ? '' : qa.answer).trim();
     let answerHtml;
     if (/<[a-z][^>]*>/i.test(a)) {
-      // legacy HTML answers (~70 are <p>…</p>): merge the "答：" prefix into the first
-      // <p> to avoid <p> nesting
+      // legacy HTML answers (written before parseGeoBlocks normalized metadata to
+      // plain text): merge the "答：" prefix into the first <p> to avoid <p> nesting
       answerHtml = a.replace(/^(\s*)<p(\s|>)/i, `$1<p$2${labels.a}${labels.sep}`);
       // fallback when it doesn't start with <p>
       if (answerHtml === a) answerHtml = `<p>${labels.a}${labels.sep}</p>\n` + a;
@@ -721,13 +719,13 @@ function isLegacyFaqHeading(text) {
 function extractCitationFromItem(text) {
   const htmlM = /<a\s+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i.exec(text);
   if (htmlM) {
-    const title = stripTags(htmlM[2]).trim();
+    const title = stripInlineMarkdown(stripTags(htmlM[2]));
     const url = htmlM[1].trim();
     if (url && title) return { title, url };
   }
   const mdM = /\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/.exec(text);
   if (mdM) {
-    const title = mdM[1].trim();
+    const title = stripInlineMarkdown(mdM[1]);
     const url = mdM[2].trim();
     if (title) return { title, url };
   }
@@ -749,6 +747,11 @@ const CITATION_ITEM_RE = /^\s*(?:\d+[.、]|[-*])\s+(.+?)\s*$/;
  *
  * @param {string} md body Markdown
  * @returns {{summary:string, takeaways:string[], faq:Array<{question:string,answer:string}>}}
+ *   All values are **plain text** (Markdown markers and legacy HTML removed by
+ *   {@link stripInlineMarkdown}): the metadata is emitted verbatim as JSON-LD /
+ *   meta description, so it must never carry presentation syntax. Only the
+ *   *visible* body keeps its Markdown, and that is rendered separately by
+ *   `markdownToHtml`.
  */
 function parseGeoBlocks(md) {
   // Strip HTML comments and fenced code blocks: the writing templates put "notation
@@ -767,12 +770,12 @@ function parseGeoBlocks(md) {
 
   const closeFaq = () => {
     if (!current) return;
-    const question = current.q.join(' ').trim();
+    const question = stripInlineMarkdown(current.q.join(' '));
     const paras = current.a
       .map((p) => p.join(' ').trim())
       .filter(Boolean)
-      .map((p) => '<p>' + escapeHtml(p) + '</p>');
-    if (question && paras.length) faq.push({ question, answer: paras.join('') });
+      .map((p) => stripInlineMarkdown(p));
+    if (question && paras.length) faq.push({ question, answer: paras.join('\n\n') });
     current = null;
   };
 
@@ -803,14 +806,14 @@ function parseGeoBlocks(md) {
 
     // summary: opening blockquote (first occurrence only) — bold-agnostic (EN/ZH, ** or not)
     if (!summary) {
-      const clean = line.replace(/^\s*>+\s?/, '').replace(/\*+/g, '').trim();
+      const clean = stripInlineMarkdown(line.replace(/^\s*>+\s?/, ''));
       const sm = /^(?:摘要|Summary)\s*[：:]\s*(.+?)\s*$/i.exec(clean);
-      if (sm) { summary = sm[1].trim(); continue; }
+      if (sm) { summary = stripInlineMarkdown(sm[1]); continue; }
     }
 
     if (section === 'takeaways') {
       const li = /^\s*[-*+]\s+(.+?)\s*$/.exec(line);
-      if (li) takeaways.push(li[1].trim());
+      if (li) takeaways.push(stripInlineMarkdown(li[1]));
       continue;
     }
 
@@ -885,6 +888,45 @@ function syncGeoFromMarkdown(md, geo = {}) {
 }
 
 // ==================== Markdown → plain text ====================
+
+/**
+ * Normalize one **inline** Markdown/HTML fragment to plain text.
+ *
+ * Why this exists (defect reported 2026-10-06): the GEO metadata reverse-parsed by
+ * `parseGeoBlocks` is not only rendered — the plugin emits it *verbatim* as JSON-LD
+ * (`geo_key_takeaways` → `ItemList.itemListElement[].name`, `geo_qa_pairs` →
+ * `FAQPage.mainEntity[].acceptedAnswer.text`) and as the meta-description fallback
+ * (`geo_ai_summary` → `description`). Storing the raw Markdown there leaked literal
+ * `**` into the structured data of every article whose bullets were bolded
+ * (130 of 915 takeaway items), which search engines and AI answer engines read.
+ * Metadata is plain text; only the visible body is rendered from Markdown.
+ *
+ * `<p>`-style legacy answers are converted to plain paragraphs rather than being
+ * concatenated: `</p>` becomes a paragraph break before the tags are dropped.
+ *
+ * @param {string} text raw Markdown/HTML inline text
+ * @returns {string} plain text (single-spaced, no Markdown markers, no tags)
+ */
+function stripInlineMarkdown(text) {
+  let s = String(text == null ? '' : text);
+  s = s.replace(/<\s*\/\s*(?:p|div|li|blockquote|h[1-6])\s*>/gi, '\n\n'); // block end → paragraph break
+  s = s.replace(/<\s*br\s*\/?\s*>/gi, '\n');
+  s = s.replace(/<[a-zA-Z/][^>]*>/g, ''); // remaining tags (letter-led, so "a <5%" is untouched)
+  s = s.replace(/^[ \t]*#{1,6}[ \t]+/gm, ''); // heading markers (needs a space: "#1 原因" survives)
+  s = s.replace(/^[ \t]*[-*+][ \t]+/gm, ''); // list markers
+  s = s.replace(/^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*$/gm, ''); // horizontal rules
+  s = s.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1'); // image → alt text
+  s = s.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1'); // link → link text
+  s = s.replace(/\*\*([^*]+)\*\*/g, '$1'); // **bold**
+  s = s.replace(/__([^_]+)__/g, '$1'); // __bold__
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1$2'); // *italic*
+  s = s.replace(/`+([^`]*)`+/g, '$1'); // `code` / ``code``
+  return s
+    .replace(/[ \t]+/g, ' ')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/[ \t]*\n[ \t]*/g, '\n')
+    .trim();
+}
 
 /** Extract plain text (strip markdown), used to generate the meta description */
 function toPlainText(md) {
@@ -1142,6 +1184,7 @@ module.exports = {
   // mermaid label auto-repair (2026-10-06): write path fixes, gate (T9) reports
   fixMermaidLabelQuotes,
   mermaidBareParenIssues,
+  stripInlineMarkdown,
   toPlainText,
   makeDescription,
   extractTitle,
