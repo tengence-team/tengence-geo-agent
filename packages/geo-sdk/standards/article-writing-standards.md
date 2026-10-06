@@ -64,9 +64,9 @@ Body. Numbered H2 sections run **continuously** — no skipped and no repeated n
 
 ## Related Reading
 
-- <a href="<on-site article URL>" target="_blank" rel="noopener noreferrer"><title></a>
+- <a href="<on-site article URL, **carrying this article's own language prefix** — see §5.6>" target="_blank" rel="noopener noreferrer"><title></a>
 
-(**3–5 items**)
+(**3–5 items**, one link per line — never join links with `|`)
 
 ## Data Sources
 
@@ -76,7 +76,11 @@ Body. Numbered H2 sections run **continuously** — no skipped and no repeated n
 
 ## Get Started
 
-<the site's fixed CTA link set — not to be added to or trimmed>
+- <a href="<the site's fixed CTA link — never altered or trimmed>" target="_blank" rel="noopener noreferrer"><label></a>
+- <a href="<…>" target="_blank" rel="noopener noreferrer"><label></a>
+
+<the site's fixed CTA link set — not to be added to or trimmed; **each link on its own line
+(a list), never joined on one line by `|`**>
 ```
 
 ## 3. Front matter
@@ -135,6 +139,14 @@ Rules:
    related reading.
 5. Off-site links (citations) use HTML `<a>` with
    `target="_blank" rel="noopener noreferrer"`.
+6. **Every on-site article link carries this article's own language prefix**
+   (2026-10-06, gate-enforced): zh-cn → `/zh-hans/blog/article/<slug>/`, en-us →
+   `/en/blog/article/<slug>/`, zh-hk → `/zh-hant/blog/article/<slug>/`. Bare links
+   (`/blog/article/<slug>/`) and links carrying another language's prefix are
+   violations — internal links must stay inside the same language, never hop
+   between languages. The publish chain normalizes the prefix automatically on the
+   WP write exit (`buildPostHtml`), and the gates (`check_article` rows + the
+   translation gate T10) verify the md source.
 
 ## 6. Quality bar (this decides whether AI will cite the article)
 
@@ -160,9 +172,9 @@ Report: ① file path ② length ③ the gate result verbatim (last three lines)
 citations were used and what each one carries. **If any gate fails, fix it until all
 pass before reporting** — never hand back a failing draft.
 
-## 8. Editorial gates G1–G14
+## 8. Editorial gates G1–G16
 
-All 14 must pass before publishing; any failure sends the article back.
+All 16 must pass before publishing; any failure sends the article back.
 
 | ID | Gate | Criterion |
 |---|---|---|
@@ -179,7 +191,9 @@ All 14 must pass before publishing; any failure sends the article back.
 | G11 | Geographic framing | global first; single-market data labelled with its country |
 | G12 | No Markdown residue | no stray `###` or markers in the rendered body |
 | G13 | Compliant images | no third-party logos; every image carries real content |
-| G14 | Correct CTA | routed by product line, no broken links |
+| G14 | Correct CTA | routed by product line, no broken links; **each link on its own line, never joined by `|`** |
+| G15 | Internal-link language prefix | every on-site article link carries the article's own language prefix (zh-cn→/zh-hans/, en-us→/en/, zh-hk→/zh-hant/); no cross-language hops |
+| G16 | CTA list layout | the Get Started / 立即行动 block renders as a list (`<ul><li>`), never a single paragraph with several links |
 
 ## 9. Site-specific items
 

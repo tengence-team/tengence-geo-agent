@@ -3,9 +3,9 @@
 > The hands-on spec for **every** multi-language translation task: target-language
 > profiles, the four hard rules (facts / structure / expression / title), the
 > GEO-domain glossary (zh-cn ↔ en-us ↔ zh-hk), the simplified→traditional conversion
-> table, the mechanical gate summary (T1–T8), and the per-language block headings.
+> table, the mechanical gate summary (T1–T11), and the per-language block headings.
 > Execution lives in the harness (`geo-article-translation` skill); the mechanical
-> gate lives in code (`geo-sdk/translate/gate.js`) and is authoritative for T1–T8.
+> gate lives in code (`geo-sdk/translate/gate.js`) and is authoritative for T1–T11.
 > This file is the single source of truth for **rules and glossaries** — code never
 > copies rule text; the harness never copies rule text either (it reads this file at
 > runtime via `standards_read`).
@@ -40,9 +40,16 @@ as its taxonomy; the mapping is owned by the geo→plugin language write API.
 ### 3.1 Facts — never change
 - Numbers: years, percentages, versions, amounts, counts, dates stay **exactly as in
   the source** (only thousands-separator / decimal-format differences allowed).
-- Every outbound citation URL, every internal link URL, every image URL stays
-  **identical**. `featured_image` is copied from the source article unchanged (the
-  three languages share one featured image).
+- Every outbound citation URL and every image URL stays **identical**.
+  `featured_image` is copied from the source article unchanged (the three languages
+  share one featured image).
+- **Internal article links** (`tengence.com/blog/article/<slug>/`): the **slug stays
+  identical**, but the **language segment is rewritten to the target language
+  prefix** — zh-cn→`/zh-hans/`, en-us→`/en/`, zh-hk→`/zh-hant/`. A translation's
+  internal links must carry the *target* language prefix (same-language internal
+  linking — never keep the source language's prefix, never a bare link, never hop
+  between languages). T2 compares links with the language segment normalized, so
+  prefix rewrites are expected, not drift; T10 enforces the target prefix.
 - No new cases, claims, or conclusions; no deleted ones. No "improving" the source.
 
 ### 3.2 Structure — preserve the GEO skeleton
@@ -203,21 +210,24 @@ as its taxonomy; the mapping is owned by the geo→plugin language write API.
 | 充电 | 充電 | — |
 | 干货 | 乾貨 | — |
 
-## 8. Mechanical gate summary (T1–T8)
+## 8. Mechanical gate summary (T1–T11)
 
 > Authoritative implementation: `geo-sdk/translate/gate.js`. The harness runs
 > `check_translation` before ingest; errors must be zero to proceed.
+> T10/T11 are new since 2026-10-06 (internal-link language prefix / CTA layout).
 
 | ID | Check | Rule (summary) |
 |---|---|---|
 | T1 | Structure | H1 ×1; Summary / Key Takeaways / FAQ / Data Sources / Related Reading / Get Started present per source; headings use §9 forms; H2 numbering continuous |
-| T2 | Link fidelity | Outbound citation URL set identical to source; internal-link URL set identical |
+| T2 | Link fidelity | Outbound citation URL set identical to source; internal-link URL set identical **after normalizing the language segment** (zh-hans/zh-hant/en prefixes are stripped, so a language-prefix rewrite in the target is expected, not drift) |
 | T3 | Image fidelity | Image URL set identical (incl. `featured_image`); alt may be translated but non-empty |
 | T4 | Number fidelity | Numeric set (years/percent/versions/amounts) matches source modulo thousand-separator/decimal format |
 | T5 | No residue | en-us: no CJK outside whitelist (brand/proper nouns), no Chinese punctuation; zh-hk: no simplified terms (§7) and no simplified glyphs; both: no Markdown residue |
 | T6 | Term compliance | Target-language glossary hits: en-us has no direct-translation of glossary terms; zh-hk has no zh-cn-only terms |
 | T7 | Length floor | Each H2 maps 1:1 to source structure; no truncated section; en-us H2 ≥ ~50% of source length |
 | T8 | Title spec | H1 keeps core keyword; no mixed-language title; meta_description length per target profile |
+| T10 | Internal-link language prefix | every on-site article link in the target carries the **target** language prefix (/zh-hans/ zh-cn, /en/ en-us, /zh-hant/ zh-hk); bare links or another language's prefix fail |
+| T11 | CTA layout | the Get Started / 立即行动 block lists each link on its own line; links joined by `|` on one line fail |
 
 ## 9. Block headings per target language
 

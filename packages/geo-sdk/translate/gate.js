@@ -1,11 +1,16 @@
 'use strict';
 /**
- * Mechanical translation gate — T1–T9 (geo-sdk/translate/gate)
+ * Mechanical translation gate — T1–T11 (geo-sdk/translate/gate)
  * ============================================================================
  * Pure code: no LLM, no network. The harness runs `check_translation` before
  * ingest; `errors` must be empty to proceed. Rules are codified in
  * standards/translation-standards.md §8 — this file is the authoritative
  * implementation and the document is the readable summary (SSOT lives here).
+ *
+ * 2026-10-06 additions: T2 compares internal article links with the language
+ * segment normalized (same target across languages); T10 requires every on-site
+ * article link in the target to carry the target language prefix; T11 requires
+ * the CTA block to list each link on its own line (no `|` joins).
  *
  * Merge order for forbidden terms: global standards/translation-glossary.yaml
  * (base) ← site config/translation-glossary.yaml (wins).
@@ -136,6 +141,10 @@ function extractHrefs(mdText) {
   let m;
   LINK_RE.lastIndex = 0;
   while ((m = LINK_RE.exec(mdText)) !== null) out.add(m[1]);
+  // related-reading / CTA links are written as raw HTML anchors in some templates
+  // (article-writing-standards Related Reading) — count them too
+  const HTML_A_RE = /<a\s[^>]*href=["']([^"'\s>]+)["']/gi;
+  while ((m = HTML_A_RE.exec(mdText)) !== null) out.add(m[1]);
   return out;
 }
 
@@ -310,11 +319,18 @@ function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn'
   if (t1.length) errors.push(...t1.map((message) => ({ id: 'T1', message })));
 
   // ---- T2 link fidelity ----------------------------------------------------
+  // 2026-10-06: internal article links are normalized (language segment stripped)
+  // before comparison — zh-cn source now links /zh-hans/..., en target links /en/...,
+  // which are the SAME target and must not be reported as drift. Non-article links
+  // pass through unchanged.
   const srcLinks = extractHrefs(sourceClean);
   const tgtLinks = extractHrefs(targetClean);
+  const norm = (u) => md.normalizeArticleUrlForCompare(u);
+  const srcNorm = new Set([...srcLinks].map(norm));
+  const tgtNorm = new Set([...tgtLinks].map(norm));
   const t2 = [];
-  for (const u of srcLinks) if (!tgtLinks.has(u)) t2.push(`source link missing in target: ${u}`);
-  for (const u of tgtLinks) if (!srcLinks.has(u)) t2.push(`target link not in source: ${u}`);
+  for (const u of srcLinks) if (!tgtNorm.has(norm(u))) t2.push(`source link missing in target: ${u}`);
+  for (const u of tgtLinks) if (!srcNorm.has(norm(u))) t2.push(`target link not in source: ${u}`);
   checks.T2 = { ok: t2.length === 0, sourceCount: srcLinks.size, targetCount: tgtLinks.size, issues: t2 };
   if (t2.length) errors.push(...t2.map((message) => ({ id: 'T2', message })));
 
@@ -445,6 +461,32 @@ const t5 = [];
   }
   checks.T9 = { ok: t9.length === 0, issues: t9 };
   if (t9.length) errors.push(...t9.map((message) => ({ id: 'T9', message })));
+
+  // ---- T10 internal-link language prefix (2026-10-06) -----------------------
+  // Every on-site article link in the target must carry the TARGET language prefix
+  // (/zh-hans/ for zh-cn, /en/ for en-us, /zh-hant/ for zh-hk) — same-language
+  // internal linking, no cross-language hops. Bare links or a wrong prefix fail.
+  // (Draft-time 404s are accepted; existence is enforced by check_article's
+  // related-links-target-exists row / T10 wiring at publish time.)
+  const t10 = [];
+  for (const iss of md.articlePrefixIssues(targetClean, targetLangNorm)) {
+    t10.push(
+      `internal article link must carry the ${targetLangNorm} language prefix: ${iss.href} ` +
+      `(expected /${iss.expected}/, found /${iss.found}/ — same-language internal links only)`
+    );
+  }
+  checks.T10 = { ok: t10.length === 0, issues: t10 };
+  if (t10.length) errors.push(...t10.map((message) => ({ id: 'T10', message })));
+
+  // ---- T11 CTA layout (2026-10-06) -----------------------------------------
+  // The CTA block (## Get Started / 立即行动) must list each link on its own line;
+  // `<a>A</a> | <a>B</a>` pipe-joined links are unreadable when rendered and fail.
+  const t11 = [];
+  for (const iss of md.ctaPipeIssues(targetClean)) {
+    t11.push(`CTA block line ${iss.line} joins links with "|": "${iss.text}" — each link must stand alone`);
+  }
+  checks.T11 = { ok: t11.length === 0, issues: t11 };
+  if (t11.length) errors.push(...t11.map((message) => ({ id: 'T11', message })));
 
   return { ok: errors.length === 0, errors, checks };
 }

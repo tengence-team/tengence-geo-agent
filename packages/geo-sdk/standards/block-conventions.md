@@ -69,3 +69,25 @@ every article already published.
 - No third-party logos in images; every image carries substantive content.
 - Named entities with context beat pronouns: prefer concrete product, version and
   institution names over "the platform".
+
+## 6. Internal-link language prefix + CTA layout (2026-10-06, enforced by the gates)
+
+These two rules hold in **every language and every article state** (published or
+draft; the batch fix and the publish-time gates both enforce them):
+
+1. **Same-language internal links.** Every on-site article link
+   (`tengence.com/blog/article/<slug>/`) must carry the **article's own language
+   prefix** — `/zh-hans/` for zh-cn, `/en/` for en-us, `/zh-hant/` for zh-hk.
+   Bare links and links carrying *another* language's prefix are violations; the
+   article must never jump between languages. Draft-time 404s on a same-language
+   target are acceptable and are resolved by the translation backfill.
+2. **CTA links on separate lines.** The Call-to-Action block
+   (`## Get Started` / `## 立即行动` / `## 立即行動`) lists each link on its own
+   line — rendered as `<ul><li><a>…</a></li></ul>`. Links joined on one line by
+   `|` (or a single paragraph with several links) are violations.
+3. Enforcement points: the translation gate `translate/gate.js` (T2 normalized
+   comparison, T10 prefix, T11 CTA layout), `check/index.js` rows
+   (`internal links carry own-language prefix` / `internal-link targets exist in WP` /
+   `CTA block single link per line`), and `content/md.js` normalization on the WP
+   write exit (`buildPostHtml`).
+

@@ -33,6 +33,10 @@ const {
   h2List,
   isTakeawaysHeading,
   isFaqHeading,
+  // 2026-10-06: internal-link prefix + CTA layout rules (same predicates as the
+  // translation gate T10/T11 — SSOT lives in content/md.js)
+  articlePrefixIssues,
+  ctaPipeIssues,
 } = require('../content/md');
 
 /**
@@ -251,6 +255,35 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   const wcOk = cn >= typeInfo.range[0] && cn <= typeInfo.range[1];
   const wcLabel = 'Chinese char count (' + typeInfo.label + ' ' + typeInfo.range[0] + '–' + typeInfo.range[1] + ')';
 
+  // ===== internal-link language prefix + CTA layout (2026-10-06) =====
+  // New publishing requirements: on-site article links must carry the article's own
+  // language prefix (same-language internal linking, no cross-language hops) and the
+  // CTA block must list each link on its own line. Enforced on the authoring md;
+  // the same rules are checked for translations by the T10/T11 translation gate.
+  const linkIssues = articlePrefixIssues(md, LANG);
+  const ctaIssues = ctaPipeIssues(md);
+  // target existence (WP entity check): every own-language-prefixed article link's
+  // target (slug+lang) must have an articles row with wp_post_id > 0. Draft targets
+  // count as existing (draft-time 404 is accepted); phantom slugs fail.
+  let missingTargets = [];
+  try {
+    const ownSlugs = [];
+    const LINK_TARGET_RE = /(?:https?:)?\/\/(?:www\.)?tengence\.com\/(?:zh-hans|zh-hant|en|en-us)\/blog\/article\/([a-z0-9][a-z0-9-]*)\/?/gi;
+    let mm;
+    while ((mm = LINK_TARGET_RE.exec(md)) !== null) ownSlugs.push(mm[1]);
+    if (ownSlugs.length) {
+      const uniq = [...new Set(ownSlugs)];
+      missingTargets = await t.db.withConn(async (conn) => {
+        const q = `SELECT DISTINCT slug FROM tengence_geo_articles
+                   WHERE app_id = ? AND lang = ? AND wp_post_id > 0
+                     AND slug IN (${uniq.map(() => '?').join(',')})`;
+        const [rows] = await conn.query(q, [APP_ID, LANG, ...uniq]);
+        const have = new Set(rows.map((r) => r.slug));
+        return uniq.filter((s) => !have.has(s));
+      });
+    }
+  } catch { missingTargets = []; }
+
   const rows = [
     // 4th element soft=true means the row is informational only and doesn't affect
     // the exit code (word count inferred from dir when --type is not explicit)
@@ -271,6 +304,11 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     ['body data-source items each with a link', srcItemTotal ? (srcItemTotal - srcItemsNoLink) + '/' + srcItemTotal : 'no block', srcItemTotal === 0 || srcItemsNoLink === 0],
     ['citations banned homepage/channel-level (hard)', cites.length ? (nonSpecCit.length ? nonSpecCit.length + ' violations' : 'none') : 'none', nonSpecCit.length === 0],
     ['body data-source banned homepage/channel-level (hard)', srcItemTotal ? (srcNonSpecItems ? srcNonSpecItems + ' violations' : 'none') : 'no block', srcNonSpecItems === 0],
+    // 2026-10-06 new publishing requirements (hard for first-time publishes; advisory
+    // once the article is already on WP, like every other editorial row below)
+    ['internal links carry own-language prefix (hard)', linkIssues.length ? linkIssues.length + ' violations' : 'ok', linkIssues.length === 0],
+    ['internal-link targets exist in WP (hard)', missingTargets.length ? missingTargets.join(', ') : 'ok', missingTargets.length === 0],
+    ['CTA block single link per line (hard)', ctaIssues.length ? ctaIssues.length + ' violations' : 'ok', ctaIssues.length === 0],
   ];
 
   // Already on WordPress → every editorial row above is informational only (see the

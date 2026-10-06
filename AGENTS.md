@@ -47,14 +47,15 @@ fixed. The full parser contract is `standards/block-conventions.md`.
 
 1. `workspace_use` → `site_init` (or reuse an existing site).
 2. `article_draft { type, topic }` → returns the matched **T1–T7 skeleton**, the
-   **research-brief template**, and the full **`article-writing-standards`** (the G1–G14
+   **research-brief template**, and the full **`article-writing-standards`** (the G1–G16
    editorial gates). Write the Markdown body following them.
 3. Optionally `standards_read('content-strategy')` / `standards_read('block-conventions')`
    for format selection and parser details.
 4. `article_ingest` the body + research brief.
-5. `check_article` — enforces the **same** G1–G14 rules codified in
+5. `check_article` — enforces the **same** G1–G16 rules codified in
    `article-writing-standards` (citation dual-channel, word count by type, banned words,
-   the four blocks, research-brief hard check). **Do not skip it.**
+   the four blocks, research-brief hard check, **internal-link language prefix,
+   CTA single-link-per-line layout**). **Do not skip it.**
 6. `publish_draft`.
 
 The gate (`packages/geo-sdk/check/index.js`) is the *codified mirror* of
@@ -89,9 +90,17 @@ The gate (`packages/geo-sdk/check/index.js`) is the *codified mirror* of
      (multilingual shared featured image; no download, no re-upload).
   3. Fallback (first language publish): the `featured_image` URL is downloaded and uploaded
      to the media library once.
-- Translation rows (`en-us` / `zh-hk`) are gated by `check_translation` (T1–T8), which the
+- Translation rows (`en-us` / `zh-hk`) are gated by `check_translation` (T1–T11), which the
   harness runs before ingest; `publish-from-db.js` therefore **skips the zh writing gate**
   (`checkArticle`) for translation rows — do not run `checkArticle` on a translation.
+- **Same-language internal links (every language, published or draft)** — every on-site
+  article link (`tengence.com/blog/article/<slug>/`) carries the article's own language
+  prefix: zh-cn → `/zh-hans/`, en-us → `/en/`, zh-hk → `/zh-hant/`. No bare links, no
+  cross-language hops; a translation rewrites the source's prefix to the target language
+  (slug unchanged). **CTA layout** — the Get Started / 立即行动 block lists each link on
+  its own line; never join links with `|` on one line. Both rules are enforced by the
+  translation gate (T10 / T11) and `check_article` rows, and normalized automatically on
+  the WP write exit (`buildPostHtml`).
 - Translation rows are ingested via `article-ingest.js <slug> <md> --lang en-us|zh-hk`
   (file in `<site>/data/inbox/<lang>/<slug>.md`, YAML front matter per
   `standards/translation-standards.md` §10).

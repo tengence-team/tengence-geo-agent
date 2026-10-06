@@ -22,6 +22,7 @@
 const marked = require('marked');
 const yaml = require('js-yaml');
 const { loadSite } = require('../site/config');
+const { normalizeLang } = require('../wp/termnames'); // LANG_MAP SSOT (wp/termnames.js:28)
 
 // ==================== site domain (lazy cache) ====================
 
@@ -661,7 +662,159 @@ function composeBody(html, geo, lang) {
  * @returns {string} body HTML ready to write into WP
  */
 function buildPostHtml(markdown, geo, lang) {
-  return composeBody(markdownToHtml(mermaidFencesToMerpress(markdown)), geo || {}, lang);
+  let html = markdownToHtml(mermaidFencesToMerpress(markdown));
+  // 2026-10-06: internal-link language prefix + CTA list layout are normalized on the
+  // single WP write exit, so every publish path (publish_from_db / publish_update_article /
+  // publish_update_fields-with-md) emits same-language internal links and a legible CTA.
+  html = normalizeCtaBlock(html, lang);
+  html = normalizeInternalArticleLinks(html, lang);
+  return composeBody(html, geo || {}, lang);
+}
+
+// ==================== internal-link language prefix + CTA layout ====================
+//
+// 2026-10-06 内链语言归属 + CTA 版式：
+//   - 站内文章内链（tengence.com/blog/article/<slug>/）无条件带**文章自身语言前缀**
+//     （zh-cn→/zh-hans/、en-us→/en/、zh-hk→/zh-hant/），同语言文章互链、不跨语言跳转；
+//   - CTA 区块（## 立即行动 / Get Started 等）每条链接独立成行（<ul><li>），
+//     消除 `<a>A</a> | <a>B</a>` 管道挤在一行的问题。
+// 挂载点 = buildPostHtml（写 WP 正文唯一出口）；**不进 markdownToHtml** ——
+// 微信/CSDN/掘金渠道改写共用 markdownToHtml，渠道规则要求相关阅读保持站外裸链。
+// 幂等：已带正确前缀 / 已是列表的区块改写后逐字节不变。
+
+/** 文章语言 → URL 语言前缀（复用 termnames 的 LANG_MAP SSOT；接受 geo 码或插件码）。 */
+function langToPrefix(lang) {
+  const k = String(lang == null ? '' : lang).trim().toLowerCase();
+  const mapped = normalizeLang(k);
+  return mapped === 'en' || mapped === 'zh-hant' || mapped === 'zh-hans' ? mapped : 'zh-hans';
+}
+
+/** 站内文章链接 URL（含语言段）。group1 = 语言段（可无），group2 = slug。 */
+const TEN_ARTICLE_URL_RE = /(?:https?:)?\/\/(?:www\.)?tengence\.com\/((?:zh-hans|zh-hant|en|en-us)\/)?blog\/article\/([a-z0-9][a-z0-9-]*)\/?/gi;
+
+/**
+ * 站内文章内链无条件带文章自身语言前缀。
+ * 只作用于 `tengence.com/blog/article/<slug>/` 形态（裸 URL / 错误前缀 / 正确前缀），
+ * 其他站内路径（/contact-us、/console/…）与站外链接一律不动。
+ * @param {string} html WP 正文 HTML
+ * @param {string} [lang] 文章语言（zh-cn | en-us | zh-hk，接受插件码）
+ * @returns {string} 归一化后的 HTML（幂等）
+ */
+function normalizeInternalArticleLinks(html, lang) {
+  const prefix = langToPrefix(lang);
+  return String(html || '').replace(
+    /href=["'](?:https?:)?\/\/(?:www\.)?tengence\.com\/(?:(?:zh-hans|zh-hant|en|en-us)\/)?blog\/article\/([a-z0-9][a-z0-9-]*)\/?["']/gi,
+    (m, slug) => `href="https://www.tengence.com/${prefix}/blog/article/${slug}/"`
+  );
+}
+
+/** CTA 标题文案（三语 + 中英混合写法，宽松匹配）。 */
+const CTA_HEADING_TEXT = '立即行动|马上行动|立即行動|馬上行動|Get Started';
+
+/**
+ * CTA 区块列表化：`<h2>CTA</h2><p><a>A</a> | <a>B</a></p>` 与单链接段落
+ * 规范为 `<ul><li><a>…</a></li>…</ul>`。
+ * 逐段落转换：CTA 标题与下一个 H2 之间，凡"只含链接与分隔符（`|`、`<br>`、空白）"的
+ * `<p>` 段落都转为列表；含正文的段落（如"仅面向企业客户"）原样保留。
+ * 区块已以 `<ul>/<ol>` 开头则整体不动（幂等）。
+ * @param {string} html WP 正文 HTML
+ * @param {string} [lang] 文章语言（仅占位，规则与语言无关）
+ * @returns {string} 归一化后的 HTML
+ */
+function normalizeCtaBlock(html, lang) {
+  const src = String(html || '');
+  const re = new RegExp(
+    `(<h2[^>]*>\\s*[^<]*?(?:${CTA_HEADING_TEXT})[^<]*?</h2>)([\\s\\S]*?)(?=<h2[^>]*>|$)`,
+    'gi'
+  );
+  return src.replace(re, (m, heading, block) => {
+    if (/^\s*<(?:ul|ol)\b/i.test(block)) return m; // already a list — idempotent
+    const pRe = /<p\b[^>]*>([\s\S]*?)<\/p>/gi;
+    let converted = 0;
+    const out = block.replace(pRe, (pm, inner) => {
+      const anchors = inner.match(/<a\s[\s\S]*?<\/a>/gi) || [];
+      if (!anchors.length) return pm; // no links — leave (tail note / prose)
+      // only a paragraph that carries nothing but links / separators is converted
+      const stripped = inner
+        .replace(/<a\s[\s\S]*?<\/a>/gi, '')
+        .replace(/<br\s*\/?>|[\s|·•]+/gi, '')
+        .trim();
+      if (stripped) return pm; // has prose / other markup — leave untouched
+      converted++;
+      return `<ul>\n${anchors.map((a) => `<li>${a}</li>`).join('\n')}\n</ul>\n`;
+    });
+    if (!converted) return m;
+    return heading + '\n' + out;
+  });
+}
+
+/**
+ * 提取 Markdown `[text](url)` 与 HTML `<a href="url">` 中的全部 URL。
+ * 供门禁（T2/T10/T11）与 check_article 复用，避免各模块自行声明链接正则。
+ */
+function extractUrls(text) {
+  const out = new Set();
+  const re = /\[[^\]]*\]\(([^)\s]+)(?:\s+["“][^"”]*["”])?\)|<a\s[^>]*href=["']([^"'\s>]+)["']/gi;
+  let m;
+  while ((m = re.exec(String(text || ''))) !== null) out.add((m[1] || m[2]).trim());
+  return out;
+}
+
+/**
+ * 归一化用于门禁比对的站内文章链接：剥离语言段（zh-hans|zh-hant|en|en-us），
+ * 跨语言指向视为同一目标（T2 据此不再误报译文的语言前缀差异）。
+ * 非站内文章链接原样返回。
+ */
+function normalizeArticleUrlForCompare(u) {
+  return String(u || '').replace(
+    /^((?:https?:)?\/\/(?:www\.)?tengence\.com)\/(?:zh-hans|zh-hant|en|en-us)\/blog\/article\//,
+    '$1/blog/article/'
+  );
+}
+
+/**
+ * 站内文章链接的语言前缀问题清单。
+ * 返回 [{href, slug, expected, found}]；found 缺失（裸链）或非本文语言前缀时列入。
+ * @param {string} text Markdown 或 HTML 文本
+ * @param {string} lang 文章语言
+ */
+function articlePrefixIssues(text, lang) {
+  const expected = langToPrefix(lang);
+  const out = [];
+  let m;
+  const re = new RegExp(TEN_ARTICLE_URL_RE.source, 'gi');
+  while ((m = re.exec(String(text || ''))) !== null) {
+    const found = (m[1] || '').replace(/\/$/, '');
+    if (found !== expected) {
+      out.push({ href: m[0], slug: m[2], expected, found: found || '(none)' });
+    }
+  }
+  return out;
+}
+
+/**
+ * CTA 区块管道分隔问题：在 `## 立即行动`（等）区块内，同一行同时出现链接与 `|`
+ * （如 `<a>A</a> | <a>B</a>` 或 `[A](u) | [B](u)`）→ 返回问题行。
+ * @param {string} mdText Markdown 正文（会剥离围栏代码再判定，避免代码示例误报）
+ */
+function ctaPipeIssues(mdText) {
+  const clean = String(mdText || '').replace(/```[\s\S]*?```/g, '');
+  const lines = clean.split('\n');
+  const out = [];
+  let inCta = false;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (/^#{1,4}\s+/.test(ln)) {
+      inCta = new RegExp(`(?:${CTA_HEADING_TEXT})`).test(ln);
+      continue;
+    }
+    if (!inCta) continue;
+    if (/^---+/.test(ln)) { inCta = false; continue; }
+    const hasLink = /\[[^\]]+\]\([^)\s]+\)|<a\s[^>]*href=/i.test(ln);
+    const hasPipe = /\|/.test(ln);
+    if (hasLink && hasPipe) out.push({ line: i + 1, text: ln.trim() });
+  }
+  return out;
 }
 
 // ==================== Markdown → GEO structured fields (reverse parsing) ====================
@@ -1235,4 +1388,14 @@ module.exports = {
   extractFirstImage,
   removeFirstImage,
   removeImageByUrl,
+  // 2026-10-06 internal-link language prefix + CTA layout: normalized on the WP write
+  // exit (buildPostHtml) and audited by the gates (T2 normalization / T10 / T11) and
+  // check_article rows — exported for unit tests and the batch-fix script
+  langToPrefix,
+  normalizeInternalArticleLinks,
+  normalizeCtaBlock,
+  extractUrls,
+  normalizeArticleUrlForCompare,
+  articlePrefixIssues,
+  ctaPipeIssues,
 };

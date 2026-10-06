@@ -36,6 +36,13 @@ const {
   h2List,
   removeImageByUrl,
   stripInlineMarkdown,
+  // 2026-10-06: internal-link language prefix + CTA layout helpers
+  langToPrefix,
+  normalizeInternalArticleLinks,
+  normalizeCtaBlock,
+  articlePrefixIssues,
+  ctaPipeIssues,
+  normalizeArticleUrlForCompare,
 } = require('../packages/geo-sdk/content/md');
 
 // ==================== ① fixCjkBold ====================
@@ -1002,4 +1009,84 @@ test('mermaidFencesToMerpress: un-parseable label is auto-repaired on the write 
   assert.ok(out.includes('D[&quot;Node 1 (phone number 138xxxx5678)&quot;]'), 'fixed + escaped into pre.mermaid');
   assert.ok(!out.includes('D[Node 1 (phone'));
   assert.ok(out.includes('后文。'));
+});
+
+// ==================== ⑰ internal-link language prefix + CTA layout (2026-10-06) ====================
+
+test('langToPrefix: maps geo codes and plugin codes to URL prefixes', () => {
+  assert.equal(langToPrefix('zh-cn'), 'zh-hans');
+  assert.equal(langToPrefix('zh-hans'), 'zh-hans');
+  assert.equal(langToPrefix('en-us'), 'en');
+  assert.equal(langToPrefix('en'), 'en');
+  assert.equal(langToPrefix('zh-hk'), 'zh-hant');
+  assert.equal(langToPrefix('zh-hant'), 'zh-hant');
+  assert.equal(langToPrefix('unknown'), 'zh-hans'); // safe fallback
+});
+
+test('normalizeInternalArticleLinks: bare + wrong-prefix article links get the article language prefix; non-article links untouched', () => {
+  const html =
+    '<p><a href="https://www.tengence.com/blog/article/content-optimization-tips/" target="_blank">A</a></p>' +
+    '<p><a href="https://www.tengence.com/zh-hant/blog/article/foo-bar/">wrong</a> ' +
+    '<a href="https://www.tengence.com/en-us/blog/article/baz/">enus</a> ' +
+    '<a href="https://www.tengence.com/contact-us">contact</a> ' +
+    '<a href="https://example.com/x">ext</a></p>';
+  const out = normalizeInternalArticleLinks(html, 'en-us');
+  assert.ok(out.includes('https://www.tengence.com/en/blog/article/content-optimization-tips/'));
+  assert.ok(out.includes('https://www.tengence.com/en/blog/article/foo-bar/'));
+  assert.ok(out.includes('https://www.tengence.com/en/blog/article/baz/'));
+  assert.ok(out.includes('https://www.tengence.com/contact-us'));
+  assert.ok(out.includes('https://example.com/x'));
+  assert.ok(!out.includes('/zh-hant/') && !out.includes('/en-us/') && !out.includes('tengence.com/blog/article/'));
+  // idempotent
+  assert.equal(out, normalizeInternalArticleLinks(out, 'en-us'));
+});
+
+test('normalizeCtaBlock: single / pipe-joined CTA links become a list; prose paragraphs preserved; idempotent', () => {
+  const single = normalizeCtaBlock(
+    '<h2>立即行动</h2><p><a href="https://www.tengence.com/contact-us" target="_blank">免费预约专家咨询和诊断</a></p>'
+  );
+  assert.ok(single.includes('<ul>') && single.includes('<li><a href="https://www.tengence.com/contact-us"'));
+  assert.equal(single, normalizeCtaBlock(single));
+
+  const pipe = normalizeCtaBlock(
+    '<h2>Get Started</h2><p><a href="/a">A</a> | <a href="/b">B</a></p><p>Contact us anytime.</p>'
+  );
+  assert.ok(pipe.includes('<li><a href="/a">A</a></li>') && pipe.includes('<li><a href="/b">B</a></li>'));
+  assert.ok(!pipe.includes(' | '), 'pipe separator removed');
+  assert.ok(pipe.includes('<p>Contact us anytime.</p>'), 'prose tail preserved');
+  assert.equal(pipe, normalizeCtaBlock(pipe));
+
+  const hk = normalizeCtaBlock('<h2>立即行動</h2><p><a href="/x">X</a> | <a href="/y">Y</a> | <a href="/z">Z</a></p>');
+  assert.ok(hk.includes('<li><a href="/x">X</a></li>') && hk.includes('<li><a href="/z">Z</a></li>'));
+
+  const alreadyList = normalizeCtaBlock('<h2>Get Started</h2><ul><li><a href="/a">A</a></li></ul><p>note</p>');
+  assert.ok(alreadyList.includes('<ul><li><a href="/a">A</a></li></ul><p>note</p>'), 'already a list — untouched');
+
+  const proseOnly = normalizeCtaBlock('<h2>Get Started</h2><p>Contact us anytime.</p>');
+  assert.ok(proseOnly.includes('<p>Contact us anytime.</p>') && !proseOnly.includes('<ul>'), 'no links — untouched');
+});
+
+test('articlePrefixIssues: bare / wrong-prefix article links flagged, correct prefix passes', () => {
+  assert.equal(articlePrefixIssues('[x](https://www.tengence.com/blog/article/foo/)', 'zh-cn').length, 1);
+  assert.equal(articlePrefixIssues('https://www.tengence.com/zh-hant/blog/article/foo/', 'en-us').length, 1);
+  assert.equal(articlePrefixIssues('<a href="https://www.tengence.com/zh-hans/blog/article/foo/">x</a>', 'zh-cn').length, 0);
+  assert.equal(articlePrefixIssues('https://www.tengence.com/zh-hant/blog/article/foo/', 'zh-hk').length, 0);
+});
+
+test('ctaPipeIssues: links joined by | in the CTA block flagged; lists pass; other blocks ignored', () => {
+  assert.equal(ctaPipeIssues('## 立即行动\n\n[a](u) | [b](v)').length, 1);
+  assert.equal(ctaPipeIssues('## Get Started\n\n- [a](u)\n- [b](v)').length, 0);
+  assert.equal(ctaPipeIssues('## 相关阅读\n\n[x](u) | [y](v)').length, 0, 'related reading pipes not flagged');
+});
+
+test('normalizeArticleUrlForCompare: strips any language segment; non-article links unchanged', () => {
+  assert.equal(
+    normalizeArticleUrlForCompare('https://www.tengence.com/zh-hans/blog/article/foo/'),
+    'https://www.tengence.com/blog/article/foo/'
+  );
+  assert.equal(
+    normalizeArticleUrlForCompare('https://www.tengence.com/en/blog/article/foo/'),
+    'https://www.tengence.com/blog/article/foo/'
+  );
+  assert.equal(normalizeArticleUrlForCompare('https://example.com/x'), 'https://example.com/x');
 });

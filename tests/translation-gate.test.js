@@ -316,3 +316,88 @@ test('T9: quoted labels and prose parens pass', () => {
   assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
   assert.ok(!r.errors.some((e) => e.id === 'T9'));
 });
+
+// ---- 2026-10-06: T2 normalization / T10 internal-link prefix / T11 CTA layout ----
+
+const LINKED_SRC = SOURCE_MD.replace(
+  '- [双引擎策略详解](/blog/dual-engine-strategy/)',
+  '- [双引擎策略详解](https://www.tengence.com/zh-hans/blog/article/dual-engine-strategy/)'
+);
+
+const LINKED_EN = EN_MD.replace(
+  '- [Dual-engine strategy deep dive](/blog/dual-engine-strategy/)',
+  '- [Dual-engine strategy deep dive](https://www.tengence.com/en/blog/article/dual-engine-strategy/)'
+);
+
+test('T2: language-prefixed internal links are the same target (normalized)', () => {
+  // source links /zh-hans/..., target links /en/... — same article, must NOT be drift
+  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: LINKED_EN, targetLang: 'en-us' });
+  assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
+  assert.ok(!r.errors.some((e) => e.id === 'T2'));
+});
+
+test('T2: normalized comparison still catches a genuinely dropped link', () => {
+  const bad = LINKED_EN.replace('](https://www.tengence.com/en/blog/article/dual-engine-strategy/)', ']()');
+  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'en-us' });
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => e.id === 'T2' && /dual-engine-strategy/.test(e.message)));
+});
+
+test('T10: bare internal article link in en-us target fails', () => {
+  const bad = EN_MD.replace(
+    '- [Dual-engine strategy deep dive](/blog/dual-engine-strategy/)',
+    '- [Dual-engine strategy deep dive](https://www.tengence.com/blog/article/dual-engine-strategy/)'
+  );
+  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'en-us' });
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => e.id === 'T10' && /expected \/en\//.test(e.message)), JSON.stringify(r.errors));
+});
+
+test('T10: wrong-language prefix in en-us target fails', () => {
+  const bad = EN_MD.replace(
+    '- [Dual-engine strategy deep dive](/blog/dual-engine-strategy/)',
+    '- [Dual-engine strategy deep dive](https://www.tengence.com/zh-hans/blog/article/dual-engine-strategy/)'
+  );
+  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'en-us' });
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => e.id === 'T10' && /found \/zh-hans\//.test(e.message)), JSON.stringify(r.errors));
+});
+
+test('T10: zh-hk target accepts /zh-hant/ prefix, rejects /en/', () => {
+  const good = EN_MD.replace(
+    '- [Dual-engine strategy deep dive](/blog/dual-engine-strategy/)',
+    '- [Dual-engine strategy deep dive](https://www.tengence.com/zh-hant/blog/article/dual-engine-strategy/)'
+  );
+  const r1 = checkTranslation({ sourceMd: LINKED_SRC, targetMd: good, targetLang: 'zh-hk' });
+  assert.ok(r1.checks.T10 && r1.checks.T10.ok === true, JSON.stringify(r1.errors, null, 2));
+  const bad = good.replace('https://www.tengence.com/zh-hant/', 'https://www.tengence.com/en/');
+  const r2 = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'zh-hk' });
+  assert.equal(r2.checks.T10.ok, false);
+  assert.ok(r2.errors.some((e) => e.id === 'T10' && /expected \/zh-hant\//.test(e.message)), JSON.stringify(r2.errors));
+});
+
+// source CTA gains the same two links the T11 fixtures use, so T2 link fidelity stays green
+const LINKED_CTA_SRC = SOURCE_MD.replace(
+  '联系通智 GEO 获取 AI 可见性评估。',
+  '- [免费试用](https://console.tengence.com/register)\n- [预约咨询](https://www.tengence.com/contact-us)'
+);
+
+test('T11: CTA links joined with | fail', () => {
+  const bad = EN_MD.replace(
+    'Contact Tengence GEO for an AI visibility assessment.',
+    '[Free trial](https://console.tengence.com/register) | [Book a call](https://www.tengence.com/contact-us)'
+  );
+  const r = checkTranslation({ sourceMd: LINKED_CTA_SRC, targetMd: bad, targetLang: 'en-us' });
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => e.id === 'T11' && /\|/.test(e.message)), JSON.stringify(r.errors));
+});
+
+test('T11: CTA as a bulleted list passes', () => {
+  const good = EN_MD.replace(
+    'Contact Tengence GEO for an AI visibility assessment.',
+    '- [Free trial](https://console.tengence.com/register)\n- [Book a call](https://www.tengence.com/contact-us)'
+  );
+  const r = checkTranslation({ sourceMd: LINKED_CTA_SRC, targetMd: good, targetLang: 'en-us' });
+  assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
+  assert.ok(!r.errors.some((e) => e.id === 'T11'));
+});

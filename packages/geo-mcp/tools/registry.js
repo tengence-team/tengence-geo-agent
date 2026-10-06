@@ -341,7 +341,8 @@ const tools = [
   {
     name: 'wp_post_get',
     description:
-      'Read-only WordPress post lookup (id / slug / status / link / date / modified). ' +
+      'Read-only WordPress post lookup (id / slug / status / link / date / modified, and the ' +
+      'full body HTML with include_content=true). ' +
       'Look up by wp_post_id, or by slug + lang (resolved through the plugin language endpoint). ' +
       'Use this to check whether an article is still an unpublished draft before promoting it — ' +
       'the articles table status is NOT authoritative for that.',
@@ -353,6 +354,10 @@ const tools = [
         .string()
         .optional()
         .describe('language code for a slug lookup: zh-cn | en-us | zh-hk (default zh-cn)'),
+      include_content: z
+        .boolean()
+        .optional()
+        .describe('also return the post body HTML (content.raw via WP context=edit); default false'),
     }),
     async run(args) {
       try {
@@ -383,21 +388,21 @@ const tools = [
             });
           }
         }
-        const post = await t.wp.posts.get(postId, '?_fields=id,slug,status,link,date,modified', {
-          siteKey,
-        });
-        return ok({
-          ok: true,
-          found: true,
-          post: {
-            id: post.id,
-            slug: post.slug,
-            status: post.status,
-            link: post.link,
-            date: post.date,
-            modified: post.modified,
-          },
-        });
+        const fields = 'id,slug,status,link,date,modified' + (args.include_content ? ',content' : '');
+        const query = `?_fields=${fields}` + (args.include_content ? '&context=edit' : '');
+        const post = await t.wp.posts.get(postId, query, { siteKey });
+        const out = {
+          id: post.id,
+          slug: post.slug,
+          status: post.status,
+          link: post.link,
+          date: post.date,
+          modified: post.modified,
+        };
+        if (args.include_content) {
+          out.content = post.content && post.content.raw !== undefined ? post.content.raw : (post.content || {}).rendered;
+        }
+        return ok({ ok: true, found: true, post: out });
       } catch (e) {
         return fail(e);
       }
