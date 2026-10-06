@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Translation gate (T1–T8) unit tests — packages/geo-sdk/translate/gate.js
+ * Translation gate (T1–T9) unit tests — packages/geo-sdk/translate/gate.js
  * Run: node --test tests/translation-gate.test.js
  */
 const { test } = require('node:test');
@@ -285,4 +285,34 @@ test('T7: truncated section fails', () => {
   const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T7'));
+});
+
+// ---- T9: mermaid label syntax (2026-10-06) --------------------------------
+
+test('T9: bare parens in a target mermaid label fail', () => {
+  const bad = EN_MD.replace('## Get Started', [
+    '## Get Started', '', '```mermaid', 'graph TD', '    A[Node 1 (phone)] --> B', '```',
+  ].join('\n'));
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => e.id === 'T9' && /bare parens/.test(e.message)), JSON.stringify(r.errors));
+});
+
+test('T9: bare parens in a source mermaid diagram fail too', () => {
+  const badSrc = SOURCE_MD.replace('## 立即行动', [
+    '## 立即行动', '', '```mermaid', 'graph TD', '    subgraph sg1 [World (real)]', '        A', '    end', '```',
+  ].join('\n'));
+  const r = checkTranslation({ sourceMd: badSrc, targetMd: EN_MD, targetLang: 'en-us' });
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => e.id === 'T9' && /\(source\)/.test(e.message)), JSON.stringify(r.errors));
+});
+
+test('T9: quoted labels and prose parens pass', () => {
+  const withFences = EN_MD.replace('## Get Started', [
+    '## Get Started', '', '```mermaid',
+    'graph TD', '    A["Node 1 (phone)"] -->|"linked (strong)"| B', '    subgraph "World (real)"', '        A', '    end', '```',
+  ].join('\n'));
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: withFences, targetLang: 'en-us' });
+  assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
+  assert.ok(!r.errors.some((e) => e.id === 'T9'));
 });

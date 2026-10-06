@@ -22,6 +22,7 @@ const request = require('./request');
 const posts = require('./posts');
 const plugin = require('./plugin');
 const termnames = require('./termnames');
+const terms = require('./terms');
 
 module.exports = {
   target,
@@ -32,5 +33,6 @@ module.exports = {
   media,
   plugin,
   termnames,
+  terms,
   ...media,
 };

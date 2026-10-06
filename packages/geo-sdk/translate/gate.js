@@ -1,6 +1,6 @@
 'use strict';
 /**
- * Mechanical translation gate — T1–T8 (geo-sdk/translate/gate)
+ * Mechanical translation gate — T1–T9 (geo-sdk/translate/gate)
  * ============================================================================
  * Pure code: no LLM, no network. The harness runs `check_translation` before
  * ingest; `errors` must be empty to proceed. Rules are codified in
@@ -269,7 +269,7 @@ function checkNumbering(mdText, targetLang) {
 // ---- the gate --------------------------------------------------------------
 
 /**
- * Run the T1–T8 mechanical gate on a translation.
+ * Run the T1–T9 mechanical gate on a translation.
  * @param {object} opts
  * @param {string} opts.sourceMd   source (zh-cn) markdown (may include front matter)
  * @param {string} opts.targetMd   translated markdown (may include front matter)
@@ -427,6 +427,24 @@ const t5 = [];
   }
   checks.T8 = { ok: t8.length === 0, h1, metaDescriptionLength: metaDesc ? metaDesc.length : 0, issues: t8 };
   if (t8.length) errors.push(...t8.map((message) => ({ id: 'T8', message })));
+
+  // ---- T9 mermaid label syntax (2026-10-06) --------------------------------
+  // Bare `( )` inside a mermaid node / edge / subgraph label is a lexing error
+  // (verified against the mobile site's mermaid 11.16.1 — live incident: en
+  // post 1652 rendered nothing). The WP write path auto-repairs this
+  // (md.js fixMermaidLabelQuotes), but the .md source must stay clean so the
+  // gate blocks BEFORE ingest. Only fences are scanned; prose parens are fine.
+  const t9 = [];
+  for (const [label, bodyText] of [['source', sourceBody], ['target', targetBody]]) {
+    for (const iss of md.mermaidBareParenIssues(bodyText || '')) {
+      t9.push(
+        `mermaid diagram (${label}) line ${iss.line}: bare parens in label "${iss.text}" ` +
+        `— quote the whole label: A["text (x)"] / subgraph "Title (x)" / -->|"edge (x)"|`
+      );
+    }
+  }
+  checks.T9 = { ok: t9.length === 0, issues: t9 };
+  if (t9.length) errors.push(...t9.map((message) => ({ id: 'T9', message })));
 
   return { ok: errors.length === 0, errors, checks };
 }

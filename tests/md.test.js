@@ -24,6 +24,9 @@ const {
   holdRawHtml,
   restoreRawHtml,
   mapOutsideFences,
+  mermaidFencesToMerpress,
+  fixMermaidLabelQuotes,
+  mermaidBareParenIssues,
   removeImageByUrl,
 } = require('../packages/geo-sdk/content/md');
 
@@ -507,4 +510,228 @@ test('removeImageByUrl: empty URL returns as-is (guards against empty values cle
   const md = '<img src="https://x/y.jpg" alt="A">';
   assert.equal(removeImageByUrl(md, { url: '' }), md);
   assert.equal(removeImageByUrl(md, {}), md);
+});
+
+// ==================== ⑨ mermaidFencesToMerpress (2026-10-06) ====================
+//
+// Live problem: whether a Mermaid diagram renders depends on the class on the HTML.
+// Both front ends only key off `pre.mermaid` / `.wp-block-merpress-mermaidjs`;
+// `<pre><code class="language-mermaid">` falls into the plain code-block branch and
+// leaves raw source on the page. zh-cn post 570 renders while its zh-hk / en-us
+// translations (1658 / 1652) do not, because holdRawHtml only *protects* existing
+// MerPress blocks — it never turns a fence into one.
+
+const MERMAID_FENCE_MD = [
+  '这个过程中，**并查集算法**发挥着关键作用。',
+  '',
+  '```mermaid',
+  'graph TD',
+  '    A[自然人A] --> B[节点1]',
+  '    B --> C["标签 <含尖括号> & 符号"]',
+  '```',
+  '',
+  '### 1.3 核心概念',
+  '',
+  '正文继续。',
+].join('\n');
+
+test('mermaidFencesToMerpress: ```mermaid fence → MerPress block (with diagram-source-mermaid)', () => {
+  const out = mermaidFencesToMerpress(MERMAID_FENCE_MD);
+  assert.ok(
+    out.includes('<div class="wp-block-merpress-mermaidjs diagram-source-mermaid">'),
+    'should produce the MerPress block container'
+  );
+  assert.ok(out.includes('<pre class="mermaid">'), 'must be pre.mermaid — the only form the front end accepts');
+  assert.ok(!out.includes('language-mermaid'), 'no plain code-block class may remain');
+  assert.ok(!out.includes('```mermaid'), 'the fence should be fully consumed');
+});
+
+test('mermaidFencesToMerpress: diagram source is escaped (< & " cannot break the HTML structure)', () => {
+  const out = mermaidFencesToMerpress(MERMAID_FENCE_MD);
+  assert.ok(out.includes('&lt;含尖括号&gt;'), '< and > in the source must be escaped');
+  assert.ok(out.includes('&amp;'), '& in the source must be escaped');
+  const inner = out.slice(out.indexOf('<pre class="mermaid">'), out.indexOf('</pre>'));
+  assert.ok(!inner.includes('<含尖括号>'), 'no unescaped angle-bracket text');
+});
+
+test('mermaidFencesToMerpress: paragraphs outside the fence and other code blocks are untouched', () => {
+  const out = mermaidFencesToMerpress(MERMAID_FENCE_MD);
+  assert.ok(out.includes('这个过程中，**并查集算法**发挥着关键作用。'), 'markdown outside the fence is kept verbatim');
+  assert.ok(out.includes('### 1.3 核心概念'), 'following headings are kept verbatim');
+
+  const other = ['```sql', 'SELECT 1;', '```'].join('\n');
+  assert.equal(mermaidFencesToMerpress(other), other, 'non-mermaid fences must stay byte-identical');
+});
+
+test('mermaidFencesToMerpress: idempotent (re-running on converted content is a no-op)', () => {
+  const once = mermaidFencesToMerpress(MERMAID_FENCE_MD);
+  assert.equal(mermaidFencesToMerpress(once), once, 'a second pass must not change anything');
+});
+
+test('mermaidFencesToMerpress: info string that is not exactly mermaid (mermaidjs / with args) is not converted', () => {
+  for (const lang of ['mermaidjs', 'mermaid {}', 'js', '']) {
+    const md = ['```' + lang, 'graph TD', 'A-->B', '```'].join('\n');
+    assert.equal(mermaidFencesToMerpress(md), md, `\`\`\`${lang} should not be converted`);
+  }
+});
+
+test('mermaidFencesToMerpress: case-insensitive; safe on empty input', () => {
+  assert.ok(mermaidFencesToMerpress('```MERMAID\ngraph TD\nA-->B\n```').includes('pre class="mermaid"'));
+  assert.equal(mermaidFencesToMerpress(''), '');
+  assert.equal(mermaidFencesToMerpress(null), '');
+  assert.equal(mermaidFencesToMerpress(undefined), '');
+});
+
+test('buildPostHtml: end-to-end — a mermaid fence in the body lands as a renderable block', () => {
+  const html = buildPostHtml(MERMAID_FENCE_MD);
+  assert.ok(html.includes('<pre class="mermaid">'), 'the buildPostHtml exit must already be a MerPress block');
+  assert.ok(!html.includes('language-mermaid'), 'no plain code block may remain');
+  assert.ok(html.includes('<p>这个过程中，<strong>并查集算法</strong>发挥着关键作用。</p>'), 'paragraphs still render');
+});
+
+test('markdownToHtml: deliberately does NOT convert mermaid (shared with WeChat / CSDN syndication)', () => {
+  const html = markdownToHtml(MERMAID_FENCE_MD);
+  assert.ok(html.includes('language-mermaid'), 'markdownToHtml stays as-is; conversion only happens on the WP write path');
+  assert.ok(!html.includes('wp-block-merpress-mermaidjs'), 'channel syndication must not carry the WP-only block');
+});
+
+// Regression (2026-10-06): the marker comparison originally used the whole fence
+// string against its first character (`close[2][0] === marker` where marker was
+// "```"), so the closing fence NEVER matched and got pushed into <pre> — the page
+// then showed a literal ``` line inside the diagram. This asserts on a realistic
+// multi-line diagram and checks the fence is neither swallowed nor left behind.
+const REAL_MD = [
+  '这个过程中，**并查集算法（Union-Find）**发挥着关键作用。',
+  '',
+  '```mermaid',
+  'graph TD',
+  '    subgraph 現實世界',
+  '        A[自然人A]',
+  '        B[自然人B]',
+  '    end',
+  '    subgraph 連通圖抽象',
+  '        D[節點1（手機號碼138xxxx5678）]',
+  '        K[節點9（MAC地址=ff:ee:dd:cc:bb:aa）]',
+  '',
+  '        %% 孤立分量（自然人C）',
+  '        D -- "強關聯：登入綁定" --> K',
+  '    end',
+  '    A -->|對應| D',
+  '```',
+  '',
+  '### 1.3 核心概念',
+  '',
+  '正文继续。',
+].join('\n');
+
+test('mermaidFencesToMerpress: the closing fence is consumed, never leaked into <pre>', () => {
+  const out = mermaidFencesToMerpress(REAL_MD);
+  const inner = out.slice(out.indexOf('<pre class="mermaid">'), out.indexOf('</pre>'));
+  assert.ok(inner.length > 0, '<pre> must exist');
+  assert.ok(!inner.includes('```'), 'the closing ``` must not end up inside <pre>');
+  assert.ok(!inner.includes('```mermaid'), 'the opening fence must not end up inside <pre>');
+  // the diagram itself must survive intact: blank lines and all
+  assert.ok(inner.includes('subgraph 現實世界'), 'subgraph title kept');
+  assert.ok(inner.includes('MAC地址=ff:ee:dd:cc:bb:aa'), 'node label with colons kept');
+  assert.ok(inner.includes('%% 孤立分量（自然人C）'), 'comment lines kept');
+  assert.ok(inner.includes('D -- &quot;強關聯：登入綁定&quot; --&gt; K'), 'labelled edge kept + escaped');
+  assert.ok(!out.includes('```'), 'no fence marker anywhere in the result');
+});
+
+test('mermaidFencesToMerpress: content after the closing fence is untouched', () => {
+  const out = mermaidFencesToMerpress(REAL_MD);
+  assert.ok(out.includes('### 1.3 核心概念'), 'the heading after the diagram must survive');
+  assert.ok(out.includes('正文继续。'), 'the paragraph after the diagram must survive');
+});
+
+test('buildPostHtml: real-world md produces a valid MerPress block (regression guard)', () => {
+  const html = buildPostHtml(REAL_MD);
+  const i = html.indexOf('<div class="wp-block-merpress-mermaidjs diagram-source-mermaid">');
+  assert.ok(i !== -1, 'MerPress container present');
+  const inner = html.slice(i, html.indexOf('</pre>', i));
+  assert.ok(!inner.includes('```'), 'no stray fence inside <pre>');
+  assert.ok(html.includes('<h3>1.3 核心概念</h3>'), 'the following heading still renders');
+  assert.ok(html.includes('正文继续。'), 'the following paragraph still renders');
+});
+
+// ==================== ⑩ fixMermaidLabelQuotes / mermaidBareParenIssues (2026-10-06) ====================
+//
+// Live incident: en post 1652 rendered NOTHING because `D[Node 1 (phone number …)]`
+// has a bare paren inside a `[ ]` label — a mermaid lexing error. Probed with the
+// mobile site's own mermaid 11.16.1: bare parens break node labels, edge labels
+// `|…|` and subgraph titles (both forms); a double-quoted label always parses;
+// colons / hashes / hyphens are safe and must be left alone (no churn).
+
+test('fixMermaidLabelQuotes: node label with bare parens gets quoted', () => {
+  const out = fixMermaidLabelQuotes('graph TD\n    A[Node 1 (phone)] --> B');
+  assert.ok(out.includes('A["Node 1 (phone)"]'), out);
+  assert.ok(!out.includes('A[Node 1 (phone)]'));
+});
+
+test('fixMermaidLabelQuotes: edge label and subgraph titles (both forms) get quoted', () => {
+  const out = fixMermaidLabelQuotes([
+    'graph TD',
+    '    A -->|linked (strong)| B',
+    '    subgraph "World (real)"',
+    '        C',
+    '    end',
+    '    subgraph sg1 [World (real)]',
+    '        D',
+    '    end',
+    '    subgraph World (real)',
+    '        E',
+    '    end',
+  ].join('\n'));
+  assert.ok(out.includes('-->|"linked (strong)"|'), out);
+  assert.ok(out.includes('subgraph "World (real)"'), out);
+  assert.ok(out.includes('subgraph sg1 ["World (real)"]'), out);
+  assert.ok(!out.includes('subgraph World (real)'), 'bare subgraph title must be quoted');
+});
+
+test('fixMermaidLabelQuotes: safe constructs untouched (evidence-based, no churn)', () => {
+  const src = [
+    'graph TD',
+    '    A[時間 10:30] --> B[tag #1]',
+    '    C[節點1（手機號碼）] --> D[自然人]',
+    '    E -->|strong-link| F',
+    '    G(rounded (kept)) --> H{diamond 10:30}',
+  ].join('\n');
+  assert.equal(fixMermaidLabelQuotes(src), src, 'colons / hashes / fullwidth parens / hyphens are verified safe');
+});
+
+test('fixMermaidLabelQuotes: idempotent', () => {
+  const once = fixMermaidLabelQuotes('graph TD\n    A[Node 1 (phone)] -->|x (y)| B\n    subgraph sg [T (u)]\n    end');
+  assert.equal(fixMermaidLabelQuotes(once), once);
+});
+
+test('fixMermaidLabelQuotes: already-quoted labels never double-quoted', () => {
+  const out = fixMermaidLabelQuotes('graph TD\n    A["Node 1 (phone)"] -->|"l (x)"| B');
+  assert.ok(out.includes('A["Node 1 (phone)"]'));
+  assert.ok(!out.includes('""'));
+});
+
+test('mermaidBareParenIssues: detects each failing construct with fence line numbers; clean source passes', () => {
+  const bad = [
+    '前文。',
+    '', '```mermaid', 'graph TD',
+    '    A[Node 1 (phone)] --> B',
+    '    subgraph sg1 [World (real)]',
+    '        C',
+    '    end', '```', '',
+  ].join('\n');
+  const issues = mermaidBareParenIssues(bad);
+  assert.equal(issues.length, 2, JSON.stringify(issues));
+  assert.equal(issues[0].line, 5);
+  assert.equal(issues[1].line, 6);
+
+  assert.deepEqual(mermaidBareParenIssues('前文 (prose parens are fine)。'), []);
+  assert.deepEqual(mermaidBareParenIssues('```mermaid\ngraph TD\n    A["ok (quoted)"] --> B\n```'), []);
+  assert.deepEqual(mermaidBareParenIssues('```js\ncode (not mermaid)\n```'), [], 'non-mermaid fences ignored');
+});
+
+test('mermaidFencesToMerpress: un-parseable label is auto-repaired on the write path', () => {
+  const out = mermaidFencesToMerpress('前文。\n\n```mermaid\ngraph TD\n    D[Node 1 (phone number 138xxxx5678)] --> E\n```\n\n后文。');
+  assert.ok(out.includes('D[&quot;Node 1 (phone number 138xxxx5678)&quot;]'), 'fixed + escaped into pre.mermaid');
+  assert.ok(!out.includes('D[Node 1 (phone'));
+  assert.ok(out.includes('后文。'));
 });

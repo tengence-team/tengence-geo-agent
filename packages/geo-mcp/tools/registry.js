@@ -511,7 +511,7 @@ const tools = [
   },
   {
     name: 'check_translation',
-    description: 'Mechanical gate for a translated article (T1–T8): structure/blocks/numbering, link-set & image-set & number-set parity with the source, ' +
+    description: 'Mechanical gate for a translated article (T1–T9): structure/blocks/numbering, link-set & image-set & number-set parity with the source, ' +
       'Simplified-Chinese & CJS residue, forbidden terms, per-section length, title & meta_description lengths. ' +
       'The harness translates with its own LLM and runs this before article_ingest --lang',
     inputSchema: z.object({
@@ -743,8 +743,15 @@ const tools = [
       excerpt: z.string().optional().describe('post excerpt / summary (WP native)'),
       slug: z.string().optional().describe('post slug (WP native)'),
       status: z.string().optional().describe('draft|publish|pending|private (WP native)'),
-      categories: z.array(z.number()).optional().describe('category term IDs (WP native)'),
-      tags: z.array(z.number()).optional().describe('tag term IDs (WP native)'),
+      categories: z
+        .array(z.union([z.number(), z.string()]))
+        .optional()
+        .describe('category terms (WP native) — term IDs (numbers) or term slugs (strings); slugs are resolved, pass create_terms to auto-create'),
+      tags: z
+        .array(z.union([z.number(), z.string()]))
+        .optional()
+        .describe('tag terms (WP native) — term IDs (numbers) or term slugs (strings); slugs are resolved, pass create_terms to auto-create'),
+      create_terms: z.boolean().optional().describe('create missing category/tag slugs passed above instead of failing (default false)'),
       sticky: z.boolean().optional().describe('sticky flag (WP native)'),
       featured_media: z.number().optional().describe('featured image MEDIA ID (WP native); pair with image (URL) to keep both in sync'),
 
@@ -805,7 +812,7 @@ const tools = [
         const metaPatch = {};
         const datePatch = {};
         const unknown = [];
-        const IGNORED = new Set(['site', 'article_id', 'wp_post_id', 'lang', 'copy_dates_from', 'sync_db', 'dry_run', 'language', 'translation_group']);
+        const IGNORED = new Set(['site', 'article_id', 'wp_post_id', 'lang', 'copy_dates_from', 'sync_db', 'dry_run', 'language', 'translation_group', 'create_terms']);
 
         for (const [k, v] of Object.entries(args)) {
           if (IGNORED.has(k) || v === undefined || v === null) continue;
@@ -817,6 +824,29 @@ const tools = [
           if (route === 'wp') wpBody[k] = v;
           else if (route === 'meta') metaPatch[k] = v;
           else datePatch[k] = v;
+        }
+
+        // taxonomy accepts term IDs OR slugs; resolve any slugs to IDs before the
+        // wp/v2 write, so one call can carry classification straight from the plan table
+        const termReport = {};
+        if (wpBody.categories || wpBody.tags) {
+          const create = args.create_terms === true;
+          if (wpBody.categories) {
+            const r = await t.wp.terms.resolveTermIds(wpBody.categories, { taxonomy: 'category', create, siteKey });
+            if (r.unknown.length && !create) {
+              return fail(new Error(`unknown category slug(s): ${r.unknown.join(', ')} — fix the slugs or pass create_terms=true`));
+            }
+            termReport.categories = r;
+            wpBody.categories = r.ids;
+          }
+          if (wpBody.tags) {
+            const r = await t.wp.terms.resolveTermIds(wpBody.tags, { taxonomy: 'post_tag', create, siteKey });
+            if (r.unknown.length && !create) {
+              return fail(new Error(`unknown tag slug(s): ${r.unknown.join(', ')} — fix the slugs or pass create_terms=true`));
+            }
+            termReport.tags = r;
+            wpBody.tags = r.ids;
+          }
         }
 
         const wantLang = args.language || null;
@@ -884,6 +914,13 @@ const tools = [
             status: pre && pre.status,
             featured_media: pre && pre.featured_media,
           };
+          // taxonomy read-back: the whole reason this was missing is that a write
+          // to categories/tags could not be confirmed afterwards
+          if (wpBody.categories || wpBody.tags) {
+            const preTerms = await t.wp.terms.getPostTerms(postId, { siteKey });
+            before.wp_native.categories = preTerms.categories.map((c) => c.slug);
+            before.wp_native.tags = preTerms.tags.map((x) => x.slug);
+          }
           await t.wp.posts.update(postId, wpBody, { siteKey });
           applied.wp_native = Object.keys(wpBody);
         }
@@ -965,6 +1002,7 @@ const tools = [
           before,
           after_dates: after_dates,
           db_mirrored: dbMirrored,
+          taxonomy: Object.keys(termReport).length ? termReport : undefined,
         });
       } catch (e) {
         return fail(e);
@@ -2016,6 +2054,139 @@ const tools = [
         const S = withSite(args);
         const data = await t.wp.termnames.listTermNames({ siteKey: S.siteKey, taxonomy: args.taxonomy });
         return ok({ ok: true, data });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'article_terms_sync',
+    description:
+      'Read and/or set an article\'s WordPress classification (category 类目 + post_tag 标签) using TERM SLUGS ' +
+      '(the same keys the plan table and article front matter use), not raw term IDs.\n' +
+      'Three modes:\n' +
+      '  • read — pass only the target (wp_post_id or slug+lang): returns the current terms as {id,slug,name}.\n' +
+      '  • write — pass category_slugs / tag_slugs: resolves them (create_terms=true to auto-create missing slugs) ' +
+      '    and sets them on the post. Omit a field to leave that taxonomy untouched.\n' +
+      '  • mirror — pass copy_from (a source wp_post_id): copies that post\'s exact categories+tags onto the target. ' +
+      '    This is how a translation is aligned to its source article in one call.\n' +
+      'Always returns a before/after diff and the resolved IDs, so a write can be verified without a second call. ' +
+      'dry_run previews the resolution and the write that would happen, touching nothing.',
+    inputSchema: z.object({
+      site: siteField,
+      wp_post_id: z.number().optional().describe('target WordPress post id; omit when slug is given'),
+      slug: z.string().optional().describe('target article slug (required when wp_post_id is omitted)'),
+      lang: z.string().optional().describe('language for a slug lookup: zh-cn|en-us|zh-hk (default zh-cn)'),
+      copy_from: z.number().optional().describe('source wp_post_id whose categories+tags should be mirrored onto the target'),
+      category_slugs: z.array(z.string()).optional().describe('category slugs to set, e.g. ["product-solutions"]'),
+      tag_slugs: z.array(z.string()).optional().describe('tag slugs to set, e.g. ["geo-seo","saas"]'),
+      create_terms: z.boolean().optional().describe('create any missing term slug instead of failing (default false)'),
+      dry_run: z.boolean().optional().describe('resolve + report the planned write without touching WP'),
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const siteKey = S.siteKey || S.key;
+        let postId = args.wp_post_id ? Number(args.wp_post_id) : null;
+        if (!postId) {
+          if (!args.slug) return fail(new Error('either wp_post_id or slug is required'));
+          const lang = args.lang || 'zh-cn';
+          let found = await t.wp.posts.findPostByLanguage(args.slug, lang, { siteKey });
+          if (found && found.id) postId = found.id;
+          if (!postId) {
+            const draft = await t.wp.posts.findBySlug(args.slug, { siteKey, status: 'draft' });
+            if (draft && draft.id) postId = draft.id;
+          }
+          if (!postId) {
+            const any = await t.wp.posts.findBySlug(args.slug, { siteKey });
+            if (any && any.id) postId = any.id;
+          }
+          if (!postId) {
+            return ok({ ok: false, found: false, slug: args.slug, reason: 'no WordPress post found for this slug + lang' });
+          }
+        }
+
+        // ---- read current terms (the "before" of the diff) ----
+        const before = await t.wp.terms.getPostTerms(postId, { siteKey });
+
+        // ---- decide the target term set ----
+        let wantCats = null; // null = leave untouched
+        let wantTags = null;
+        let mirrored = false;
+
+        if (args.copy_from) {
+          const src = await t.wp.terms.getTermsForCopy(Number(args.copy_from), { siteKey });
+          wantCats = src.category_slugs;
+          wantTags = src.tag_slugs;
+          mirrored = true;
+        }
+        if (args.category_slugs) wantCats = args.category_slugs;
+        if (args.tag_slugs) wantTags = args.tag_slugs;
+
+        const isWrite = wantCats !== null || wantTags !== null;
+
+        if (!isWrite) {
+          return ok({
+            ok: true,
+            found: true,
+            wp_post_id: postId,
+            mode: 'read',
+            terms: before,
+          });
+        }
+
+        const create = args.create_terms === true;
+        const catRes = wantCats === null
+          ? null
+          : await t.wp.terms.resolveTermIds(wantCats, { taxonomy: 'category', create, siteKey });
+        const tagRes = wantTags === null
+          ? null
+          : await t.wp.terms.resolveTermIds(wantTags, { taxonomy: 'post_tag', create, siteKey });
+
+        const problems = [];
+        if (catRes && catRes.unknown.length) problems.push(`unknown category slug(s): ${catRes.unknown.join(', ')}`);
+        if (tagRes && tagRes.unknown.length) problems.push(`unknown tag slug(s): ${tagRes.unknown.join(', ')}`);
+        if (problems.length && !args.dry_run) {
+          return fail(new Error(`${problems.join('; ')} — pass create_terms=true to create them, or fix the slugs`));
+        }
+
+        if (args.dry_run) {
+          return ok({
+            ok: true,
+            dry_run: true,
+            found: true,
+            wp_post_id: postId,
+            mode: mirrored ? 'mirror(dry-run)' : 'write(dry-run)',
+            mirrored_from: args.copy_from || null,
+            before,
+            would_set: {
+              categories: catRes ? catRes.ids : '(untouched)',
+              tags: tagRes ? tagRes.ids : '(untouched)',
+            },
+            resolved: { categories: catRes ? catRes.resolved : [], tags: tagRes ? tagRes.resolved : [] },
+            created: { categories: catRes ? catRes.created : [], tags: tagRes ? tagRes.created : [] },
+            problems,
+          });
+        }
+
+        // ---- apply: one wp/v2 update carrying only the fields we resolved ----
+        const body = {};
+        if (catRes) body.categories = catRes.ids;
+        if (tagRes) body.tags = tagRes.ids;
+        await t.wp.posts.update(postId, body, { siteKey });
+
+        const after = await t.wp.terms.getPostTerms(postId, { siteKey });
+        return ok({
+          ok: true,
+          found: true,
+          wp_post_id: postId,
+          mode: mirrored ? 'mirror' : 'write',
+          mirrored_from: args.copy_from || null,
+          before,
+          after,
+          resolved: { categories: catRes ? catRes.resolved : [], tags: tagRes ? tagRes.resolved : [] },
+          created: { categories: catRes ? catRes.created : [], tags: tagRes ? tagRes.created : [] },
+        });
       } catch (e) {
         return fail(e);
       }

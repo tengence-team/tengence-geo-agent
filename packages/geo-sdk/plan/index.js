@@ -130,52 +130,55 @@ function mdExists(bySlug, slug) {
 // ---------------------------------------------------------------------------
 
 /** List (for db-query --plan) */
-async function list({ appId = DEFAULT_APP_ID(), status, batch, cluster, category, nodeType, limit } = {}) {
-  return withConn((conn) => repo.list(conn, appId, { status, batch, cluster, category, nodeType, limit }));
+async function list({ appId = DEFAULT_APP_ID(), status, batch, cluster, category, nodeType, limit, lang } = {}) {
+  return withConn((conn) => repo.list(conn, appId, { status, batch, cluster, category, nodeType, limit, lang }));
 }
 
-/** Single-row lookup */
-async function get(slug, { appId = DEFAULT_APP_ID() } = {}) {
-  return withConn((conn) => repo.getBySlug(conn, appId, slug));
+/** Single-row lookup. Pass { lang } to target one language (defaults to any/first). */
+async function get(slug, { appId = DEFAULT_APP_ID(), lang } = {}) {
+  return withConn((conn) => repo.getBySlug(conn, appId, slug, lang));
 }
 
 /** Lookup by article_id (the publish chain reverses category/tags) */
-async function getByArticleId(articleId, { appId = DEFAULT_APP_ID() } = {}) {
-  return withConn((conn) => repo.getByArticleId(conn, appId, articleId));
+async function getByArticleId(articleId, { appId = DEFAULT_APP_ID(), lang } = {}) {
+  return withConn((conn) => repo.getByArticleId(conn, appId, articleId, lang));
 }
 
-/** Register / update a row (idempotent; field-merge semantics live in the repository) */
-async function upsert(record, { appId = DEFAULT_APP_ID() } = {}) {
+/**
+ * Register / update a row (idempotent; field-merge semantics live in the repository).
+ * Keyed on (app_id, slug, lang) — pass { lang:'en-us' } to create/update a translation row.
+ */
+async function upsert(record, { appId = DEFAULT_APP_ID(), lang } = {}) {
   if (!record || !record.slug) throw new Error('plan.upsert requires record.slug');
-  return withConn((conn) => repo.upsert(conn, appId, record));
+  return withConn((conn) => repo.upsert(conn, appId, record, { lang }));
 }
 
 /** Status transition (the single write entry for status) */
-async function updateStatus(slug, fields, { appId = DEFAULT_APP_ID() } = {}) {
+async function updateStatus(slug, fields, { appId = DEFAULT_APP_ID(), lang } = {}) {
   if (!slug) throw new Error('plan.updateStatus requires slug');
-  return withConn((conn) => repo.updateStatus(conn, appId, slug, fields));
+  return withConn((conn) => repo.updateStatus(conn, appId, slug, fields, { lang }));
 }
 
 /** After a draft push succeeds: written → queued, backfill article_id / wp_post_id / queued_at */
-async function markQueued(slug, { articleId, wpPostId, queuedAt } = {}, { appId = DEFAULT_APP_ID() } = {}) {
+async function markQueued(slug, { articleId, wpPostId, queuedAt } = {}, { appId = DEFAULT_APP_ID(), lang } = {}) {
   const ts = queuedAt || new Date();
   return updateStatus(slug, {
     plan_status: 'queued',
     article_id: articleId,
     wp_post_id: wpPostId,
     queued_at: ts instanceof Date ? ts.toISOString().slice(0, 19).replace('T', ' ') : ts,
-  }, { appId });
+  }, { appId, lang });
 }
 
 /** After promotion succeeds: queued → published, backfill wp_post_id / published_url / published_at */
-async function markPublished(slug, { wpPostId, publishedUrl, publishedAt } = {}, { appId = DEFAULT_APP_ID() } = {}) {
+async function markPublished(slug, { wpPostId, publishedUrl, publishedAt } = {}, { appId = DEFAULT_APP_ID(), lang } = {}) {
   const ts = publishedAt || new Date();
   return updateStatus(slug, {
     plan_status: 'published',
     wp_post_id: wpPostId,
     published_url: publishedUrl,
     published_at: ts instanceof Date ? ts.toISOString().slice(0, 19).replace('T', ' ') : ts,
-  }, { appId });
+  }, { appId, lang });
 }
 
 /** Backfill the featured-image path after image acquisition (2026-09-20: writes

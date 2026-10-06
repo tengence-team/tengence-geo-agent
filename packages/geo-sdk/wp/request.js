@@ -176,19 +176,21 @@ async function api(endpoint, options = {}) {
  * Auto-paginate by x-wp-totalpages, fetching a resource's full record set
  * @param {string} resource e.g. 'categories'
  * @param {object} [params] extra query params
- * @param {{auth?:boolean, timeout?:number}} [options]
+ * @param {{auth?:boolean, timeout?:number, siteKey?:string}} [options]
+ *   siteKey: explicit site for in-process callers without `--site` argv (MCP tools)
  * @returns {Promise<Array>}
  */
 async function apiAll(resource, params = {}, options = {}) {
-  const { auth = true, timeout = 60000 } = options;
+  const { auth = true, timeout = 60000, siteKey } = options;
   const rows = [];
   let page = 1;
   while (true) {
     const query = new URLSearchParams({ ...params, per_page: '100', page: String(page) });
-    const { apiUrl } = wpTarget();
+    const { apiUrl } = wpTarget(siteKey);
     const res = await request(`${apiUrl}/${resource}?${query}`, {
       auth,
       timeout,
+      siteKey,
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) {

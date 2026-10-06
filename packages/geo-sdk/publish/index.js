@@ -704,7 +704,7 @@ async function publishArticle(connection, articleId, options = {}) {
   // fallback when no plan row, for legacy compatibility)
   s.logger('\n[2/8] Reading the article config...');
   const config = await s.t.db.config.getFull(connection, articleId, s.CONFIG.app_id);
-  const planRow = await s.t.plan.getByArticleId(articleId);
+  const planRow = await s.t.plan.getByArticleId(articleId, { lang: article.lang });
   let category;
   let tagEntries; // [{slug, name, description}]
   if (planRow && planRow.category) {
@@ -800,15 +800,21 @@ async function publishArticle(connection, articleId, options = {}) {
   s.logger('\n[4/8] Converting Markdown to HTML...');
   // the single exit for writing a body into WP: markdownToHtml + GEO-block fallback
   // completion. The two are bound together in buildPostHtml, so doing it halfway
-  // can't drop the "key takeaways / FAQ" blocks.
-  const htmlContent = s.t.content.md.buildPostHtml(processedContent, geo);
+  // can't drop the "key takeaways / FAQ" blocks. `article.lang` is threaded through
+  // so the fallback copy (headings + Q/A prefixes) is written in the article's own
+  // language instead of always Simplified Chinese.
+  const htmlContent = s.t.content.md.buildPostHtml(processedContent, geo, article.lang);
   s.logger(`  ✓ HTML length: ${htmlContent.length} chars`);
   const geoTakeaways = geo.key_takeaways || [];
   const geoQa = geo.qa_pairs || [];
+  // report via the SSOT heading predicates — a hardcoded `关键要点` check reported
+  // "false" for perfectly good zh-hk / en-us bodies (2026-10-06)
+  const bodyHeadings = s.t.content.md.h2List(htmlContent);
+  const bodyHasTakeaways = bodyHeadings.some((h) => s.t.content.md.isTakeawaysHeading(h.text));
+  const bodyHasFaq = bodyHeadings.some((h) => s.t.content.md.isFaqHeading(h.text));
   s.logger(
     `  ✓ GEO materialized: ${geoTakeaways.length} takeaways / ${geoQa.length} FAQ pairs` +
-    ` (body has takeaways block: ${htmlContent.includes('<h2>关键要点</h2>') || htmlContent.includes('<h2>Key Takeaways</h2>')}, ` +
-    `has FAQ block: ${htmlContent.includes('常见问题</h2>') || htmlContent.includes('FAQ</h2>') || htmlContent.includes('Frequently Asked Questions</h2>')})`
+    ` (body has takeaways block: ${bodyHasTakeaways}, has FAQ block: ${bodyHasFaq})`
   );
 
   if (dryRun) {
@@ -1037,10 +1043,12 @@ async function publishArticle(connection, articleId, options = {}) {
   // idempotent)
   try {
     if (result.status === 'publish') {
+      // Target the row for THIS article's language: a translation publishes its own
+      // post id onto its own (app_id, slug, lang) row, never onto the zh-cn row.
       await s.t.plan.markPublished(article.slug, {
         wpPostId: result.id,
         publishedUrl: `${s.CONFIG.urls.article}${article.slug}/`,
-      });
+      }, { lang: article.lang });
       s.logger(`  ✓ Plan table updated: ${article.slug} → published`);
     } else {
       // Plan rows track the zh-cn SOURCE post — the row the daily queue promotes.

@@ -182,6 +182,140 @@ function restoreRawHtml(html, blocks) {
     .replace(new RegExp(token, 'g'), (m, i) => blocks[Number(i)]);
 }
 
+// ==================== ```mermaid fence → MerPress block ====================
+//
+// Background (2026-10-06): a Mermaid diagram only actually renders when the HTML
+// carries a specific class. The front ends (blog-web/assets/js/code-block.js and
+// the mobile site's RichContent) both key off `pre.mermaid` /
+// `.wp-block-merpress-mermaidjs`; a `<pre><code class="language-mermaid">` falls
+// through to the plain code-block branch and stays raw source text on the page.
+//
+// `holdRawHtml` above only *protects* MerPress blocks that already exist (it never
+// creates them), so a fence written as ```mermaid in the .md used to degrade into a
+// dead code block the moment the body went through marked. Confirmed live: the
+// zh-cn `oneid-cross-platform-identity` (post 570) renders, while its zh-hk / en-us
+// translations (1658 / 1652) show raw source — the zh-cn body had been inserted as a
+// MerPress block by hand in Gutenberg, the translations went through md.
+//
+// Conversion is therefore applied on the WP write path only (`buildPostHtml`), NOT
+// inside `markdownToHtml` — the latter is shared with the WeChat / CSDN syndication
+// code, where a WordPress-only <div class="wp-block-merpress-mermaidjs"> would be
+// meaningless foreign markup.
+
+/**
+ * Label text that contains a bare paren is wrapped in double quotes; anything
+ * already carrying quotes (or safe) is returned untouched.
+ * Verified with the mobile site's mermaid 11.16.1: inside a quoted label every
+ * character parses, and colons / hashes / hyphens are safe even unquoted —
+ * only bare `( )` is the actual killer.
+ */
+function quoteMermaidLabelIfUnsafe(inner) {
+  return /[()]/.test(inner) ? `"${inner}"` : inner;
+}
+
+/**
+ * Normalize mermaid source so it can parse: wrap any node label `A[…]`,
+ * edge label `|…|`, or subgraph title (both `subgraph Title` and
+ * `subgraph id [Title]`) that contains a bare `( )` in double quotes.
+ * Idempotent: a quoted label contains `"` and is skipped by every regex here.
+ * Colons / hashes / hyphens are deliberately left alone — verified safe.
+ * @param {string} src diagram source (inside one mermaid fence)
+ * @returns {string}
+ */
+function fixMermaidLabelQuotes(src) {
+  return String(src == null ? '' : src).split('\n').map((line) => {
+    let l = line;
+    // subgraph id [Title] — quote the bracketed title (must run before the node rule)
+    l = l.replace(/^(\s*subgraph\s+\S+\s*\[)([^\]"\n]*)(\]\s*)$/, (m, a, inner, c) =>
+      a + quoteMermaidLabelIfUnsafe(inner) + c);
+    // subgraph bare Title — quote the whole title
+    l = l.replace(/^(\s*subgraph\s+)([^"\[\]\n]*[()][^"\[\]\n]*)$/, (m, a, t) =>
+      a + `"${t.trim()}"`);
+    // node label Id[…] — word id, no quotes inside yet
+    l = l.replace(/(\b\w+\[)([^\]"\n]*)(\])/g, (m, a, inner, c) =>
+      a + quoteMermaidLabelIfUnsafe(inner) + c);
+    // edge label |…|
+    l = l.replace(/(\|)([^\|\n"]*)(\|)/g, (m, a, inner, c) =>
+      a + quoteMermaidLabelIfUnsafe(inner) + c);
+    return l;
+  }).join('\n');
+}
+
+/**
+ * Detect mermaid constructs that would fail to parse (bare `( )` inside a
+ * label and not already quoted). Used by the T9 translation gate — the same
+ * evidence base as {@link fixMermaidLabelQuotes}, but read-only: the gate
+ * reports, the WP write path fixes.
+ * @param {string} md full markdown (only ```mermaid fences are scanned)
+ * @returns {Array<{line:number, text:string}>} 1-based line numbers within the fence source
+ */
+function mermaidBareParenIssues(md) {
+  const lines = String(md == null ? '' : md).split('\n');
+  const issues = [];
+  let inFence = false;
+  let marker = '';
+  for (let i = 0; i < lines.length; i++) {
+    const open = lines[i].match(FENCE_RE);
+    if (open && open[3].trim().toLowerCase() === 'mermaid' && !inFence) {
+      inFence = true;
+      marker = open[2][0];
+      continue;
+    }
+    if (inFence) {
+      const close = lines[i].match(FENCE_RE);
+      if (close && close[2][0] === marker && close[3].trim() === '') {
+        inFence = false;
+        continue;
+      }
+      const ln = lines[i];
+      const hasBareParen = (s) => /[()]/.test(s);
+      let bad = null;
+      let m;
+      if ((m = ln.match(/^\s*subgraph\s+(\S+)\s*\[([^\]"\n]*)\]/)) && hasBareParen(m[2])) bad = m[2];
+      else if ((m = ln.match(/^\s*subgraph\s+([^"\[\]\n]*)$/)) && hasBareParen(m[1])) bad = m[1];
+      else if ((m = ln.match(/\b\w+\[([^\]"\n]*)\]/)) && hasBareParen(m[1])) bad = m[1];
+      else if ((m = ln.match(/\|([^\|\n"]*)\|/)) && hasBareParen(m[1])) bad = m[1];
+      if (bad !== null) issues.push({ line: i + 1, text: bad.trim() });
+    }
+  }
+  return issues;
+}
+
+/**
+ * Convert every ```mermaid fenced block into a MerPress Mermaid block.
+ * Idempotent: an already-converted body contains no mermaid fence, so it is a no-op.
+ * @param {string} md
+ * @returns {string}
+ */
+function mermaidFencesToMerpress(md) {
+  const lines = String(md == null ? '' : md).split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i++) {
+    const open = lines[i].match(FENCE_RE);
+    // info string must be exactly "mermaid" (case-insensitive); ```mermaidjs etc. is not ours
+    if (!open || open[3].trim().toLowerCase() !== 'mermaid') {
+      out.push(lines[i]);
+      continue;
+    }
+    // compare the marker's first char, same convention as mapOutsideFences above
+    const marker = open[2][0];
+    const body = [];
+    for (i = i + 1; i < lines.length; i++) {
+      const close = lines[i].match(FENCE_RE);
+      if (close && close[2][0] === marker && close[3].trim() === '') break;
+      body.push(lines[i]);
+    }
+    // auto-repair un-parseable labels (bare parens) before writing — live incident
+    // 2026-10-06: en post 1652 died on `D[Node 1 (phone number …)]`
+    const fixed = fixMermaidLabelQuotes(body.join('\n'));
+    out.push(
+      '<div class="wp-block-merpress-mermaidjs diagram-source-mermaid">' +
+        `<pre class="mermaid">${escapeHtml(fixed)}</pre></div>`
+    );
+  }
+  return out.join('\n');
+}
+
 /** Markdown → HTML (the exact marked config of the main publish chain + the two pre-publish protections) */
 function markdownToHtml(md) {
   marked.setOptions({
@@ -225,8 +359,9 @@ function markdownToHtml(md) {
 const TAKEAWAYS_PLACEHOLDER = /<!--\s*tengence-takeaways\s*-->/;
 /** FAQ placeholder comment */
 const FAQ_PLACEHOLDER = /<!--\s*tengence-faq\s*-->/;
-/** "lead-type" first-section headings: takeaways should follow these, not precede them */
-const LEAD_SECTION_RE = /^(导语|引言|导读|前言|摘要|结论)$/;
+/** "lead-type" first-section headings: takeaways should follow these, not precede them.
+ *  Traditional forms included — a zh-hk lead section is spelled 導語/導讀/前言/結論. */
+const LEAD_SECTION_RE = /^(导语|引言|导读|前言|摘要|结论|導語|導讀|結論)$/;
 
 /** HTML-escape (only for plain-text fields: takeaway items, questions, plain-text answers) */
 function escapeHtml(value) {
@@ -251,6 +386,54 @@ function h2List(html) {
   return out;
 }
 
+// ==================== language-aware labels for the fallback blocks ====================
+//
+// The fallback materialization (below) emits a heading + a Q/A prefix. Those are
+// *user-visible copy*, so they must follow the article's language. They used to be
+// hardcoded Simplified Chinese ('关键要点' / '常见问题' / '问：答：'), which injected a
+// Simplified block into every Traditional-Chinese page that reached the fallback
+// (2026-10-06 incident, zh-hant enterprise-geo-playbook).
+
+const GEO_BLOCK_LABELS = {
+  'zh-cn': { takeaways: '关键要点', faq: '常见问题', q: '问', a: '答', sep: '：' },
+  'zh-hk': { takeaways: '關鍵要點', faq: '常見問題', q: '問', a: '答', sep: '：' },
+  'en-us': { takeaways: 'Key Takeaways', faq: 'FAQ', q: 'Q', a: 'A', sep: ': ' },
+};
+
+/**
+ * Resolve the copy labels for one article language.
+ * Unknown / missing language falls back to the site default (zh-cn) — never throws,
+ * so every existing 2-argument call site keeps its current output byte-for-byte.
+ * @param {string} [lang] geo language code (zh-cn | zh-hk | en-us, accepts zh-hant/zh-tw/en)
+ * @returns {{takeaways:string, faq:string, q:string, a:string, sep:string}}
+ */
+function geoBlockLabels(lang) {
+  const k = String(lang == null ? '' : lang).trim().toLowerCase();
+  if (k === 'zh-hk' || k === 'zh-hant' || k === 'zh-tw') return GEO_BLOCK_LABELS['zh-hk'];
+  if (k === 'en' || k.startsWith('en-')) return GEO_BLOCK_LABELS['en-us'];
+  return GEO_BLOCK_LABELS['zh-cn'];
+}
+
+/**
+ * Render one GEO plain-text field (a takeaway item) as **inline HTML**.
+ *
+ * Why not `escapeHtml`: `parseGeoBlocks` stores the takeaway bullet **verbatim as
+ * the Markdown line** (`**结论**：说明`), and the visible body renders that same line
+ * through marked. Escaping alone therefore printed a literal `**` in the fallback
+ * block while the body block next to it showed real bold — the formatting defect
+ * reported on the zh-hant enterprise-geo-playbook page (2026-10-06).
+ * Routing it through the same inline renderer keeps the two blocks identical, and
+ * still escapes `<` / `&` exactly as before (`a < b & c` → `a &lt; b &amp; c`).
+ *
+ * @param {string} text raw Markdown inline text
+ * @returns {string} inline HTML
+ */
+function renderInlineMarkdown(text) {
+  const src = String(text == null ? '' : text).trim();
+  if (!src) return '';
+  return marked.parseInline(fixCjkBold(src));
+}
+
 /**
  * Key-takeaways block HTML — **a pure markdown section**, rendered by the theme's
  * default markdown styles, with zero dependency on the plugin or any custom
@@ -258,16 +441,19 @@ function h2List(html) {
  * (WeChat / Zhihu / RSS / HTML→MD conversion), h2/ul/li are all in the common tag
  * subset, so structure and style survive with the content; the head-layer FAQPage
  * JSON-LD is emitted separately by the plugin and unrelated.
+ *
+ * @param {string[]} items raw Markdown bullet texts (from `geo.key_takeaways`)
+ * @param {string} [lang] article language for the heading; defaults to zh-cn
  */
-function renderTakeaways(items) {
+function renderTakeaways(items, lang) {
   if (!Array.isArray(items)) return '';
   const lis = items
     .map((x) => String(x == null ? '' : x).trim())
     .filter(Boolean)
-    .map((x) => '<li>' + escapeHtml(x) + '</li>')
+    .map((x) => '<li>' + renderInlineMarkdown(x) + '</li>')
     .join('\n');
   if (!lis) return '';
-  return '<h2>关键要点</h2>\n<ul>\n' + lis + '\n</ul>';
+  return `<h2>${geoBlockLabels(lang).takeaways}</h2>\n<ul>\n` + lis + '\n</ul>';
 }
 
 /**
@@ -278,6 +464,8 @@ function renderTakeaways(items) {
  *
  * Shape: `<h2>常见问题</h2>` + each pair as
  * `<blockquote><p><strong>问：question?</strong></p><p>答：answer</p></blockquote>`.
+ * The heading and the Q/A prefixes are language-aware (關鍵要點/常見問題/問： for
+ * zh-hk, Key Takeaways/FAQ/Q:/A: for en-us) — see {@link geoBlockLabels}.
  * The heading is not numbered ("N、常见问题") — when body subheadings aren't numbered
  * uniformly, a numbered block would look unbalanced against them.
  *
@@ -293,9 +481,12 @@ function renderTakeaways(items) {
  * (no h3, no class, no inline style, no number).
  *
  * @param {Array<{question:string,answer:string}>} qaPairs
+ * @param {string} [lang] article language for the heading and the Q/A prefixes;
+ *   defaults to zh-cn (so 2-argument callers keep their previous output exactly)
  */
-function renderFaq(qaPairs) {
+function renderFaq(qaPairs, lang) {
   if (!Array.isArray(qaPairs)) return '';
+  const labels = geoBlockLabels(lang);
   const items = [];
   qaPairs.forEach((qa) => {
     if (!qa || !qa.question || !qa.answer) return;
@@ -303,16 +494,22 @@ function renderFaq(qaPairs) {
     const a = String(qa.answer == null ? '' : qa.answer).trim();
     let answerHtml;
     if (/<[a-z][^>]*>/i.test(a)) {
-      // legacy HTML answers (~70 are <p>…</p>): merge "答：" into the first <p> to avoid <p> nesting
-      answerHtml = a.replace(/^(\s*)<p(\s|>)/i, '$1<p$2答：');
-      if (answerHtml === a) answerHtml = '<p>答：</p>\n' + a; // fallback when it doesn't start with <p>
+      // legacy HTML answers (~70 are <p>…</p>): merge the "答：" prefix into the first
+      // <p> to avoid <p> nesting
+      answerHtml = a.replace(/^(\s*)<p(\s|>)/i, `$1<p$2${labels.a}${labels.sep}`);
+      // fallback when it doesn't start with <p>
+      if (answerHtml === a) answerHtml = `<p>${labels.a}${labels.sep}</p>\n` + a;
     } else {
-      answerHtml = '<p>答：' + escapeHtml(a) + '</p>';
+      answerHtml = `<p>${labels.a}${labels.sep}${escapeHtml(a)}</p>`;
     }
-    items.push('<blockquote>\n<p><strong>问：' + q + '</strong></p>\n' + answerHtml + '\n</blockquote>');
+    items.push(
+      `<blockquote>\n<p><strong>${labels.q}${labels.sep}${q}</strong></p>\n` +
+        answerHtml +
+        '\n</blockquote>'
+    );
   });
   if (!items.length) return '';
-  return '<h2>常见问题</h2>\n' + items.join('\n');
+  return `<h2>${labels.faq}</h2>\n` + items.join('\n');
 }
 
 /** Insert block at html's index (a single-line HTML block) */
@@ -342,12 +539,20 @@ function insertTakeaways(html, block) {
 /**
  * FAQ landing: ① placeholder comment → ② before "关于 Tengence" → ③ before
  * "相关阅读" → ④ before "数据来源" → ⑤ end of body
+ *
+ * The anchors cover all three languages: a zh-hk body spells them 關於通智雲 /
+ * 相關閱讀 / 資料來源, and without those forms the fallback block fell through to
+ * "append at the end of the body" — i.e. *after* the CTA (2026-10-06 incident).
  */
 function insertFaq(html, block) {
   const ph = html.match(FAQ_PLACEHOLDER);
   if (ph) return html.slice(0, ph.index) + block + '\n' + html.slice(ph.index + ph[0].length);
   const h2s = h2List(html);
-  for (const re of [/^关于\s*Tengence/, /^相关阅读/, /^数据来源/, /^About /, /^Related Reading/, /^Data Sources/]) {
+  for (const re of [
+    /^关于\s*Tengence/i, /^關於\s*Tengence/i, /^关于\s*通智/, /^關於\s*通智/, /^About\b/i,
+    /^相关阅读/, /^相關閱讀/, /^相关文章/, /^相關文章/, /^Related Reading/i,
+    /^数据来源/, /^資料來源/, /^引用来源/, /^引用來源/, /^Data Sources/i,
+  ]) {
     const hit = h2s.find((h) => re.test(h.text));
     if (hit) return insertAt(html, hit.index, block);
   }
@@ -361,27 +566,35 @@ function insertFaq(html, block) {
  * @param {string} html output of markdownToHtml
  * @param {{key_takeaways?: string[], qa_pairs?: Array<{question:string,answer:string}>}} [geo]
  *        the `geo` node of the article config (one of the return values of `t.db.config.getFull()`)
+ * @param {string} [lang] article language used for the injected copy (headings + Q/A
+ *        prefixes); defaults to zh-cn. Pass it whenever the body is not Simplified
+ *        Chinese, so a zh-hk / en-us page never receives Simplified fallback blocks.
  * @returns {string} the materialized body HTML (returned unchanged when GEO is disabled)
  */
-function composeBody(html, geo) {
+function composeBody(html, geo, lang) {
   let out = String(html || '');
   const g = geo || {};
 
-  // takeaways: skip when the body already has a same-named section (idempotent)
-  if (!/<h2>(关键要点|Key Takeaways)<\/h2>/.test(out)) {
-    const block = renderTakeaways(g.key_takeaways);
+  // Idempotency detection reuses the reverse-parse SSOT predicates
+  // (`isTakeawaysHeading` / `isFaqHeading`) rather than ad-hoc regexes. The old
+  // hardcoded `关键要点|Key Takeaways` and `常见问题` patterns silently missed the
+  // Traditional headings 關鍵要點 / 常見問題 ⇒ every zh-hk body reached the fallback
+  // and got both blocks injected a second time: a Simplified duplicate, with the
+  // takeaways' `**` markdown left unrendered (2026-10-06 incident, zh-hant
+  // enterprise-geo-playbook). One predicate set = the two can never drift again.
+  const headings = h2List(out);
+
+  // takeaways: skip when the body already carries a same-named section (idempotent)
+  if (!headings.some((h) => isTakeawaysHeading(h.text))) {
+    const block = renderTakeaways(g.key_takeaways, lang);
     if (block) out = insertTakeaways(out, block);
   }
 
-  // FAQ: skip when the body already has a "常见问题" section (our materialized block,
-  // heading may carry a number like "五、常见问题"), or a hand-written FAQ section
-  // (legacy double-write), to avoid duplicate blocks on the same page
-  const hasFaqHeading = /<h2>[^<]*(常见问题|FAQ|Frequently Asked Questions)<\/h2>/i.test(out);
-  const hasLegacyFaq = h2List(out).some(
-    (h) => /常见问题|FAQ|问答|Frequently Asked Questions/.test(h.text) && !/常见问题$/.test(h.text)
-  );
-  if (!hasFaqHeading && !hasLegacyFaq) {
-    const block = renderFaq(g.qa_pairs);
+  // FAQ: skip when the body already has a "常见问题 / 常見問題 / FAQ" section (our
+  // materialized block; the heading may carry a number like "五、常见问题"), or a
+  // hand-written legacy FAQ section, to avoid duplicate blocks on the same page
+  if (!headings.some((h) => isFaqHeading(h.text) || isLegacyFaqHeading(h.text))) {
+    const block = renderFaq(g.qa_pairs, lang);
     if (block) out = insertFaq(out, block);
   }
 
@@ -406,10 +619,12 @@ function composeBody(html, geo) {
  *
  * @param {string} markdown body Markdown (Front Matter already stripped)
  * @param {{key_takeaways?: string[], qa_pairs?: Array<{question:string,answer:string}>}} [geo]
+ * @param {string} [lang] article language (zh-cn | zh-hk | en-us) — drives the copy of
+ *   the injected fallback blocks; omit for Simplified Chinese content
  * @returns {string} body HTML ready to write into WP
  */
-function buildPostHtml(markdown, geo) {
-  return composeBody(markdownToHtml(markdown), geo || {});
+function buildPostHtml(markdown, geo, lang) {
+  return composeBody(markdownToHtml(mermaidFencesToMerpress(markdown)), geo || {}, lang);
 }
 
 // ==================== Markdown → GEO structured fields (reverse parsing) ====================
@@ -476,6 +691,22 @@ function isCitationsHeading(text) {
     n === '資料來源' ||
     n === '引用來源' ||
     n === 'Data Sources'
+  );
+}
+
+/**
+ * Legacy, hand-written FAQ section heading: a heading that *mentions* FAQ without
+ * being the canonical block name (e.g. `## 常见问题解答`). Those must suppress the
+ * fallback injection too, otherwise the page shows two FAQ sections.
+ *
+ * Deliberately separate from {@link isFaqHeading}: that predicate is the
+ * reverse-parse SSOT (it decides what gets copied into `geo.qa_pairs`), while this
+ * one is a `composeBody`-only anti-duplication guard and must stay broader.
+ */
+function isLegacyFaqHeading(text) {
+  const t = normalizeHeading(text);
+  return (
+    /常见问题|常見問題|问答|問答|FAQ|Frequently Asked Questions/i.test(t) && !isFaqHeading(t)
   );
 }
 
@@ -882,18 +1113,35 @@ module.exports = {
   parseGeoBlocks,
   syncGeoFromMarkdown,
   extractCitationFromItem,
+  // GEO block heading predicates + <h2> listing — the **single source of truth** for
+  // "what counts as a takeaways / FAQ / citations heading". Exported so callers
+  // (the publish gate above all) stop re-declaring Simplified-only regexes, which is
+  // exactly how the zh-hk duplicate-block defect slipped through (2026-10-06).
+  isTakeawaysHeading,
+  isFaqHeading,
+  isCitationsHeading,
+  h2List,
   // Front Matter: parse (YAML) / strip
   parseFrontMatter,
   stripFrontMatter,
-  /** the single exit for writing a body into WP (= markdownToHtml + composeBody) */
+  /** the single exit for writing a body into WP (= mermaidFencesToMerpress + markdownToHtml + composeBody) */
   buildPostHtml,
   renderTakeaways,
   renderFaq,
+  // language-aware copy for the fallback blocks (exported for tests / callers that
+  // need the same headings)
+  geoBlockLabels,
   // pre-publish protections (2026-09-14): exported so unit tests can verify directly
   fixCjkBold,
   holdRawHtml,
   restoreRawHtml,
   mapOutsideFences,
+  // WP-only: ```mermaid fence → MerPress block (2026-10-06). Not applied inside
+  // markdownToHtml on purpose — that is shared with the WeChat / CSDN syndication path.
+  mermaidFencesToMerpress,
+  // mermaid label auto-repair (2026-10-06): write path fixes, gate (T9) reports
+  fixMermaidLabelQuotes,
+  mermaidBareParenIssues,
   toPlainText,
   makeDescription,
   extractTitle,

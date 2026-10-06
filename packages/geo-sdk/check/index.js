@@ -26,7 +26,14 @@
 const fs = require('fs');
 const path = require('path');
 
-const { buildPostHtml, parseGeoBlocks, parseFrontMatter } = require('../content/md');
+const {
+  buildPostHtml,
+  parseGeoBlocks,
+  parseFrontMatter,
+  h2List,
+  isTakeawaysHeading,
+  isFaqHeading,
+} = require('../content/md');
 
 /**
  * Article gate check
@@ -143,10 +150,15 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   const effTakeaways = bodyTakeaways.length ? bodyTakeaways : (geo.key_takeaways || []);
   const effFaq = bodyFaq.length ? bodyFaq : qaPairs;
 
-  const html = buildPostHtml(md, geo);
-  const take = (html.match(/<h2>(关键要点|Key Takeaways)<\/h2>/g) || []).length;
-  const faq = (html.match(/<h2>[^<]*(常见问题|FAQ|Frequently Asked Questions)<\/h2>/gi) || []).length;
-  const boldQ = (html.match(/<p><strong>(问：|Q:)/g) || []).length;
+  // Count the blocks with the SSOT predicates, not with re-declared regexes: a
+  // Simplified-only pattern reported `take = 0` for a zh-hk body whose heading is
+  // 關鍵要點, i.e. the gate itself would have flagged correct Traditional pages
+  // (same defect family as the duplicate-block incident, 2026-10-06).
+  const html = buildPostHtml(md, geo, LANG);
+  const htmlHeadings = h2List(html);
+  const take = htmlHeadings.filter((h) => isTakeawaysHeading(h.text)).length;
+  const faq = htmlHeadings.filter((h) => isFaqHeading(h.text)).length;
+  const boldQ = (html.match(/<p><strong>(问|問|Q)[：:]/g) || []).length;
   const cls = (html.match(/class="/g) || []).length;
   const det = (html.match(/<details/gi) || []).length;
 

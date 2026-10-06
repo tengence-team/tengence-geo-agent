@@ -441,14 +441,15 @@ async function main() {
   if (synced.changed.length) {
     console.log(`✓ GEO follows Markdown: ${synced.changed.join(' / ')}`);
   }
-  const htmlContent = buildPostHtml(markdownContent, geo);
+  const htmlContent = buildPostHtml(markdownContent, geo, options.lang);
   console.log(`✓ Converted, HTML length: ${htmlContent.length}`);
-  // ⚠️ The block titles are literal Chinese content markers ("key takeaways" / "FAQ"):
-  // they are produced by buildPostHtml from Chinese-markdown blocks, so the check
-  // strings must stay Chinese to match the materialized HTML.
+  // Report with the SSOT heading predicates (Simplified + Traditional + English).
+  // The previous hardcoded `关键要点` / `常见问题` strings reported "false" for a
+  // zh-hk body whose headings are 關鍵要點 / 常見問題 (2026-10-06).
+  const bodyHeadings = t.content.md.h2List(htmlContent);
   console.log(
-    `  Body has takeaways block: ${htmlContent.includes('<h2>关键要点</h2>')}` +
-    ` / has FAQ block: ${htmlContent.includes('常见问题</h2>')}`
+    `  Body has takeaways block: ${bodyHeadings.some((h) => t.content.md.isTakeawaysHeading(h.text))}` +
+    ` / has FAQ block: ${bodyHeadings.some((h) => t.content.md.isFaqHeading(h.text))}`
   );
 
   if (options.dryRun) {
