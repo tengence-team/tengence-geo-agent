@@ -39,6 +39,37 @@ const t = require('@tengence/geo-sdk');
 // (never "published") — otherwise every run would create another draft.
 const PUBLISH_LOG_PLATFORMS = ['juejin', 'csdn', 'aliyun', 'tencent'];
 
+// ---- language-code gate (2026-10-07) --------------------------------------
+// Language identifiers are unified to zh-hans | en | zh-hant — the LANG_MAP was
+// removed and normalizeLang is identity, so a legacy region code (zh-cn / en-us /
+// zh-hk / zh-tw, any casing) would be written to the DB **as-is** and silently
+// re-pollute plan/articles rows. Every tool whose input carries a language code
+// and writes rows must reject legacy codes at its entry.
+const LANG_OK = new Set(['zh-hans', 'en', 'zh-hant']);
+const LANG_LEGACY = new Set(['zh-cn', 'en-us', 'zh-hk', 'zh-tw', 'zh-sg', 'zh-mo']);
+/** @returns {string|null} rejection message, or null when the code is valid. */
+function langReject(lang) {
+  const v = String(lang == null ? '' : lang).trim().toLowerCase();
+  if (v === '') return null;
+  if (LANG_LEGACY.has(v)) {
+    return `language code "${lang}" is a legacy region code — use zh-hans | en | zh-hant (unified 2026-10-07); rejected`;
+  }
+  if (!LANG_OK.has(v)) return `language code "${lang}" is not supported (zh-hans | en | zh-hant)`;
+  return null;
+}
+/** Normalize a validated language code to lowercase. */
+function langNorm(lang) {
+  return String(lang).trim().toLowerCase();
+}
+/** @returns {string|null} first invalid key message, or null when all keys are valid. */
+function recordLangsReject(record, field) {
+  for (const k of Object.keys(record || {})) {
+    const e = langReject(k);
+    if (e) return `${field} key: ${e}`;
+  }
+  return null;
+}
+
 /**
  * Resolve the user workspace for a call.
  * `args.workspace` overrides everything for this one call; otherwise the already
@@ -422,6 +453,11 @@ const tools = [
       if (!args.slug || !args.md_path) {
         return fail(new Error('article_ingest requires slug + md_path'));
       }
+      if (args.lang) {
+        const e = langReject(args.lang);
+        if (e) return fail(new Error(e));
+        args.lang = langNorm(args.lang);
+      }
       const cliArgs = [args.slug, args.md_path, '--site', cliSite(args)];
       if (args.lang) cliArgs.push('--lang', args.lang);
       if (args.research_path) cliArgs.push('--research', args.research_path);
@@ -462,6 +498,11 @@ const tools = [
     }),
     async run(args) {
       if (!args.slug) return fail(new Error('check_article requires slug'));
+      if (args.lang) {
+        const e = langReject(args.lang);
+        if (e) return fail(new Error(e));
+        args.lang = langNorm(args.lang);
+      }
       try {
         const S = withSite(args);
         process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
@@ -528,6 +569,16 @@ const tools = [
     }),
     async run(args) {
       if (!args.slug || !args.target_lang) return fail(new Error('check_translation requires slug and target_lang'));
+      if (args.source_lang) {
+        const es = langReject(args.source_lang);
+        if (es) return fail(new Error(es));
+        args.source_lang = langNorm(args.source_lang);
+      }
+      {
+        const et = langReject(args.target_lang);
+        if (et) return fail(new Error(et));
+        args.target_lang = langNorm(args.target_lang);
+      }
       try {
         const S = withSite(args);
         const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
@@ -652,6 +703,11 @@ const tools = [
       post_id: z.number().optional().describe('target WP post id (either slug or post_id)'),
     }).passthrough(),
     async run(args) {
+      if (args.lang) {
+        const e = langReject(args.lang);
+        if (e) return fail(new Error(e));
+        args.lang = langNorm(args.lang);
+      }
       // resolve article_id → slug / lang / wp_post_id (the CLI only knows slug + post-id)
       let slug = args.slug || null;
       let lang = args.lang || null;
@@ -803,6 +859,16 @@ const tools = [
       dry_run: z.boolean().optional().describe('validate and report the routing without writing anything'),
     }).passthrough(), // keep unknown keys so a typo'd field is reported by name, not silently dropped
     async run(args) {
+      if (args.lang) {
+        const e = langReject(args.lang);
+        if (e) return fail(new Error(e));
+        args.lang = langNorm(args.lang);
+      }
+      if (args.language) {
+        const e = langReject(args.language);
+        if (e) return fail(new Error(e));
+        args.language = langNorm(args.language);
+      }
       let connection = null;
       try {
         if (!args.article_id && !args.wp_post_id) {
@@ -1458,55 +1524,15 @@ const tools = [
     },
   },
 
-  // ---------- geo_solution (GEO/SEO implementation plan) ----------
-  {
-    name: 'geo_solution',
-    description:
-      'Generate a full GEO/SEO implementation plan for a site from its latest diagnosis report ' +
-      '(report_write product in <site>/data/reports/). Deterministic assembly of the union of the ' +
-      'reference plan structures: 技术修复/重建（§1–§9）、关键词矩阵与内容（§10–§12）、价值桥接（§13）、' +
-      '实施保障（§14–§18）＋附录（§19）；quote:true 时追加报价方案与年度例行费用（§20–§21）。' +
-      'Requires a diagnosis report to exist for the site (run diagnose_site + report_write first).',
-    inputSchema: z.object({
-      site: siteField,
-      lang: z.string().optional().describe('plan language zh|en (default zh)'),
-      brand_name: z.string().optional().describe('brand name used in the plan (defaults to domain)'),
-      industry: z.string().optional().describe('industry / vertical, echoed into the plan header'),
-      quote: z
-        .boolean()
-        .optional()
-        .describe('include the pricing chapters (§20 报价方案 / §21 年度费用), default false'),
-      unit_rates: z
-        .record(z.string(), z.number())
-        .optional()
-        .describe('person-day rates override for quote mode, e.g. {"SEO 策略师": 2000} or {"seo": 2000}'),
-    }),
-    async run(args) {
-      try {
-        const S = withSite(args);
-        const res = await t.geo_solution.generateSolution({
-          site: S.siteKey,
-          lang: args.lang || 'zh',
-          brandName: args.brand_name || '',
-          industry: args.industry || '',
-          quote: !!args.quote,
-          unitRates: args.unit_rates || {},
-        });
-        return ok(res);
-      } catch (e) {
-        return fail(e);
-      }
-    },
-  },
-
   // ---------- site_geo_plan_skill (site-geo-plan skill spec, MCP-managed) ----------
   {
     name: 'site_geo_plan_skill',
     description:
       'Read-only access to the site-geo-plan skill specification (SKILL.md + references/plan-template.md) ' +
-      'that governs geo_solution plan generation: chapter structure, diagnosis→plan mapping, default ' +
-      'parameters (keyword matrix size, article counts, timeline, quote rules). Returns both files ' +
-      'verbatim so callers can implement/verify plans against the canonical spec.',
+      'that governs detailed GEO/SEO implementation plan generation (multi-part: 上篇技术修复/中篇关键词与内容/' +
+      '价值桥接/下篇实施保障/附录; every diagnosis issue expanded 现状→方案→步骤→验收; full keyword matrix; ' +
+      'manpower person-day matrix). Returns both files verbatim so callers can implement/verify plans ' +
+      'against the canonical spec.',
     inputSchema: z.object({}),
     async run() {
       try {
@@ -2163,6 +2189,11 @@ const tools = [
       dry_run: z.boolean().optional().describe('resolve + report the planned write without touching WP'),
     }),
     async run(args) {
+      if (args.lang) {
+        const e = langReject(args.lang);
+        if (e) return fail(new Error(e));
+        args.lang = langNorm(args.lang);
+      }
       try {
         const S = withSite(args);
         const siteKey = S.siteKey || S.key;
@@ -2306,6 +2337,10 @@ const tools = [
       site: siteField,
     }),
     async run(args) {
+      if (args.names) {
+        const e = recordLangsReject(args.names, 'names');
+        if (e) return fail(new Error(e));
+      }
       try {
         const S = withSite(args);
         const data = await t.wp.termnames.setTermName({
@@ -2333,6 +2368,11 @@ const tools = [
       site: siteField,
     }),
     async run(args) {
+      if (args.lang) {
+        const e = langReject(args.lang);
+        if (e) return fail(new Error(e));
+        args.lang = langNorm(args.lang);
+      }
       try {
         const S = withSite(args);
         const data = await t.wp.termnames.deleteTermName({
@@ -2360,6 +2400,15 @@ const tools = [
       site: siteField,
     }),
     async run(args) {
+      for (const grp of ['category', 'post_tag']) {
+        const rec = args[grp];
+        if (rec) {
+          for (const slug of Object.keys(rec)) {
+            const e = recordLangsReject(rec[slug], `${grp}.${slug}`);
+            if (e) return fail(new Error(e));
+          }
+        }
+      }
       try {
         const S = withSite(args);
         const data = await t.wp.termnames.batchTermNames({
@@ -2421,6 +2470,10 @@ const tools = [
       site: siteField,
     }),
     async run(args) {
+      if (args.names) {
+        const e = recordLangsReject(args.names, 'names');
+        if (e) return fail(new Error(e));
+      }
       try {
         const S = withSite(args);
         const data = await t.wp.termnames.setAuthorName({ siteKey: S.siteKey, id: args.id, names: args.names });
@@ -2442,6 +2495,11 @@ const tools = [
       site: siteField,
     }),
     async run(args) {
+      if (args.lang) {
+        const e = langReject(args.lang);
+        if (e) return fail(new Error(e));
+        args.lang = langNorm(args.lang);
+      }
       try {
         const S = withSite(args);
         const data = await t.wp.termnames.deleteAuthorName({ siteKey: S.siteKey, id: args.id, lang: args.lang });
@@ -2462,6 +2520,12 @@ const tools = [
       site: siteField,
     }),
     async run(args) {
+      if (args.authors) {
+        for (const id of Object.keys(args.authors)) {
+          const e = recordLangsReject(args.authors[id], `authors.${id}`);
+          if (e) return fail(new Error(e));
+        }
+      }
       try {
         const S = withSite(args);
         const data = await t.wp.termnames.batchAuthorNames({ siteKey: S.siteKey, authors: args.authors });
