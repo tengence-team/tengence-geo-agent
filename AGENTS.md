@@ -104,3 +104,18 @@ The gate (`packages/geo-sdk/check/index.js`) is the *codified mirror* of
 - Translation rows are ingested via `article-ingest.js <slug> <md> --lang en|zh-hant`
   (file in `<site>/data/inbox/<lang>/<slug>.md`, YAML front matter per
   `standards/translation-standards.md` §10).
+
+## 8. Release & Distribution（2026-10-07 起，按此执行，勿再探索）
+
+发布形态：**根单包 `tengence-geo-agent`**（bundle 四个 @tengence/* workspace 包）；已不用四包分开发。
+
+- **npm 发布只走 CI**：bump（package.json + lock 顶层 version 同步）→ commit → push → `git tag vX.Y.Z` →
+  `release.yml` 自动 test + `npm publish --provenance --access public`（secret `NPM_TOKEN`）。
+  本机无 npm token，**禁止尝试本地 publish**。
+- **tag 版本**：v0.1.0 / v0.1.1 被旧四包发布占用，单包从 v0.1.2 起递增；tag 冲突就升号，**不要 force 覆盖**。
+- **npm Staged Publishing**：首版新包发布后卡在 `0.0.0-stage`，需 maintainer 在 npmjs.com
+  「Staged Packages」批准（2FA，用户操作）；同包后续版本直接上线免批准。判定：registry API 出现真实版本号。
+- **MCP Registry（com.tengence/geo-agent）**：npm 包上线（含 `mcpName`）+ server.json 就绪后，
+  **本机背靠背** `mcp-publisher login http --domain tengence.com` + `publish ./server.json`（JWT 短效）。
+- 完整流程与全部踩坑（server.json 字段、验证文件/服务器挂载、版本同步、验证清单）见
+  `docs/release.md` 与 `docs/mcp-publication-guide.md` —— 发版前先读，不要重新探索。
