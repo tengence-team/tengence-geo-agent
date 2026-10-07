@@ -238,6 +238,37 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
   titleMeta.pagesCompared = pagesForCompare.length;
   evidence.titleMeta = titleMeta;
 
+  // ---- cross-page body near-duplicate detection (fingerprint on real-content pages) ----
+  // Only pages with meaningful content (wordCount > 200) participate — WAF challenge
+  // pages / thin shells are excluded by construction, so they cannot create false dupes.
+  const bodyFinger = (p) => (p && p.bodyFingerprint && p.wordCount > 200 ? p.bodyFingerprint : null);
+  const dupGroups = [];
+  const seen = new Set();
+  const fpMap = new Map(); // fingerprint -> [page names]
+  const nameOf = (p, fallback) => {
+    try {
+      return new URL(p.url || p.canonical || fallback).pathname || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+  const contentPages = [
+    { p: evidence.rootParsed, n: '/' },
+    ...pages.map((x) => ({ p: x.parsed, n: nameOf(x, x.url) })),
+  ].filter((x) => x.p && bodyFinger(x.p));
+  for (const { p, n } of contentPages) {
+    const f = bodyFinger(p);
+    if (!f || seen.has(f)) continue;
+    seen.add(f);
+    const peers = contentPages.filter((x) => bodyFinger(x.p) === f);
+    if (peers.length > 1) dupGroups.push({ fingerprint: f, wordCount: p.wordCount, pages: peers.map((x) => x.n) });
+  }
+  evidence.contentDup = {
+    groups: dupGroups,
+    duplicatePages: dupGroups.reduce((a, g) => a + g.pages.length, 0),
+    pagesCompared: contentPages.length,
+  };
+
   // ---- cookie flags (Set-Cookie from the final response) ----
   evidence.cookieFlags = parseCookieFlags(rootPage.rawCookies || []);
 
@@ -295,6 +326,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
     aiBlocksGeo: evidence.aiBlocksGeo,
     aiBlocksSeo: evidence.aiBlocksSeo,
     titleMeta: titleMeta,
+    contentDup: evidence.contentDup,
     cookieFlags: evidence.cookieFlags,
     pages: pages,
   });
@@ -339,6 +371,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
       aiBlocksGeo: evidence.aiBlocksGeo,
       aiBlocksSeo: evidence.aiBlocksSeo,
       titleMeta: titleMeta,
+      contentDup: evidence.contentDup,
       cookieFlags: evidence.cookieFlags,
     },
     checks,

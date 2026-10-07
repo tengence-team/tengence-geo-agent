@@ -247,6 +247,27 @@ function buildChecks(ev) {
   } else {
     C.push(check('content', '跨页 Meta 唯一性', 'info', titleMeta.descriptions.length === 0 ? '各页均无 description' : '仅 1 个非空 description，无法比较'));
   }
+
+  // ---- cross-page body near-duplicate detection (fingerprint; real-content pages only) ----
+  const cd = ev.contentDup || { groups: [], duplicatePages: 0, pagesCompared: 0 };
+  if (cd.pagesCompared > 1) {
+    const dupPct = cd.pagesCompared ? (cd.duplicatePages / cd.pagesCompared) : 0;
+    const st = cd.groups.length === 0 ? 'pass' : cd.groups.length <= 2 && dupPct <= 0.5 ? 'warn' : 'fail';
+    C.push(check('content', '正文重复（近似重复页）', st,
+      cd.groups.length === 0
+        ? `抽样 ${cd.pagesCompared} 个真实内容页，正文指纹全部唯一`
+        : `发现 ${cd.groups.length} 组近似重复：${cd.groups.map((g) => `[${g.pages.join(', ')}]（${g.wordCount} 词）`).join('；').slice(0, 160)}`));
+  } else {
+    C.push(check('content', '正文重复（近似重复页）', 'info', '真实内容页不足 2 个，无法比较'));
+  }
+
+  // ---- faceted / query-param internal links (filter/sort/pagination risk) ----
+  const linksInfo = rp.links || {};
+  const queryPct = linksInfo.internal ? Math.round(((linksInfo.queryParam || 0) / linksInfo.internal) * 100) : 0;
+  C.push(check('content', '筛选参数 URL（faceted）', 'info',
+    linksInfo.internal
+      ? `站内 ${linksInfo.internal} 链接中带 query 参数 ${linksInfo.queryParam || 0} 个（${queryPct}%），hash 空链 ${linksInfo.hashOnly || 0} 个`
+      : '无站内链接数据'));
   C.push(check('content', 'Canonical', rp.canonical ? 'pass' : 'warn',
     rp.canonical ? rp.canonical : '缺失 canonical'));
   const h1 = rp.headings && rp.headings.h1;

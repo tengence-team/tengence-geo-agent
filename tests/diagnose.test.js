@@ -236,6 +236,8 @@ test('diagnose_site: full diagnosis against local site (bootstrap + evidence + c
   assert.equal(byId['geo-GEO 爬虫 robots 屏蔽'].status, 'pass', 'robots does not block GEO crawlers');
   assert.equal(byId['geo-SEO 爬虫 robots 屏蔽'].status, 'pass', 'robots does not block SEO crawlers');
   assert.ok(byId['tech-HTTP 协议版本'], 'HTTP protocol version check exists');
+  assert.ok(byId['content-正文重复（近似重复页）'], 'body near-duplicate check exists');
+  assert.ok(byId['content-筛选参数 URL（faceted）'], 'faceted URL check exists');
   assert.ok(byId['content-正文词数'], 'word-count check exists');
   assert.ok(byId['content-统计代码'], 'analytics check exists');
   assert.ok(byId['content-跨页 Title 唯一性'], 'cross-page title check exists');

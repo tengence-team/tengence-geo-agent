@@ -9,6 +9,18 @@
  */
 
 const cheerio = require('cheerio');
+const { createHash } = require('crypto');
+
+/** Fingerprint a text body: sha1 of the normalized first 400 chars (case-folded, no whitespace).
+ *  Used for cross-page near-duplicate detection; short/boilerplate bodies hash identical
+ *  to each other but are filtered by word-count in the caller. */
+function bodyFingerprint(text) {
+  const norm = String(text || '')
+    .slice(0, 400)
+    .toLowerCase()
+    .replace(/\s+/g, '');
+  return norm ? createHash('sha1').update(norm).digest('hex').slice(0, 16) : '';
+}
 
 /** Recursively collect @type values from JSON-LD documents. */
 function collectTypes(node, acc = []) {
@@ -103,7 +115,7 @@ function parsePage(html, baseUrl) {
   });
 
   // ---- links ----
-  const links = { total: 0, internal: 0, external: 0, nofollow: 0, emptyText: 0, samples: [] };
+  const links = { total: 0, internal: 0, external: 0, nofollow: 0, emptyText: 0, queryParam: 0, hashOnly: 0, samples: [] };
   $('a[href]').each((i, el) => {
     links.total++;
     const href = $(el).attr('href');
@@ -113,6 +125,17 @@ function parsePage(html, baseUrl) {
     else links.external++;
     if (rel.includes('nofollow')) links.nofollow++;
     if (!text) links.emptyText++;
+    // faceted-URL signal: internal links carrying query params (filter/sort/pagination)
+    // or hash-only links (no distinct content) — both dilute crawl budget & duplicate risk.
+    if (sameHost(href)) {
+      try {
+        const u = new URL(href, 'https://x');
+        if (u.search) links.queryParam++;
+        if (u.hash && !u.search && (u.pathname === '/' || u.pathname === '')) links.hashOnly++;
+      } catch {
+        /* non-URL href (e.g. javascript:) ignored */
+      }
+    }
     if (links.samples.length < 20 && href) links.samples.push({ href, text, nofollow: rel.includes('nofollow') });
   });
 
@@ -211,6 +234,8 @@ function parsePage(html, baseUrl) {
       external: links.external,
       nofollow: links.nofollow,
       emptyText: links.emptyText,
+      queryParam: links.queryParam,
+      hashOnly: links.hashOnly,
       samples: links.samples,
     },
     scripts: { count: scripts.count, blocking: scripts.blocking, srcs: scripts.srcs },
@@ -235,6 +260,7 @@ function parsePage(html, baseUrl) {
     wordCount,
     cjkChars,
     latinWords,
+    bodyFingerprint: bodyFingerprint(bodyText),
     blockquotes,
     lists,
     forms,
@@ -246,4 +272,4 @@ function parsePage(html, baseUrl) {
   };
 }
 
-module.exports = { parsePage, collectTypes };
+module.exports = { parsePage, collectTypes, bodyFingerprint };
