@@ -1,6 +1,6 @@
 {
   "name": "tengence-geo-agent",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "GEO/SEO content production & publishing engine — multi-site content planning → writing → gate checks → WordPress publishing → search submission → GEO monitoring, via CLI / MCP (AI clients) / built-in agent runtime.",
   "workspaces": [
     "packages/*",
@@ -82,5 +82,6 @@
   "homepage": "https://github.com/tengence-team/tengence-geo-agent",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0"
-  }
+  },
+  "mcpName": "com.tengence/geo-agent"
 }
