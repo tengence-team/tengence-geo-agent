@@ -1,0 +1,36 @@
+{
+  "servers": {
+    "tengence-geo-agent": {
+      "description": "GEO/SEO content production & publishing engine — content planning → writing → gate checks → WordPress publishing → search submission → GEO monitoring. Multi-site SQLite (auto-initialized).",
+      "command": "npx",
+      "args": [
+        "-y",
+        "-p",
+        "tengence-geo-agent",
+        "tengence-geo-mcp"
+      ],
+      "env": {
+        "SITES_ROOT": "$HOME/tengence/sites",
+        "DB_DRIVER": "sqlite",
+        "DB_PATH": "$HOME/.tengence/geo-mcp/geo.sqlite"
+      }
+    },
+    "tengence-geo-agent-http": {
+      "description": "Streamable HTTP transport (port 8787, Bearer GEO_MCP_TOKEN auth) for remote AI clients.",
+      "command": "npx",
+      "args": [
+        "-y",
+        "-p",
+        "tengence-geo-agent",
+        "tengence-geo-mcp-http"
+      ],
+      "env": {
+        "GEO_MCP_PORT": "8787",
+        "GEO_MCP_TOKEN": "",
+        "SITES_ROOT": "$HOME/tengence/sites",
+        "DB_DRIVER": "sqlite",
+        "DB_PATH": "$HOME/.tengence/geo-mcp/geo.sqlite"
+      }
+    }
+  }
+}

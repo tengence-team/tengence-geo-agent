@@ -43,3 +43,4 @@ npm-debug.log*
 
 # Local test-run artifacts (auto-initialized by diagnose tests)
 examples/127_0_0_1/
+*.tgz

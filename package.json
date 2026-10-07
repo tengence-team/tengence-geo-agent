@@ -1,11 +1,54 @@
 {
   "name": "tengence-geo-agent",
   "version": "0.1.0",
-  "private": true,
-  "description": "GEO/SEO content production & publishing agent — multi-site content engine (@tengence/geo-sdk) + CLI (@tengence/geo-cli) + MCP server (@tengence/geo-mcp) + pluggable harness launcher (@tengence/geo-agent)",
+  "description": "GEO/SEO content production & publishing engine — multi-site content planning → writing → gate checks → WordPress publishing → search submission → GEO monitoring, via CLI / MCP (AI clients) / built-in agent runtime.",
   "workspaces": [
     "packages/*",
     "apps/*"
+  ],
+  "main": "packages/geo-sdk/index.js",
+  "bin": {
+    "tengence-geo-article-export": "packages/geo-cli/bin/article-export.js",
+    "tengence-geo-article-ingest": "packages/geo-cli/bin/article-ingest.js",
+    "tengence-geo-article-save": "packages/geo-cli/bin/article-save.js",
+    "tengence-geo-check-article": "packages/geo-cli/bin/check-article.js",
+    "tengence-geo-db-init": "packages/geo-cli/bin/db-init.js",
+    "tengence-geo-db-query": "packages/geo-cli/bin/db-query.js",
+    "tengence-geo-geo-monitor-report": "packages/geo-cli/bin/geo-monitor-report.js",
+    "tengence-geo-geo-monitor": "packages/geo-cli/bin/geo-monitor.js",
+    "tengence-geo-image-acquire": "packages/geo-cli/bin/image-acquire.js",
+    "tengence-geo-plan": "packages/geo-cli/bin/plan.js",
+    "tengence-geo-promote-daily": "packages/geo-cli/bin/promote-daily.js",
+    "tengence-geo-publish-devto": "packages/geo-cli/bin/publish-devto.js",
+    "tengence-geo-publish-draft": "packages/geo-cli/bin/publish-draft.js",
+    "tengence-geo-publish-from-db": "packages/geo-cli/bin/publish-from-db.js",
+    "tengence-geo-publish-juejin": "packages/geo-cli/bin/publish-juejin.js",
+    "tengence-geo-publish-update-article": "packages/geo-cli/bin/publish-update-article.js",
+    "tengence-geo-publish-wechat": "packages/geo-cli/bin/publish-wechat.js",
+    "tengence-geo-submit-baidu": "packages/geo-cli/bin/submit-baidu.js",
+    "tengence-geo-submit-gsc": "packages/geo-cli/bin/submit-gsc.js",
+    "tengence-geo-submit-indexnow": "packages/geo-cli/bin/submit-indexnow.js",
+    "tengence-geo-bing-webmaster": "packages/geo-cli/bin/bing-webmaster.js",
+    "tengence-geo-taxonomy": "packages/geo-cli/bin/taxonomy.js",
+    "tengence-geo-mcp": "packages/geo-mcp/bin/geo-mcp.js",
+    "tengence-geo-mcp-http": "packages/geo-mcp/bin/geo-mcp-http.js",
+    "tengence-geo-agent": "apps/agent/launcher.js"
+  },
+  "files": [
+    "packages",
+    "apps",
+    "examples",
+    "!examples/127_0_0_1/.env",
+    "scripts",
+    "mcp.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "bundleDependencies": [
+    "@tengence/geo-sdk",
+    "@tengence/geo-cli",
+    "@tengence/geo-mcp",
+    "@tengence/geo-agent"
   ],
   "scripts": {
     "test": "SITES_ROOT=examples DB_DRIVER=sqlite DB_PATH=/tmp/geo-tests.sqlite node --test tests/*.test.js",
@@ -32,6 +75,11 @@
     "openai-compatible"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tengence-team/tengence-geo-agent.git"
+  },
+  "homepage": "https://github.com/tengence-team/tengence-geo-agent",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0"
   }
