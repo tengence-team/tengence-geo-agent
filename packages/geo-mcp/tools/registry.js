@@ -1086,20 +1086,25 @@ const tools = [
   // ---------- plan ----------
   {
     name: 'plan_list',
-    description: 'Article plan table list (status/batch/category/node filters)',
+    description: 'Article plan table list (status/batch/category/node/lang filters). Each language is its own row ' +
+      '(zh-hans | en | zh-hant); pass lang to inspect one language only.',
     inputSchema: z.object({
       site: siteField,
       status: z.string().optional().describe('todo|written|queued|published etc.'),
       batch: z.string().optional().describe('batch'),
+      lang: z.string().optional().describe('zh-hans | en | zh-hant (default: all languages)'),
       limit: z.number().optional().describe('max rows (default 100)'),
     }),
     async run(args) {
       try {
         const S = withSite(args);
         process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const e = langReject(args.lang);
+        if (e) return fail(new Error(`plan_list: ${e}`));
         const rows = await t.plan.list({
           status: args.status || undefined,
           batch: args.batch || undefined,
+          lang: args.lang ? langNorm(args.lang) : undefined,
           limit: args.limit || 100,
         });
         return ok({ ok: true, count: rows.length, rows });
@@ -1110,16 +1115,62 @@ const tools = [
   },
   {
     name: 'plan_import',
-    description: 'Import/update the plan table from the site plan directory (idempotent)',
+    description: 'Import/update the plan table (idempotent upsert by (slug, lang)). ' +
+      'Two modes, by source: (a) no `rows` — parse the site plan directory (内容发布计划.md + publish-queue.json) for the zh-hans source rows; ' +
+      '(b) `rows[]` — write the given plan rows directly, which is how a translation row (lang=en|zh-hant) ' +
+      'is created or updated: it must be written through this keyed upsert, never by slug alone, ' +
+      'otherwise it silently overwrites the zh-hans source row. Pass publish_order to sequence a translation ' +
+      'alongside its source (same order value = published together), and plan_status to maintain its lifecycle.',
     inputSchema: z.object({
       site: siteField,
-      file: z.string().optional().describe('absolute path to a plan file (default: scan the site plan directory)'),
+      file: z.string().optional().describe('absolute path to a plan file (default: scan the site plan directory). Mutually exclusive with rows.'),
+      rows: z.array(z.object({
+        slug: z.string().describe('article slug (shared by all three languages)'),
+        lang: z.string().optional().describe('zh-hans | en | zh-hant (default zh-hans)'),
+        node_type: z.string().optional().describe("spoke | hub (default spoke)"),
+        title: z.string().optional(),
+        publish_order: z.number().optional().describe('queue position; translations share the source value to publish together'),
+        publish_batch: z.number().optional(),
+        category: z.string().optional(),
+        tags: z.array(z.string()).optional(),
+        article_id: z.number().optional(),
+        wp_post_id: z.number().optional(),
+        published_url: z.string().optional(),
+        plan_status: z.string().optional().describe('todo | written | queued | published | paused'),
+        queued_at: z.string().optional(),
+        published_at: z.string().optional(),
+        languages: z.string().optional().describe('WP locale list of the trilingual set, e.g. "zh-cn,en-us,zh-hk"'),
+        notes: z.string().optional(),
+      })).optional().describe('explicit plan rows to upsert (per-language). Mutually exclusive with file.'),
     }),
     async run(args) {
       try {
         const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        if (args.rows && args.file) {
+          return fail(new Error('plan_import takes either `rows` or `file`, not both'));
+        }
+        if (args.rows) {
+          const created = [];
+          const updated = [];
+          for (const r of args.rows) {
+            if (!r.slug) return fail(new Error('plan_import: every row requires a slug'));
+            const e = langReject(r.lang);
+            if (e) return fail(new Error(`plan_import row "${r.slug}": ${e}`));
+            const { lang = 'zh-hans', ...record } = r;
+            const res = await t.plan.upsert(record, { lang: langNorm(lang) });
+            (res.created ? created : updated).push(res.id);
+          }
+          return ok({
+            ok: true,
+            mode: 'rows',
+            created: created.length,
+            updated: updated.length,
+            ids: created.concat(updated),
+          });
+        }
         const res = await t.plan.importPlan(S, { file: args.file || undefined });
-        return ok({ ok: true, result: res });
+        return ok({ ok: true, mode: 'file', result: res });
       } catch (e) {
         return fail(e);
       }
