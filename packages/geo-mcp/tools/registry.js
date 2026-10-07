@@ -1458,6 +1458,47 @@ const tools = [
     },
   },
 
+  // ---------- geo_solution (GEO/SEO implementation plan) ----------
+  {
+    name: 'geo_solution',
+    description:
+      'Generate a full GEO/SEO implementation plan for a site from its latest diagnosis report ' +
+      '(report_write product in <site>/data/reports/). Deterministic assembly of the union of the ' +
+      'reference plan structures: 技术修复/重建（§1–§9）、关键词矩阵与内容（§10–§12）、价值桥接（§13）、' +
+      '实施保障（§14–§18）＋附录（§19）；quote:true 时追加报价方案与年度例行费用（§20–§21）。' +
+      'Requires a diagnosis report to exist for the site (run diagnose_site + report_write first).',
+    inputSchema: z.object({
+      site: siteField,
+      lang: z.string().optional().describe('plan language zh|en (default zh)'),
+      brand_name: z.string().optional().describe('brand name used in the plan (defaults to domain)'),
+      industry: z.string().optional().describe('industry / vertical, echoed into the plan header'),
+      quote: z
+        .boolean()
+        .optional()
+        .describe('include the pricing chapters (§20 报价方案 / §21 年度费用), default false'),
+      unit_rates: z
+        .record(z.string(), z.number())
+        .optional()
+        .describe('person-day rates override for quote mode, e.g. {"SEO 策略师": 2000} or {"seo": 2000}'),
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const res = await t.geo_solution.generateSolution({
+          site: S.siteKey,
+          lang: args.lang || 'zh',
+          brandName: args.brand_name || '',
+          industry: args.industry || '',
+          quote: !!args.quote,
+          unitRates: args.unit_rates || {},
+        });
+        return ok(res);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+
   // ---------- util / diagnostics ----------
   {
     name: 'util_ping',

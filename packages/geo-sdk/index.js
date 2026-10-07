@@ -72,6 +72,7 @@ lazy('monitor', () => require('./monitor'));
 lazy('standards', () => require('./standards'));
 lazy('translate', () => require('./translate'));
 lazy('diagnose', () => require('./diagnose'));
+lazy('geo_solution', () => require('./geo_solution'));
 lazy('util', () => require('./util'));
 lazy('cli', () => ({
   log: require('./cli/log'),
