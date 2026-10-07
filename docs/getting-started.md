@@ -33,7 +33,7 @@ Site directory layout:
 │   ├── site.yaml           # site identity (domain / languages / content dirs)
 │   ├── wordpress.yaml      # publishing behavior
 │   └── monitor.yaml        # GEO monitoring config
-└── data/inbox/zh-cn/       # authoring workspace (md + research brief, auto-archived after ingest)
+└── data/inbox/zh-hans/       # authoring workspace (md + research brief, auto-archived after ingest)
 ```
 
 ## 2. Initialize the database (SQLite is automatic, nothing to do)
@@ -49,7 +49,7 @@ SITES_ROOT=~/tengence/sites tengence-geo-db-init --site my-site
 ## 3. Full CLI pipeline (ingest → gate)
 
 ```bash
-cd ~/tengence/sites/my-site/data/inbox/zh-cn
+cd ~/tengence/sites/my-site/data/inbox/zh-hans
 # prepare the article body (md containing the "key takeaways / FAQ" blocks) + research brief
 
 export SITES_ROOT=~/tengence/sites

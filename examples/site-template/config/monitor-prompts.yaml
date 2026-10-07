@@ -1,7 +1,7 @@
 # ============================================================
 # Monitor question bank — example (12 questions, all five layers; ≤2 variants per layer)
 # Extend the production bank with the same structure (id unique, layer ∈ L1..L5, variants optional)
-# NOTE: this example bank is in English. For zh-cn sites, write the questions in the
+# NOTE: this example bank is in English. For zh-hans sites, write the questions in the
 # language of the answers you monitor — the extraction wordlists are language-specific.
 # ============================================================
 prompts:

@@ -486,7 +486,7 @@ function buildPlan(parsed, opts) {
   md.push(`- 诊断证据：${ev(parsed.robotsSitemap, '详见诊断报告 §4.5')}`);
   md.push(`- 重建 XML Sitemap 至全量真实 URL（${scale.length ? `诊断实测：${scale.map((r) => `${r.type} 收录 ${r.sitemap}/实测 ${r.reachable}`).join('；')}` : '规模数据见诊断报告 §2'}）；`);
   md.push(`- 统一 https + www 规范；在 robots.txt 声明并提交 GSC / Bing Webmaster；`);
-  md.push(`- sitemap_index.xml 分语言（zh-CN / en）输出，删除冗余 sitemap.txt（若有）。`);
+  md.push(`- sitemap_index.xml 分语言（zh-hans / en）输出，删除冗余 sitemap.txt（若有）。`);
   md.push('');
   md.push(`### 6.3 Canonical / 内链 / 面包屑`);
   md.push('');
@@ -501,10 +501,10 @@ function buildPlan(parsed, opts) {
   md.push(`### 7.1 现状与部署`);
   md.push('');
   md.push(`- 诊断证据：${ev(parsed.multilang, '多语言现状详见诊断报告 §6.3（待验证）')}`);
-  md.push(`- 本方案多语言范围：**仅中文（zh-CN）与英文（en）**；英文版承担国际采购流量，其他语种列入后续路线图。`);
+  md.push(`- 本方案多语言范围：**仅中文（zh-hans）与英文（en）**；英文版承担国际采购流量，其他语种列入后续路线图。`);
   md.push('');
   md.push('```html');
-  md.push(`<link rel="alternate" hreflang="zh-CN"   href="https://${host}/" />`);
+  md.push(`<link rel="alternate" hreflang="zh-Hans"   href="https://${host}/" />`);
   md.push(`<link rel="alternate" hreflang="en"       href="https://${host}/en/" />`);
   md.push(`<link rel="alternate" hreflang="x-default" href="https://${host}/" />`);
   md.push('```');
