@@ -26,7 +26,8 @@ function buildChecks(ev) {
   const llms = ev.llms || {};
   const langs = ev.langs || {};
   const alpn = ev.proto || {};
-  const aiBlocks = ev.aiBlocks || { count: 0, blocked: [] };
+  const aiBlocksGeo = ev.aiBlocksGeo || { count: 0, blocked: [] };
+  const aiBlocksSeo = ev.aiBlocksSeo || { count: 0, blocked: [] };
   const titleMeta = ev.titleMeta || {};
   const ck = ev.cookieFlags || {};
   const pages = ev.pages || [];
@@ -319,25 +320,45 @@ function buildChecks(ev) {
   C.push(check('geo', 'llms.txt', llms.found ? 'pass' : 'info',
     llms.found ? `发现 ${llms.probes.filter((p) => p.status === 200).map((p) => new URL(p.url).pathname).join(', ')}｜${(llms.content || '').slice(0, 60).replace(/\n/g, ' ')}…` : '未发现 /llms.txt（生成式引擎无结构化入口）'));
 
-  // ---- AI crawler reachability (deterministic, UA-based) ----
-  const gpt = ai.find((a) => a.bot === 'GPTBot') || ai[0];
-  if (gpt) {
-    const st = gpt.status === 200 && gpt.full ? 'pass' : 'fail';
+  // ---- crawler reachability: SEO (search engines) vs GEO (generative engines),
+  //      probed and judged separately ----
+  const seoBots = (ai || []).filter((a) => a.group === 'seo');
+  const geoBots = (ai || []).filter((a) => a.group === 'geo');
+
+  function crawlerSummary(b) {
     let hostNote = '';
-    if (!gpt.hostSame && gpt.finalUrl) {
+    if (!b.hostSame && b.finalUrl) {
       try {
-        hostNote = `（被重定向到 ${new URL(gpt.finalUrl).hostname}）`;
+        hostNote = `（被重定向到 ${new URL(b.finalUrl).hostname}）`;
       } catch {
         hostNote = '（被重定向）';
       }
     }
-    C.push(check('geo', 'AI 爬虫可达性', st,
-      `${gpt.bot}: HTTP ${gpt.status}${hostNote}，正文 ${gpt.wordCount} 词${gpt.full ? '（内容完整，可引用）' : gpt.status === 200 && !gpt.hostSame ? '（WAF 验证页，AI 读不到真实内容）' : gpt.status === 200 ? '（疑似 JS 空壳或内容极少）' : `（${gpt.error || '被拦截'}）`}`));
-  } else {
-    C.push(check('geo', 'AI 爬虫可达性', 'info', '未探测'));
+    return `${b.bot}: HTTP ${b.status}${hostNote}，正文 ${b.wordCount} 词${b.full ? '（内容完整，可引用）' : b.status === 200 && !b.hostSame ? '（WAF 验证页，读不到真实内容）' : b.status === 200 ? '（疑似 JS 空壳或内容极少）' : `（${b.error || '被拦截'}）`}`;
   }
-  C.push(check('geo', 'AI 爬虫 robots 屏蔽', aiBlocks.count === 0 ? 'pass' : 'warn',
-    aiBlocks.count ? `robots.txt 对 ${aiBlocks.count} 项规则涉及 AI/机器爬虫: ${aiBlocks.blocked.map((b) => `${b.ua} → ${b.rule}`).join('；').slice(0, 120)}` : 'robots 未屏蔽 AI 爬虫'));
+
+  if (seoBots.length) {
+    const allFull = seoBots.every((b) => b.status === 200 && b.full);
+    const any200 = seoBots.some((b) => b.status === 200);
+    C.push(check('geo', 'SEO 爬虫可达性', allFull ? 'pass' : any200 ? 'warn' : 'fail',
+      `搜索引擎组（Googlebot/Bingbot/Baiduspider）：${seoBots.map(crawlerSummary).join('；')}`));
+  } else {
+    C.push(check('geo', 'SEO 爬虫可达性', 'info', '未探测'));
+  }
+
+  if (geoBots.length) {
+    const allFull = geoBots.every((b) => b.status === 200 && b.full);
+    const any200 = geoBots.some((b) => b.status === 200);
+    C.push(check('geo', 'GEO 爬虫可达性', allFull ? 'pass' : any200 ? 'warn' : 'fail',
+      `生成式引擎组（GPTBot/ClaudeBot/PerplexityBot/Bytespider）：${geoBots.map(crawlerSummary).join('；')}`));
+  } else {
+    C.push(check('geo', 'GEO 爬虫可达性', 'info', '未探测'));
+  }
+
+  C.push(check('geo', 'SEO 爬虫 robots 屏蔽', aiBlocksSeo.count === 0 ? 'pass' : 'warn',
+    aiBlocksSeo.count ? `robots.txt 对 ${aiBlocksSeo.count} 项规则涉及搜索爬虫: ${aiBlocksSeo.blocked.map((b) => `${b.ua} → ${b.rule}`).join('；').slice(0, 120)}` : 'robots 未屏蔽搜索引擎爬虫'));
+  C.push(check('geo', 'GEO 爬虫 robots 屏蔽', aiBlocksGeo.count === 0 ? 'pass' : 'warn',
+    aiBlocksGeo.count ? `robots.txt 对 ${aiBlocksGeo.count} 项规则涉及 AI/生成式爬虫: ${aiBlocksGeo.blocked.map((b) => `${b.ua} → ${b.rule}`).join('；').slice(0, 120)}` : 'robots 未屏蔽 AI/生成式爬虫'));
 
   // ---- independent language version (i18n) ----
   const lang200 = (langs.probes || []).filter((p) => p.is200);

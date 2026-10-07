@@ -185,10 +185,14 @@ test('diagnose_site: full diagnosis against local site (bootstrap + evidence + c
   assert.equal(res.evidence.scale.abnormal.length, 1, 'the /broken 500 must be flagged as abnormal');
 
   // GEO evidence pack: aiBots / llms / langs / proto / cookieFlags / titleMeta
-  assert.ok(res.evidence.aiBots.length >= 5, 'AI crawler reachability probes expected');
+  assert.ok(res.evidence.aiBots.length >= 7, 'SEO+GEO crawler reachability probes expected (7 bots)');
   const gpt = res.evidence.aiBots.find((b) => b.bot === 'GPTBot');
+  assert.equal(gpt.group, 'geo', 'GPTBot belongs to the GEO crawler group');
   assert.equal(gpt.status, 200);
   assert.equal(gpt.full, true, 'GPTBot should see full content on the SSR homepage');
+  const goog = res.evidence.aiBots.find((b) => b.bot === 'Googlebot');
+  assert.equal(goog.group, 'seo', 'Googlebot belongs to the SEO crawler group');
+  assert.ok(res.evidence.aiBlocksGeo && res.evidence.aiBlocksSeo, 'per-group robots block detection present');
   assert.equal(res.evidence.llms.found, true, '/llms.txt exists in fixture');
   assert.ok(res.evidence.langs && Array.isArray(res.evidence.langs.probes));
   assert.ok(res.evidence.proto && typeof res.evidence.proto.protocol !== 'undefined');
@@ -227,8 +231,10 @@ test('diagnose_site: full diagnosis against local site (bootstrap + evidence + c
   assert.equal(byId['crawl-sitemap 收录页可访问性'].status, 'fail', '/broken 500 in sitemap');
   assert.equal(byId['crawl-sitemap 500-异常软错误'].status, 'fail', 'one stable 500 in sitemap');
   assert.equal(byId['geo-llms.txt'].status, 'pass', 'fixture ships /llms.txt');
-  assert.equal(byId['geo-AI 爬虫可达性'].status, 'pass', 'GPTBot sees full SSR content');
-  assert.equal(byId['geo-AI 爬虫 robots 屏蔽'].status, 'pass', 'robots does not block AI bots');
+  assert.equal(byId['geo-GEO 爬虫可达性'].status, 'pass', 'GPTBot sees full SSR content');
+  assert.equal(byId['geo-SEO 爬虫可达性'].status, 'pass', 'Googlebot sees full SSR content');
+  assert.equal(byId['geo-GEO 爬虫 robots 屏蔽'].status, 'pass', 'robots does not block GEO crawlers');
+  assert.equal(byId['geo-SEO 爬虫 robots 屏蔽'].status, 'pass', 'robots does not block SEO crawlers');
   assert.ok(byId['tech-HTTP 协议版本'], 'HTTP protocol version check exists');
   assert.ok(byId['content-正文词数'], 'word-count check exists');
   assert.ok(byId['content-统计代码'], 'analytics check exists');
@@ -260,7 +266,7 @@ test('diagnose_site: WAF interception is detected when the final response leaves
   const gpt = res.evidence.aiBots.find((b) => b.bot === 'GPTBot');
   assert.ok(gpt, 'GPTBot probe present');
   assert.equal(gpt.full, false, 'a WAF challenge page is not full content');
-  assert.equal(byId['geo-AI 爬虫可达性'].status, 'fail');
+  assert.equal(byId['geo-GEO 爬虫可达性'].status, 'fail');
 });
 
 test('report_write: writes into data/reports and rejects traversal', async () => {

@@ -216,7 +216,8 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
   evidence.llms = llmsRes;
   evidence.langs = langRes;
   evidence.proto = protoRes;
-  evidence.aiBlocks = robotsAiBlocks(evidence.robots);
+  evidence.aiBlocksGeo = robotsAiBlocks(evidence.robots, 'geo');
+  evidence.aiBlocksSeo = robotsAiBlocks(evidence.robots, 'seo');
 
   // ---- cross-page title / meta duplication (the "all titles identical" check) ----
   const titleMeta = { titles: [], descriptions: [], titleSet: new Set(), descSet: new Set() };
@@ -291,7 +292,8 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
     llms: llmsRes,
     langs: langRes,
     proto: protoRes,
-    aiBlocks: evidence.aiBlocks,
+    aiBlocksGeo: evidence.aiBlocksGeo,
+    aiBlocksSeo: evidence.aiBlocksSeo,
     titleMeta: titleMeta,
     cookieFlags: evidence.cookieFlags,
     pages: pages,
@@ -334,7 +336,8 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
       llms: llmsRes,
       langs: langRes,
       proto: protoRes,
-      aiBlocks: evidence.aiBlocks,
+      aiBlocksGeo: evidence.aiBlocksGeo,
+      aiBlocksSeo: evidence.aiBlocksSeo,
       titleMeta: titleMeta,
       cookieFlags: evidence.cookieFlags,
     },
