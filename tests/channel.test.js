@@ -8,8 +8,10 @@
  *     tags/source_url/exported_at/rewrite/mode) + body
  *   - publishToChannel Mode B: exports publish packages under
  *     <site>/data/channel-export/<platform>/<slug>.md and logs to channel-log.jsonl
- *   - parseWechatPlanText: the 微信公众号发布计划.md → calendar rows
- *     (period/topic/weekday/status/slugs/draft ids)
+ *   - importWechatIssues: STRUCTURED calendar rows (period/topic/weekday/status/
+ *     slugs/draft ids). The old parseWechatPlanText (markdown → rows) was removed
+ *     on 2026-10-07: a prose document is not a data source, and parsing one inside
+ *     the API silently produced zero or wrong rows whenever the doc was edited.
  *
  * Isolation: setSitesRoot + DB_PATH point at a temp dir; the real workspace and
  * the default ~/.tengence/geo-mcp/geo.sqlite are never touched.
@@ -24,7 +26,7 @@ const path = require('path');
 const site = require('../packages/geo-sdk/site');
 const sqlite = require('../packages/geo-sdk/db/sqlite');
 const t = require('../packages/geo-sdk');
-const { parseWechatPlanText } = require('../packages/geo-sdk/plan/channel');
+const { importWechatIssues } = require('../packages/geo-sdk/plan/channel');
 const { renderPublishPackage } = require('../packages/geo-sdk/syndicate/channel');
 
 let TMP;
@@ -163,49 +165,104 @@ test('publishToChannel: unknown platform / empty inputs throw', async () => {
   );
 });
 
-// ==================== WeChat plan parsing ====================
+// ==================== WeChat calendar (structured input) ====================
 
-const WECHAT_PLAN_SAMPLE = `# 微信公众号发布计划
+const WECHAT_ISSUES = [
+  {
+    period: '第1期',
+    topic: 'GEO 入门',
+    weekday: '周二',
+    article_slugs: ['what-is-geo', 'geo-vs-seo-differences'],
+    status: 'published',
+    draft_ids: ['STla8_i3I98'],
+    notes: '建议发布日：第1周 周二',
+  },
+  {
+    period: '第2期',
+    topic: 'GEO 流量获取',
+    weekday: '周四',
+    article_slugs: ['ai-search-traffic-acquisition'],
+    status: 'todo',
+    draft_ids: [],
+  },
+];
 
-## 二、排期总览
+test('importWechatIssues: writes structured rows, idempotent on re-run', async () => {
+  const dbSqlite = require('../packages/geo-sdk/db/sqlite');
+  const { withConn } = require('../packages/geo-sdk/db/connection');
+  dbSqlite.getDb();
+  try {
+    const res = await importWechatIssues(WECHAT_ISSUES);
+    assert.equal(res.platform, 'wechat');
+    assert.equal(res.rows, 2);
+    assert.equal(res.imported, 2, 'first run inserts');
+    const again = await importWechatIssues(WECHAT_ISSUES);
+    assert.equal(again.imported, 0, 'second run is idempotent');
+    assert.equal(again.updated, 2);
 
-| 期次 | 建议发布日 | 主题 | 篇数 | 状态 |
-|------|-----------|------|------|------|
-| 第1期 | 第1周 周二 | GEO 入门 | 3 | ✅ 已群发 |
-| 第2期 | 第1周 周四 | GEO 流量获取 | 3 | 📝 草稿已建 |
+    const rows = await t.plan.channel.list({ platform: 'wechat' });
+    const first = rows.find((r) => r.period === '第1期');
+    const second = rows.find((r) => r.period === '第2期');
+    assert.deepEqual(first.article_slugs, ['what-is-geo', 'geo-vs-seo-differences']);
+    assert.deepEqual(first.draft_ids, ['STla8_i3I98']);
+    assert.equal(first.status, 'published');
+    assert.equal(second.status, 'todo');
+  } finally {
+    await withConn(async (conn) => {
+      await conn.query("DELETE FROM tengence_geo_channel_plan WHERE app_id = 1 AND platform = 'wechat'");
+    });
+  }
+});
 
-## 三、逐期详情
+test('importWechatIssues: rejects non-array / missing period', async () => {
+  await assert.rejects(() => importWechatIssues('not-an-array'), /requires an issues array/);
+  await assert.rejects(() => importWechatIssues([{ topic: 'no period' }]), /requires a period/);
+});
 
-### 第1期 GEO 入门
-
-| # | slug | 标题 | 类目 | 标签 | 官网地址 | 草稿ID | 状态 |
-|---|------|------|------|------|----------|--------|------|
-| 1 | what-is-geo | 什么是 GEO | geo-ai-search | GEO/SEO | https://www.tengence.com/blog/article/what-is-geo/ | STla8_i3I98 | ✅ 已群发 |
-| 2 | geo-vs-seo-differences | GEO 与 SEO 区别 | geo-ai-search | GEO/SEO | https://www.tengence.com/blog/article/geo-vs-seo-differences/ | STla8_i3I98 | ✅ 已群发 |
-
-### 第2期 GEO 流量获取
-
-| # | slug | 标题 | 类目 | 标签 | 官网地址 | 草稿ID | 状态 |
-|---|------|------|------|------|----------|--------|------|
-| 1 | ai-search-traffic-acquisition | AI 搜索流量 | geo-ai-search | GEO/SEO | https://www.tengence.com/blog/article/ai-search-traffic-acquisition/ | — | ⬜ |
-`;
-
-test('parseWechatPlanText: period/topic/weekday/status/slugs/draft ids', () => {
-  const issues = parseWechatPlanText(WECHAT_PLAN_SAMPLE);
-  assert.equal(issues.length, 2);
-  const first = issues[0];
-  assert.equal(first.period, '第1期');
-  assert.equal(first.topic, 'GEO 入门');
-  assert.equal(first.weekday, '周二', 'weekday extracted from the overview row');
-  assert.equal(first.weekdayNote, '第1周 周二');
-  assert.equal(first.status, 'published');
-  assert.deepEqual(first.article_slugs, ['what-is-geo', 'geo-vs-seo-differences']);
-  assert.deepEqual(first.draft_ids, ['STla8_i3I98'], 'duplicate draft ids deduped');
-  const second = issues[1];
-  assert.equal(second.period, '第2期');
-  assert.equal(second.weekday, '周四');
-  assert.equal(second.status, 'todo', 'overview ⬜ → todo');
-  assert.equal(second.draft_ids.length, 0);
+test('nextDue: derived from blog publish_order, skipping slugs already sent', async () => {
+  const dbSqlite = require('../packages/geo-sdk/db/sqlite');
+  const { withConn } = require('../packages/geo-sdk/db/connection');
+  dbSqlite.getDb();
+  const ids = [];
+  await withConn(async (conn) => {
+    for (const [slug, order] of [['blog-a', 10], ['blog-b', 20], ['blog-c', 30]]) {
+      const [r] = await conn.query(
+        `INSERT INTO tengence_geo_article_plan
+           (app_id, slug, lang, node_type, title, plan_status, publish_order)
+         VALUES (1, ?, 'zh-hans', 'spoke', ?, 'published', ?)`,
+        [slug, slug, order]
+      );
+      ids.push(r.insertId);
+    }
+    // blog-a already dispatched to wechat → must be skipped
+    await conn.query(
+      `INSERT INTO tengence_geo_channel_plan
+         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
+       VALUES (1, 'wechat', 'P10', 'blog-a', null, 'published', ?, ?)`,
+      [JSON.stringify(['blog-a']), JSON.stringify([])]
+    );
+  });
+  let logId;
+  await withConn(async (conn) => {
+    const [rows] = await conn.query(
+      `SELECT id FROM tengence_geo_channel_plan WHERE app_id = 1 AND platform = 'wechat' AND period = 'P10'`
+    );
+    logId = rows[0].id;
+  });
+  try {
+    const due = await t.plan.channel.nextDue('wechat');
+    assert.ok(due, 'blog-published rows must be due');
+    assert.equal(due.source, 'blog_plan');
+    assert.equal(due.slug, 'blog-b', 'blog-a is already dispatched → resume at blog-b');
+    assert.deepEqual(due.article_slugs, ['blog-b']);
+    const batch = await t.plan.channel.nextDue('wechat', { count: 2 });
+    assert.deepEqual(batch.article_slugs, ['blog-b', 'blog-c'], 'count takes an issue-sized batch');
+  } finally {
+    await withConn(async (conn) => {
+      await conn.query('DELETE FROM tengence_geo_article_plan WHERE id IN (?, ?, ?)', ids);
+      await conn.query('DELETE FROM tengence_geo_channel_plan WHERE id = ?', [logId]);
+    });
+  }
 });
 
 // ==================== channel_plan markStatus (draft ids) ====================
@@ -243,7 +300,7 @@ test('markStatus: records draft ids, preserves them when not passed', async () =
   }
 });
 
-test('nextDue: returns the earliest todo row, skips draft/published rows', async () => {
+test('nextDue: wechat no longer hijacked by calendar rows (derived like every platform)', async () => {
   const dbSqlite = require('../packages/geo-sdk/db/sqlite');
   const { withConn } = require('../packages/geo-sdk/db/connection');
   dbSqlite.getDb();
@@ -266,14 +323,14 @@ test('nextDue: returns the earliest todo row, skips draft/published rows', async
     todoId = t.insertId;
   });
   try {
+    // Since 2026-10-07 the wechat queue is derived from the blog article_plan like
+    // every other platform; a pending calendar row no longer hijacks the order.
+    // The blog plan is empty in this test DB → nothing is due.
     const due = await t.plan.channel.nextDue('wechat');
-    assert.ok(due, 'a todo row must be due');
-    assert.equal(due.period, '待办期', 'draft rows are already handled and must be skipped');
-    assert.deepEqual(due.article_slugs, ['y', 'z']);
-    // mark it draft → next due becomes null
+    assert.equal(due, null, 'empty blog plan → nothing due (calendar rows do not drive the queue)');
     await t.plan.channel.markStatus(todoId, 'draft', ['MEDIA_B']);
     const due2 = await t.plan.channel.nextDue('wechat');
-    assert.equal(due2, null, 'no todo rows left → nothing due');
+    assert.equal(due2, null);
   } finally {
     await withConn(async (conn) => {
       await conn.query('DELETE FROM tengence_geo_channel_plan WHERE id IN (?, ?)', [draftId, todoId]);

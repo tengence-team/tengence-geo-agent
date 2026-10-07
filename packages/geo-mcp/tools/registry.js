@@ -1116,14 +1116,17 @@ const tools = [
   {
     name: 'plan_import',
     description: 'Import/update the plan table (idempotent upsert by (slug, lang)). ' +
-      'Two modes, by source: (a) no `rows` — parse the site plan directory (内容发布计划.md + publish-queue.json) for the zh-hans source rows; ' +
-      '(b) `rows[]` — write the given plan rows directly, which is how a translation row (lang=en|zh-hant) ' +
-      'is created or updated: it must be written through this keyed upsert, never by slug alone, ' +
-      'otherwise it silently overwrites the zh-hans source row. Pass publish_order to sequence a translation ' +
-      'alongside its source (same order value = published together), and plan_status to maintain its lifecycle.',
+      'Two modes: (a) no `rows` — DB-only maintenance (backfill article_id / wp_post_id / ' +
+      'published_url / featured_image, reconcile status from the articles table, assign missing ' +
+      'publish_order); (b) `rows[]` — write the given plan rows directly, which is how a ' +
+      'translation row (lang=en|zh-hant) is created or updated: it must be written through this ' +
+      'keyed upsert, never by slug alone, otherwise it silently overwrites the zh-hans source row. ' +
+      'Pass publish_order to sequence a translation alongside its source (same order value = ' +
+      'published together), and plan_status to maintain its lifecycle. ' +
+      'NOTE: this tool never reads a plan document — the plan table is the source of truth, so any ' +
+      'markdown/JSON plan must be converted to rows[] by the caller before calling this.',
     inputSchema: z.object({
       site: siteField,
-      file: z.string().optional().describe('absolute path to a plan file (default: scan the site plan directory). Mutually exclusive with rows.'),
       rows: z.array(z.object({
         slug: z.string().describe('article slug (shared by all three languages)'),
         lang: z.string().optional().describe('zh-hans | en | zh-hant (default zh-hans)'),
@@ -1141,15 +1144,12 @@ const tools = [
         published_at: z.string().optional(),
         languages: z.string().optional().describe('WP locale list of the trilingual set, e.g. "zh-cn,en-us,zh-hk"'),
         notes: z.string().optional(),
-      })).optional().describe('explicit plan rows to upsert (per-language). Mutually exclusive with file.'),
+      })).optional().describe('explicit plan rows to upsert (per-language)'),
     }),
     async run(args) {
       try {
         const S = withSite(args);
         process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
-        if (args.rows && args.file) {
-          return fail(new Error('plan_import takes either `rows` or `file`, not both'));
-        }
         if (args.rows) {
           const created = [];
           const updated = [];
@@ -1169,8 +1169,8 @@ const tools = [
             ids: created.concat(updated),
           });
         }
-        const res = await t.plan.importPlan(S, { file: args.file || undefined });
-        return ok({ ok: true, mode: 'file', result: res });
+        const res = await t.plan.importPlan(S, {});
+        return ok({ ok: true, mode: 'db-maintenance', result: res });
       } catch (e) {
         return fail(e);
       }
@@ -1875,9 +1875,9 @@ const tools = [
     description:
       'Per-platform publishing calendar: return the next article to publish for a platform plus all calendar rows ' +
       '(status/period/topic/weekday/slugs). Each platform has its OWN rows in the same channel_plan table. ' +
-      'wechat keeps a real per-issue calendar (returns the earliest row still todo). juejin / csdn (and other api platforms) treat the ' +
-      'table as a PUBLISH LOG — nextDue is DERIVED from the blog article_plan: it returns the next blog-published article (by ' +
+      'Every platform now DERIVES its queue from the blog article_plan: nextDue returns the next blog-published article (by ' +
       'publish_order) that is NOT yet recorded as published on THAT platform, so each platform\'s queue follows the blog order and ' +
+      '(wechat: a pending calendar row imported via importWechatIssues still wins, otherwise it falls through to the blog order) ' +
       'resumes right after the last article published to it (failed rows retry). Nothing is ever bulk-copied from the blog plan: ' +
       'only real outcomes are recorded, so juejin and csdn each keep their own independent calendar in the shared table. ' +
       'Seed already-published articles with channel_plan_reconcile (platform=csdn) before the first nextDue, otherwise the ' +

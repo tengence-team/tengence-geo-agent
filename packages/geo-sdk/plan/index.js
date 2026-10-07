@@ -21,8 +21,6 @@
  * ============================================================================
  */
 
-const fs = require('fs');
-const path = require('path');
 const repo = require('../db/plan');
 const { TABLES } = require('../db/schema');
 const { withConn } = require('../db/connection');
@@ -30,11 +28,6 @@ const { withConn } = require('../db/connection');
 /** Default tenant: process-level APP_ID env var (default 1); SQLite single-file
  * multi-tenant isolation is by app_id */
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
-
-const MATRIX_COLUMNS = 13; // | code | slug | title | keyword | volume | competition | intent | type | words | batch | category | tags | status |
-
-/** matrix status legend → plan_status */
-const MATRIX_STATUS = { '✅': 'published', '🕐': 'queued', '📝': 'written', '🆕': 'todo' };
 
 /** category slug → hub cluster letter (for hub-row annotation; C/D, E/F, G share) */
 const CATEGORY_CLUSTER = {
@@ -48,85 +41,18 @@ const CATEGORY_CLUSTER = {
 };
 
 // ---------------------------------------------------------------------------
-// import-source parsing
+// NOTE (2026-10-07): this module used to parse two CONTROL-PLANE documents —
+// 《内容发布计划.md》(a 13-column matrix table whose status column was an emoji
+// legend ✅/🕐/📝/🆕) and publish-queue.json — and replay them over the plan table
+// on every import. That is forbidden now: a prose document is not a data source,
+// and replaying one silently rewound live rows (35 genuinely published rows were
+// flipped back to queued) and clobbered DB-edited topic fields.
+//
+// The plan table IS the single source of truth. New/changed rows arrive as
+// STRUCTURED input: plan.upsert(record, { lang }) or plan_import{ rows[] }. Any
+// markdown → structured conversion happens OUTSIDE the API (AI / a one-off
+// migration script under dev/), never inside it.
 // ---------------------------------------------------------------------------
-
-/** Parse the §6.1–6.7 matrix tables of "内容发布计划.md" (13-column table rows) */
-function parseMatrix(mdPath) {
-  if (!fs.existsSync(mdPath)) return { rows: [], warned: [] };
-  const lines = fs.readFileSync(mdPath, 'utf8').split('\n');
-  const rows = [];
-  const warned = [];
-  for (const line of lines) {
-    if (!line.trim().startsWith('|')) continue;
-    const cells = line.split('|').map((c) => c.trim());
-    // strip the leading/trailing empty segments (| at both ends)
-    if (cells[0] === '') cells.shift();
-    if (cells.length && cells[cells.length - 1] === '') cells.pop();
-    if (cells.length !== MATRIX_COLUMNS) continue;
-    const [code, slug, title, keyword, volume, competition, intent, type, words, batch, category, tagStr, status] = cells;
-    // skip header rows (code/slug are column names) and separator rows (---)
-    if (!slug || /^-+$/.test(slug) || slug === 'slug' || !code || /^-+$/.test(code) || code === '编号') continue;
-    if (!slug) {
-      if (code) warned.push(`Matrix row ${code} (${title}) is missing a slug; will be backfilled by the queue/taxonomy`);
-      continue;
-    }
-    const tags = tagStr
-      ? tagStr.split(/[,，]/).map((s) => s.trim()).filter(Boolean)
-      : [];
-    rows.push({
-      slug,
-      matrix_code: code || null,
-      title: title || null,
-      focus_keyword: keyword && keyword !== '—' ? keyword : null,
-      keyword_volume: /^\d/.test(volume) ? parseInt(volume.replace(/,/g, ''), 10) : null,
-      keyword_competition: competition && competition !== '—' ? competition : null,
-      search_intent: intent || null,
-      content_type: type || null,
-      target_word_count: /^\d/.test(words) ? parseInt(words, 10) : null,
-      publish_batch: /^\d/.test(batch) ? parseInt(batch, 10) : null,
-      category: category || null,
-      tags,
-      plan_status: MATRIX_STATUS[status] || null,
-      hub_cluster: CATEGORY_CLUSTER[category] || null,
-    });
-  }
-  return { rows, warned };
-}
-
-/** Parse publish-queue.json (queue runtime facts: schedule/status/timestamps) */
-function parseQueue(queuePath) {
-  if (!fs.existsSync(queuePath)) return { items: [], meta: {} };
-  const q = JSON.parse(fs.readFileSync(queuePath, 'utf8'));
-  const items = (q.items || []).map((it) => ({
-    slug: it.slug,
-    publish_order: it.seq || 0,
-    matrix_code: it.code || null,
-    title: it.title || null,
-    // focus_keyword: queue-only topics (no matrix row) carry their keyword here;
-    // upsert() skips null values, so a missing field never wipes a matrix keyword
-    focus_keyword: it.focus_keyword || null,
-    target_word_count: it.words || null,
-    category: it.category || it.dir || null,
-    tags: Array.isArray(it.tags) ? it.tags : [],
-    wp_post_id: it.wp_post_id || null,
-    plan_status: it.status === 'published' ? 'published' : (it.status === 'queued' ? 'queued' : null),
-    queued_at: it.queued_at || null,
-    published_at: it.published_at ? it.published_at.slice(0, 19).replace('T', ' ') : null,
-    notes: it.note || null,
-    hub_cluster: CATEGORY_CLUSTER[it.category || it.dir] || null,
-  }));
-  return { items, meta: { skip_dates: q.skip_dates || [], per_day: q.per_day, note: q.note } };
-}
-
-/** Whether the article is already ingested (since 2026-09-20: DB is the single
- * authority; written = articles already has a row). Accepts an optional lang so a
- * translation row is judged against its own language, not the zh-hans source. */
-function mdExists(bySlug, slug, lang) {
-  return lang
-    ? bySlug.has(`${slug}::${repo.normalizeLang(lang)}`)
-    : bySlug.has(slug);
-}
 
 // ---------------------------------------------------------------------------
 // service API
@@ -316,30 +242,26 @@ async function tagWhitelist({ appId = DEFAULT_APP_ID() } = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Dual-source merged import (idempotent, upsert by slug; the taxonomy.yaml source
- * retired 2026-09-20):
- *   matrix ("内容发布计划.md" §6.1–6.7) → publish-queue.json (overrides schedule/status/timestamps)
- * Finally backfills article_id / title / published_url / featured_image (matched by
- * slug against the articles table).
- * @param {object} site loadSite() return value
- * @param {object} opts { matrixPath, queuePath, domain } defaults auto-derived
+ * Plan-table maintenance (idempotent). Since 2026-10-07 this reads NO files: the
+ * plan table is the single source of truth and every row change arrives as
+ * structured input (plan.upsert / plan_import{ rows[] }). What is left is pure
+ * DB hygiene:
+ *   1. backfill article_id / title / wp_post_id / published_url (matched by
+ *      slug+lang against the articles table)
+ *   2. reconcile plan_status from articles facts (never from a file)
+ *   3. assign a publish_order to rows that still lack one
+ *   4. backfill featured_image from article_images / articles
+ *   5. seed hub rows once (from the categories table)
+ * @param {object} site loadSite() return value (only site.site.site.domain is used)
+ * @param {object} opts { domain }
  */
 async function importPlan(site, opts = {}) {
-  const matrixPath = opts.matrixPath || path.join(site.siteDir, 'plan/2026/内容发布计划.md');
-  const queuePath = opts.queuePath || path.join(site.siteDir, 'plan/2026/publish-queue.json');
   const domain = opts.domain || (site.site.site && site.site.site.domain);
   const articleUrl = (slug) => `https://www.${domain}/blog/article/${slug}/`;
 
   const appId = Number(process.env.APP_ID || 1);
 
-  // 1. parse both sources
-  const { rows: matrixRows, warned: matrixWarned } = parseMatrix(matrixPath);
-  const { items: queueItems, meta: queueMeta } = parseQueue(queuePath);
-
   const report = {
-    matrix_rows: matrixRows.length,
-    queue_items: queueItems.length,
-    matrix_warned: matrixWarned,
     created: 0,
     updated: 0,
     article_linked: 0,
@@ -347,29 +269,11 @@ async function importPlan(site, opts = {}) {
     featured_filled: 0,
     hub_rows: 0,
     missing_article: [],
-    // observability: confirms whether the running build skips the status recompute
-    // when no queue source exists (guard added 2026-10-07)
-    has_queue_source: null,
   };
 
   await withConn(async (conn) => {
     await conn.beginTransaction();
     try {
-      // 2. matrix (first, providing topic info)
-      //    plan_status is stripped: the matrix is a one-time paper plan (✅/🕐/📝/🆕 in
-      //    内容发布计划.md) that froze at authoring time, so replaying it would overwrite
-      //    the live DB state with stale values — it flipped 35 genuinely published rows
-      //    back to queued. Status is owned by the queue source, else by the DB itself.
-      for (const row of matrixRows) {
-        const { plan_status, ...topicOnly } = row;
-        await repo.upsert(conn, appId, topicOnly);
-      }
-
-      // 3. queue (overrides schedule/status/timestamps/word-count/code — runtime facts)
-      for (const item of queueItems) {
-        await repo.upsert(conn, appId, item);
-      }
-
       // 5. backfill article_id / title / wp_post_id / published_url / featured_image by slug+lang
       //    Keyed on (slug, lang): all three languages share one slug, so a slug-only map
       //    would collapse them into whichever row was read last and let one language's
@@ -404,51 +308,26 @@ async function importPlan(site, opts = {}) {
         }
       }
 
-      // 5.5 full plan_status recomputation (authority priority: queue → matrix →
-      //     articles/taxonomy inference)
-      //     todo=not written | written=ingested (articles has a row) | queued=WP
-      //     draft pushed (wp_post_id not null)
-      //     published=WP promoted (articles.status='publish')
-      const queueStatus = new Map(queueItems.map((i) => [i.slug, i.plan_status]));
-      const matrixStatus = new Map(matrixRows.map((r) => [r.slug, r.plan_status]));
-      // Without a queue source there is no runtime status to reconcile against: the
-      // matrix is a one-time static seed (topic info, no publish facts), so letting it
-      // drive plan_status would rewrite live rows from stale paper values — it demoted
-      // 38 queued rows to written and a published row back down. The DB is the authority
-      // once the queue file is gone; import then only fills gaps, never rewinds.
-      const hasQueueSource = queueItems.length > 0;
-      report.has_queue_source = hasQueueSource;
+      // 5.5 plan_status reconciliation from DB facts ONLY (no file is read here).
+      //     todo=no articles row for this language | written=ingested |
+      //     queued=WP draft pushed (wp_post_id on either side) | published=promoted.
+      //     The authority chain used to be queue → matrix → articles; both file
+      //     sources are gone (a prose doc is not a data source), so the plan table
+      //     plus the articles table are the only inputs.
       for (const p of planRows) {
+        const a = bySlugLang.get(`${p.slug}::${repo.normalizeLang(p.lang)}`);
         let st;
-        if (!hasQueueSource) {
-          st = p.plan_status;
-        } else if (queueStatus.has(p.slug) && queueStatus.get(p.slug)) {
-          st = queueStatus.get(p.slug);
-        } else if (matrixStatus.has(p.slug) && matrixStatus.get(p.slug)) {
-          st = matrixStatus.get(p.slug);
-        } else {
-          const a = bySlugLang.get(`${p.slug}::${repo.normalizeLang(p.lang)}`);
-          // no articles row for THIS language → the translation is not written yet;
-          // never promote it on the strength of another language's facts
-          if (!a) st = 'todo';
-          else if (a.status === 'publish') st = 'published';
-          else if (a.wp_post_id) st = 'queued';
-          else st = 'written';
-        }
+        // no articles row for THIS language → the translation is not written yet;
+        // never promote it on the strength of another language's facts
+        if (!a) st = 'todo';
+        else if (a.status === 'publish') st = 'published';
         // queued is sticky while a WP draft exists: articles.wp_post_id can be null
-        // (e.g. the row predates the backfill) while the plan row already records the
-        // pushed draft, and dropping queued→written here would silently re-queue a
-        // published-through-WP article for re-publication by promote-daily.
-        if (st === 'written' && p.plan_status === 'queued' && p.wp_post_id) {
-          st = 'queued';
-        }
-        // strictness: pending (draft not pushed) with md → written; without md → todo
-        if (st === 'queued' && !p.wp_post_id) {
-          st = mdExists(bySlugLang, p.slug, p.lang) ? 'written' : 'todo';
-        }
-        // published is terminal: publish-queue.json / the matrix are one-time import
-        // seeds, so a stale file status must never rewind a row the DB already
-        // published — a rewind would let promote-daily publish the same article twice.
+        // (e.g. the row predates the backfill) while the plan row already records
+        // the pushed draft, so the plan side counts too.
+        else if (a.wp_post_id || p.wp_post_id) st = 'queued';
+        else st = 'written';
+        // published is terminal — a rewind would let promote-daily publish the same
+        // article twice, so the DB's published state always wins.
         if (p.plan_status === 'published' && st !== 'published') st = 'published';
         const urlPatch = st === 'published' && !p.published_url ? articleUrl(p.slug) : null;
         if (st !== p.plan_status || urlPatch) {
@@ -463,19 +342,14 @@ async function importPlan(site, opts = {}) {
         }
       }
 
-      // 5.7 complete publish_order: non-queue rows (unassigned) get ordered after the
-      //     queue, by matrix_code, so promote-daily first publishes the "43 freshly
-      //     written queue items", then the legacy drafts (idempotent: existing nonzero
-      //     orders are kept)
-      const queueSlugs = new Set(queueItems.map((i) => i.slug));
-      let nextOrder = queueItems.reduce((m, i) => Math.max(m, i.publish_order || 0), 0) + 1;
+      // 5.7 complete publish_order: rows still at 0 are appended after the highest
+      //     existing order (idempotent: existing nonzero orders are kept). Order now
+      //     comes from the table itself — the queue file that used to seed it is gone.
+      let nextOrder =
+        planRows.reduce((m, p3) => Math.max(m, p3.publish_order || 0), 0) + 1;
       const needOrder = planRows
-        .filter((p2) => !queueSlugs.has(p2.slug) && (p2.publish_order || 0) === 0)
-        .sort(
-          (a, b) =>
-            (a.matrix_code || 'zzz').localeCompare(b.matrix_code || 'zzz') ||
-            a.slug.localeCompare(b.slug)
-        );
+        .filter((p2) => (p2.publish_order || 0) === 0)
+        .sort((a, b) => a.slug.localeCompare(b.slug));
       for (const p2 of needOrder) {
         // same (slug, lang) keying: never assign an order to the zh-hans row by mistake
         await repo.upsert(conn, appId, { slug: p2.slug, publish_order: nextOrder++ },
@@ -544,18 +418,10 @@ async function importPlan(site, opts = {}) {
     }
   });
 
-  // 8. aggregate created/updated (a fully precise post-import comparison against
-  //    matrix+queue+taxonomy counts is hard; instead count rows present after the
-  //    slug-set merge)
-  const expectedSlugs = new Set([
-    ...matrixRows.map((r) => r.slug),
-    ...queueItems.map((i) => i.slug),
-  ]);
+  // 8. row census. There is no external slug set to compare against any more: the
+  //    table is the source of truth, so this is just a count.
   const allPlan = await list({ appId });
   report.total_plan_rows = allPlan.length;
-  report.expected_slugs = expectedSlugs.size;
-  report.not_in_plan = [...expectedSlugs].filter((s) => !allPlan.some((p) => p.slug === s));
-  report.queue_meta = queueMeta;
 
   return report;
 }
@@ -566,14 +432,19 @@ async function importPlan(site, opts = {}) {
 // ---------------------------------------------------------------------------
 
 /**
- * Validate: ① plan category/tags are all on the allow-list; ② local md exists
- * (mandatory for written/queued/published); ③ published/queued rows have a non-empty
- * wp_post_id; ④ published rows have a non-empty published_url.
+ * Validate (DB-only since 2026-10-07): ① plan category/tags are all on the
+ * allow-list; ② published/queued rows have a non-empty wp_post_id; ③ published rows
+ * have a non-empty published_url.
+ *
+ * The old ② "local md file exists" check was removed: it made a service function
+ * depend on the filesystem AND on loadSite() resolving the site from process.argv,
+ * so verify() threw before doing any work whenever it was called programmatically.
+ * Whether an article's content exists is a fact of the articles table, not of a
+ * directory listing.
  * @returns {Promise<{ok:boolean, errors:string[], stats:object}>}
  */
 async function verify({ appId = DEFAULT_APP_ID() } = {}) {
   const errors = [];
-  const site = require('../site/config').loadSite();
   const whitelistCats = new Set((await categoryWhitelist({ appId })).map((c) => c.slug));
   const whitelistTags = new Set((await tagWhitelist({ appId })).map((t) => t.slug));
   const rows = await list({ appId });
@@ -589,11 +460,6 @@ async function verify({ appId = DEFAULT_APP_ID() } = {}) {
     }
     for (const t of r.tags) {
       if (!whitelistTags.has(t)) errors.push(`${r.slug}: tag ${t} is not on the allow-list`);
-    }
-    if (['written', 'queued', 'published'].includes(r.plan_status) && r.category) {
-      if (!mdExists(site, r.slug, r.category)) {
-        errors.push(`${r.slug}: local md missing (${r.category}/${r.slug}.md)`);
-      }
     }
     if (['queued', 'published'].includes(r.plan_status) && !r.wp_post_id) {
       errors.push(`${r.slug}: ${r.plan_status} status is missing wp_post_id`);
@@ -773,8 +639,8 @@ module.exports = {
   importPlan, verify,
   // reconcile sync
   reconcile,
-  // parsing (tests/debugging)
-  parseMatrix, parseQueue, mdExists,
+  // (document parsers removed 2026-10-07: the plan table is the only data source;
+  //  structured rows go through upsert / importPlan, never through a file)
   // per-platform publishing calendar (workspace-local channel_plan table)
   channel: require('./channel'),
 };

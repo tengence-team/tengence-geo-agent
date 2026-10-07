@@ -5,10 +5,13 @@
  * Data source: tengence_geo_article_plan (single source of truth), all accessed via t.plan.
  *
  * Usage:
- *   tengence-geo plan.js import [--matrix=<path>] [--queue=<path>] [--site <key>]
- *        —— dual-source merged import (100-article matrix + publish-queue.json; the
- *           taxonomy.yaml source is retired), idempotent by slug; backfills article_id /
- *           title / published_url / featured_image.
+ *   tengence-geo plan.js import [--site <key>]
+ *        —— DB-only maintenance: reconciles plan_status from the articles table,
+ *           backfills article_id / title / wp_post_id / published_url / featured_image,
+ *           assigns missing publish_order and seeds hub rows. Idempotent.
+ *           (The 内容发布计划.md matrix and publish-queue.json sources were removed on
+ *            2026-10-07: a document is not a data source. Write rows via the
+ *            plan_import MCP tool's rows[] instead.)
  *   tengence-geo plan.js sync [--dry-run] [--site <key>]
  *        —— three-way reconciliation (WP article status + local md → plan table):
  *           WP publish → published; WP draft → queued; local md present → written; else todo.
@@ -91,32 +94,19 @@ function fmtRow(p) {
   return `${status} ${batch} ${cluster} ${code} ${type} ${cat} ${tags} ${title} ${p.slug}${url ? ' → ' + url : ''}`;
 }
 
-async function cmdImport(opts) {
-  console.log(`[plan] Importing the three sources → article plan (app_id=${APP_ID})`);
-  const report = await t.plan.importPlan(SITE, {
-    matrixPath: opts.matrix || undefined,
-    queuePath: opts.queue || undefined,
-  });
+async function cmdImport() {
+  console.log(`[plan] DB-only maintenance → article plan (app_id=${APP_ID})`);
+  const report = await t.plan.importPlan(SITE, {});
   console.log('\n========== Import report ==========');
-  console.log(`Matrix rows: ${report.matrix_rows} | Queue items: ${report.queue_items}`);
   console.log(`Total plan rows: ${report.total_plan_rows} (including ${report.hub_rows} hub rows)`);
-  console.log(`Expected slug set: ${report.expected_slugs} | Not ingested: ${report.not_in_plan.length ? report.not_in_plan.join(', ') : 'none'}`);
   console.log(`Backfilled article_id: ${report.article_linked} | published_url: ${report.published_url_filled} | featured_image: ${report.featured_filled}`);
-  if (report.matrix_warned.length) {
-    console.log('\n⚠️ Matrix rows with empty slug (supplemented from queue/taxonomy):');
-    report.matrix_warned.forEach((w) => console.log(`  - ${w}`));
-  }
   if (report.missing_article.length) {
     console.log('\n⚠️ queued/published but no articles-table record:');
     report.missing_article.forEach((s) => console.log(`  - ${s}`));
   }
-  if (report.not_in_plan.length) {
-    console.log('\n⚠️ Expected but not ingested:');
-    report.not_in_plan.forEach((s) => console.log(`  - ${s}`));
-  }
   console.log('\nVerification:');
   const v = await t.plan.verify({ appId: APP_ID });
-  console.log(`  ${v.ok ? '✅' : '❌'} allow-list / local md / wp_post_id verification (${v.errors.length} issue(s))`);
+  console.log(`  ${v.ok ? '✅' : '❌'} allow-list / wp_post_id / published_url verification (${v.errors.length} issue(s))`);
   if (!v.ok) v.errors.slice(0, 30).forEach((e) => console.log(`    - ${e}`));
   console.log(`  Status distribution: ${JSON.stringify(v.stats)}`);
 }

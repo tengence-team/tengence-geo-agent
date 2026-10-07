@@ -3,16 +3,16 @@
  * Channel publishing-calendar service (plan domain) — t.plan.channel
  * ============================================================================
  * Orchestration over the workspace-local channel_plan table (repo: db/channel-plan):
- *   - importWechatPlan() parses the site's 《微信公众号发布计划.md》 into calendar rows
- *     (wechat keeps a real per-issue calendar; nextDue returns the earliest todo row)
- *   - juejin / csdn / devto (i.e. every non-wechat api platform): the table is a
- *     PUBLISH LOG. We NEVER bulk-import the blog plan. recordPublish() writes one row
- *     per slug on each attempt (success → published, failure → failed) keyed by slug;
- *     reconcileFromPlatform() seeds already-published articles. nextDue() derives the
- *     next slug from the blog publish_order, skipping slugs already published on that
- *     platform (failed rows retry). Each platform therefore owns an INDEPENDENT
- *     publishing calendar inside the shared table: only what was actually published
- *     on that platform is ever recorded here.
+ *   - importWechatIssues() writes wechat calendar rows from STRUCTURED input. The old
+ *     importWechatPlan(mdPath), which parsed 《微信公众号发布计划.md》, was removed on
+ *     2026-10-07: a prose document is not a data source.
+ *   - every platform (wechat included) gets its queue DERIVED from the blog
+ *     article_plan publish_order — see nextDue(). The table is a PUBLISH LOG:
+ *     we NEVER bulk-import the blog plan. recordPublish() writes one row per slug
+ *     on each attempt (success → published, failure → failed) keyed by slug;
+ *     reconcileFromPlatform() seeds already-published articles (failed rows retry).
+ *     Each platform therefore owns an INDEPENDENT publishing calendar inside the
+ *     shared table: only what was actually published on that platform is recorded.
  *   - list / markStatus / nextDue expose the calendar to CLIs and MCP tools
  *
  * Data flow:
@@ -21,7 +21,6 @@
  *   MCP channel_plan_next → nextDue() → next slug to prepare
  * ============================================================================
  */
-const fs = require('fs');
 const t = require('../index');
 const repo = require('../db/channel-plan');
 const planRepo = require('../db/plan');
@@ -30,122 +29,38 @@ const { withConn } = require('../db/connection');
 /** Default tenant: process-level APP_ID env var (default 1). */
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
 
-/** Overview status text → row status. */
-const OVERVIEW_STATUS = { '✅': 'published', '📝': 'draft', '⬜': 'todo' };
-
 /**
- * Parse the 《微信公众号发布计划.md》 text into calendar rows.
- * Extracts from each `### 第N期 <主题>` block:
- *   - the per-issue overview row (建议发布日 / 状态) and
- *   - the article slug table (slug, draft id, per-row status).
- * @param {string} text raw markdown of the plan document
- * @returns {Array<{period:string, topic:string, weekday:string|null, weekdayNote:string|null,
- *                  article_slugs:string[], status:string, draft_ids:string[], notes:string|null}>}
- */
-function parseWechatPlanText(text) {
-  const lines = text.split('\n');
-  const issues = [];
-  let current = null; // { period, topic, overview: {...}, articles: [...] }
-  // The overview table ("二、排期总览") appears BEFORE the per-issue sections;
-  // collect it globally and merge at flush time.
-  const overviewByPeriod = new Map();
-
-  const flush = () => {
-    if (!current) return;
-    const overview = current.overview || overviewByPeriod.get(current.period) || {};
-    const slugs = current.articles.map((a) => a.slug).filter(Boolean);
-    const status = OVERVIEW_STATUS[overview.statusMark] || (current.articles.some((a) => /已群发/.test(a.statusText)) ? 'published' : current.articles.some((a) => /草稿已建/.test(a.statusText)) ? 'draft' : 'todo');
-    const draftIds = [...new Set(current.articles.map((a) => a.draftId).filter((d) => d && d !== '—' && d !== '-'))];
-    issues.push({
-      period: current.period,
-      topic: current.topic || null,
-      weekday: overview.weekday || null,
-      weekdayNote: overview.weekdayNote || null,
-      article_slugs: slugs,
-      status,
-      draft_ids: draftIds,
-      notes: overview.weekdayNote ? `建议发布日：${overview.weekdayNote}` : null,
-    });
-    current = null;
-  };
-
-  const overviewRe = /^\|\s*(第\d+期)\s*\|\s*((?:第\d+周\s*)?[^|]*)\s*\|\s*([^|]*)\s*\|\s*\d+\s*\|\s*([✅📝⬜])/;
-  const issueHeadRe = /^###\s*(第\d+期)\s+(.+)$/;
-  const articleRowRe = /^\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|\s*([^|]*?)\s*\|/;
-
-  for (const line of lines) {
-    const head = line.match(issueHeadRe);
-    if (head) {
-      flush();
-      current = { period: head[1], topic: head[2].trim(), overview: null, articles: [] };
-      continue;
-    }
-    if (!current) {
-      // overview rows live before the per-issue sections
-      const ov = line.match(overviewRe);
-      if (ov && ov[1]) {
-        overviewByPeriod.set(ov[1], {
-          weekday: ov[2].replace(/^第\d+周[\s\u3000]*/, '').trim() || null,
-          weekdayNote: ov[2].trim(),
-          statusMark: ov[4],
-        });
-      }
-      continue;
-    }
-    const row = line.match(articleRowRe);
-    if (row && current) {
-      current.articles.push({
-        num: row[1],
-        slug: row[2].trim(),
-        title: row[3].trim(),
-        category: row[4].trim(),
-        tags: row[5].trim(),
-        url: row[6].trim(),
-        draftId: row[7].trim(),
-        statusText: row[8].trim(),
-      });
-      continue;
-    }
-    // overview row inside the same section region (fallback capture)
-    if (current && !current.overview) {
-      const ov = line.match(overviewRe);
-      if (ov && ov[1] === current.period) {
-        current.overview = {
-          weekday: ov[2].replace(/^第\d+周[\s\u3000]*/, '').trim() || null,
-          weekdayNote: ov[2].trim(),
-          statusMark: ov[4],
-        };
-      }
-    }
-  }
-  flush();
-  return issues;
-}
-
-/**
- * Import rows from the 《微信公众号发布计划.md》 file.
- * Upserts each issue keyed by (platform='wechat', period).
- * @param {string} mdPath absolute path of the plan markdown
+ * Import WeChat calendar rows from STRUCTURED input.
+ *
+ * Replaces the old importWechatPlan(mdPath), which parsed 《微信公众号发布计划.md》
+ * (2026-10-07). A prose document is not a data source: that parser depended on
+ * `### 第N期` headings, a hard-coded table column count and an emoji legend, so any
+ * edit to the doc silently produced zero or wrong rows. Converting markdown into
+ * rows is the caller's job (AI, or a one-off script under dev/) — this API only
+ * accepts the result.
+ *
+ * @param {Array<{period:string, topic?:string, weekday?:string,
+ *                article_slugs:string[], status?:string, draft_ids?:string[],
+ *                notes?:string}>} issues
  * @returns {Promise<{platform:string, imported:number, updated:number, rows:number}>}
  */
-async function importWechatPlan(mdPath) {
-  if (!fs.existsSync(mdPath)) throw new Error(`WeChat plan file not found: ${mdPath}`);
-  const text = fs.readFileSync(mdPath, 'utf8');
-  const issues = parseWechatPlanText(text);
+async function importWechatIssues(issues) {
+  if (!Array.isArray(issues)) throw new Error('importWechatIssues requires an issues array');
   const appId = DEFAULT_APP_ID();
   let imported = 0;
   let updated = 0;
   await withConn(async (conn) => {
     for (const issue of issues) {
+      if (!issue || !issue.period) throw new Error('importWechatIssues: every issue requires a period');
       const res = await repo.upsert(conn, appId, {
         platform: 'wechat',
         period: issue.period,
-        topic: issue.topic,
-        weekday: issue.weekday,
-        article_slugs: issue.article_slugs,
-        status: issue.status,
-        draft_ids: issue.draft_ids,
-        notes: issue.notes,
+        topic: issue.topic || null,
+        weekday: issue.weekday || null,
+        article_slugs: Array.isArray(issue.article_slugs) ? issue.article_slugs : [],
+        status: issue.status || 'todo',
+        draft_ids: Array.isArray(issue.draft_ids) ? issue.draft_ids : [],
+        notes: issue.notes || null,
       });
       if (res.action === 'insert') imported += 1;
       else updated += 1;
@@ -554,50 +469,53 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
 }
 
 /**
- * The next article to publish on a platform.
- *   - wechat: the earliest calendar row still in todo (per-issue batch).
- *   - juejin / devto: DERIVED from the blog article plan — only blog-published rows,
- *     in publish_order, skipping slugs already recorded as published here. This keeps
- *     the juejin queue in the SAME order as the blog, resuming right after the last
- *     article published to that platform (a failed row is NOT skipped, so it retries).
+ * The next article(s) to publish on a platform.
+ *
+ * Every platform — wechat included — is DERIVED from the blog article_plan: only
+ * blog-published rows, in publish_order, skipping slugs already dispatched to that
+ * platform. This keeps each channel queue in the SAME order as the blog, resuming
+ * right after the last article sent there (a failed row is NOT skipped, so it
+ * retries). `count` lets wechat take a whole issue-sized batch in one go.
+ *
+ * wechat used to be driven by a per-issue calendar parsed out of
+ * 《微信公众号发布计划.md》; the queue now comes from the DB publish_order like every
+ * other platform, and the calendar rows are left as what they really are — a
+ * dispatch log (importWechatIssues() can still seed issue metadata as structured
+ * input, and dispatched rows keep driving the dedup in publishedSlugs()).
+ *
+ * @param {string} platform
+ * @param {{count?:number}} [opts] how many slugs to return (default 1)
  * @returns {Promise<object|null>}
  */
-async function nextDue(platform) {
-  const appId = DEFAULT_APP_ID();
-  // wechat keeps a real per-issue calendar imported from the plan doc; every other
-  // platform (juejin / csdn / devto / …) derives its queue from the blog article_plan
-  // and logs only real outcomes, so adding a new platform needs NO change here.
-  if (platform === 'wechat') {
-    let result;
-    await withConn(async (conn) => {
-      result = await repo.nextDue(conn, appId, platform);
-    });
-    return result;
-  }
+async function nextDue(platform, { count = 1 } = {}) {
   const published = await publishedSlugs(platform);
   const blog = (await t.plan.list({ limit: 5000 })).filter((r) => r.plan_status === 'published');
   const sorted = blog.slice().sort((a, b) => (a.publish_order || 1e9) - (b.publish_order || 1e9));
+  const picked = [];
   for (const r of sorted) {
     if (published.has(r.slug)) continue;
-    return {
-      platform,
-      status: 'todo',
-      source: 'blog_plan',
-      id: null,
-      period: null,
-      slug: r.slug,
-      article_slugs: [r.slug],
-      title: r.title,
-      topic: r.title,
-      blogOrder: r.publish_order,
-    };
+    picked.push(r);
+    if (picked.length >= Math.max(1, count)) break;
   }
-  return null;
+  if (!picked.length) return null;
+  const head = picked[0];
+  return {
+    platform,
+    status: 'todo',
+    source: 'blog_plan',
+    id: null,
+    period: null,
+    slug: head.slug,
+    article_slugs: picked.map((r) => r.slug),
+    title: head.title,
+    topic: head.title,
+    blogOrder: head.publish_order,
+  };
 }
 
 module.exports = {
-  parseWechatPlanText,
-  importWechatPlan,
+  // (parseWechatPlanText / importWechatPlan removed 2026-10-07 — no document parsing)
+  importWechatIssues,
   clearPlatform,
   publishedSlugs,
   filterUnpublished,

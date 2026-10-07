@@ -6,7 +6,9 @@
  *   tengence-geo channel-plan.js list [--platform=wechat] [--status=todo]
  *   tengence-geo channel-plan.js next [--platform=juejin]   # derived from blog publish_order
  *   tengence-geo channel-plan.js mark <id> <status>         # todo|draft|published|paused
- *   tengence-geo channel-plan.js import-wechat <plan.md>    # import 《微信公众号发布计划.md》
+ *   tengence-geo channel-plan.js import-wechat <issues.json> # structured calendar rows
+ *       (a JSON array of { period, topic?, weekday?, article_slugs[], status?, draft_ids?, notes? };
+ *        the old markdown import was removed — convert md → JSON outside the API)
  *   tengence-geo channel-plan.js reconcile <platform> [--published=slug1,slug2]
  *   tengence-geo channel-plan.js sync-status [--platform=juejin] [--dry-run]
  *   tengence-geo channel-plan.js taxonomy sync [--platform=juejin]
@@ -84,12 +86,14 @@ async function main() {
   }
 
   if (cmd === 'import-wechat') {
-    const mdPath = positionals[1];
-    if (!mdPath || !fs.existsSync(mdPath)) {
-      console.error('Usage: channel-plan.js import-wechat <微信公众号发布计划.md>');
+    const jsonPath = positionals[1];
+    if (!jsonPath || !fs.existsSync(jsonPath)) {
+      console.error('Usage: channel-plan.js import-wechat <issues.json>');
+      console.error('  expects a JSON array of { period, topic?, weekday?, article_slugs[], status?, draft_ids?, notes? }');
       process.exit(1);
     }
-    const res = await ch.importWechatPlan(path.resolve(mdPath));
+    const issues = JSON.parse(fs.readFileSync(path.resolve(jsonPath), 'utf8'));
+    const res = await ch.importWechatIssues(issues);
     console.log(`✅ WeChat plan imported: ${JSON.stringify(res)}`);
     return;
   }
