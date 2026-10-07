@@ -112,9 +112,9 @@ function renderPublishPackage(platform, article) {
  * plus our own plan taxonomy (article_plan.category / article_plan.tags) which the
  * juejin resolver maps onto the platform's category_id / tag_ids.
  */
-async function articleFromDb(conn, appId, slug, siteDomain, lang = 'zh-cn') {
-  // channel rewrite is language-scoped: zh-cn channels take the zh-cn row; the
-  // dev.to English flow passes lang='en-us' explicitly (task #5)
+async function articleFromDb(conn, appId, slug, siteDomain, lang = 'zh-hans') {
+  // channel rewrite is language-scoped: zh-hans channels take the zh-hans row; the
+  // dev.to English flow passes lang='en' explicitly (task #5)
   const detail = await t.db.articles.getDetail(conn, appId, slug, lang);
   if (!detail) throw new Error(`Article not found: ${slug}`);
   let planRow = null;
@@ -169,7 +169,7 @@ async function featuredImageFor(slug, inherited = null) {
   try {
     let url = null;
     await t.db.withConn(async (conn) => {
-      const detail = await t.db.articles.getDetail(conn, DEFAULT_APP_ID(), slug, 'zh-cn');
+      const detail = await t.db.articles.getDetail(conn, DEFAULT_APP_ID(), slug, 'zh-hans');
       if (detail && detail.featured_image) url = detail.featured_image;
     });
     return url;

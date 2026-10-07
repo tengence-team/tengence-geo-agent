@@ -238,7 +238,7 @@ async function main() {
         console.log(`\nTotal: ${tags.length} tags\n`);
       } else if (options.slug) {
         // diagnostic default: the site's primary language row
-        const article = await t.db.articles.getDetail(connection, APP_ID, options.slug, 'zh-cn');
+        const article = await t.db.articles.getDetail(connection, APP_ID, options.slug, 'zh-hans');
         if (article) {
           formatArticleDetail(article);
         } else {

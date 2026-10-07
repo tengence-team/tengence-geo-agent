@@ -61,7 +61,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // default key so the CLI's single-site convention still works.
   const S = t.site.loadSite(site || undefined);
   const APP_ID = parseInt(process.env.APP_ID || '1', 10);
-  const LANG = lang || ((S.site && S.site.languages && S.site.languages.default) || 'zh-cn');
+  const LANG = lang || ((S.site && S.site.languages && S.site.languages.default) || 'zh-hans');
 
   if (!slug) {
     throw new Error('checkArticle requires slug');
@@ -115,7 +115,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // by failing today's stricter rules: re-publishing it is what adds the trilingual
   // translation_group / fixes metadata, and its body is a legacy artifact written
   // before the current standards existed. `status` is NOT a usable signal here — the
-  // production DB has 77 zh-cn rows still marked `draft` that already carry a
+  // production DB has 77 zh-hans rows still marked `draft` that already carry a
   // wp_post_id, so status alone would hard-block live articles. Drafts (no
   // wp_post_id) keep the full hard gate, research brief included.
   const isPublished = Boolean(dbArticle && Number(dbArticle.wp_post_id) > 0);
@@ -155,7 +155,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   const effFaq = bodyFaq.length ? bodyFaq : qaPairs;
 
   // Count the blocks with the SSOT predicates, not with re-declared regexes: a
-  // Simplified-only pattern reported `take = 0` for a zh-hk body whose heading is
+  // Simplified-only pattern reported `take = 0` for a zh-hant body whose heading is
   // 關鍵要點, i.e. the gate itself would have flagged correct Traditional pages
   // (same defect family as the duplicate-block incident, 2026-10-06).
   const html = buildPostHtml(md, geo, LANG);
@@ -268,7 +268,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   let missingTargets = [];
   try {
     const ownSlugs = [];
-    const LINK_TARGET_RE = /(?:https?:)?\/\/(?:www\.)?tengence\.com\/(?:zh-hans|zh-hant|en|en-us)\/blog\/article\/([a-z0-9][a-z0-9-]*)\/?/gi;
+    const LINK_TARGET_RE = /(?:https?:)?\/\/(?:www\.)?tengence\.com\/(?:zh-hans|zh-hant|en)\/blog\/article\/([a-z0-9][a-z0-9-]*)\/?/gi;
     let mm;
     while ((mm = LINK_TARGET_RE.exec(md)) !== null) ownSlugs.push(mm[1]);
     if (ownSlugs.length) {

@@ -63,8 +63,8 @@ async function insertArticle(slug, title) {
   sqlite.getDb();
   await withConn(async (conn) => {
     await conn.query(
-      `INSERT INTO tengence_geo_articles (app_id, slug, title, status)
-       VALUES (1, ?, ?, 'published')`,
+      `INSERT INTO tengence_geo_articles (app_id, slug, title, lang, status)
+       VALUES (1, ?, ?, 'zh-hans', 'published')`,
       [slug, title]
     );
   });

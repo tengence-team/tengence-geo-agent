@@ -261,7 +261,7 @@ test('composeBody: without "关于Tengence", FAQ appends to the end of the body 
   assert.ok(iFaq > iBody, 'FAQ should append after the body');
 });
 
-// ==================== ④b language-aware materialization (2026-10-06 zh-hk duplicate incident) ====================
+// ==================== ④b language-aware materialization (2026-10-06 zh-hant duplicate incident) ====================
 // Live symptom: /zh-hant/blog/article/<slug>/ showed TWO "key takeaways" sections —
 // the first one Simplified with its `**` markdown printed literally — and a second
 // Simplified FAQ appended at the very end of the body (after the CTA).
@@ -314,9 +314,9 @@ const ZH_HK_MD = [
   '[免費試用](https://console.example.com/login)',
 ].join('\n');
 
-test('buildPostHtml(zh-hk): a Traditional body is NOT injected a second time (no Simplified duplicate)', () => {
+test('buildPostHtml(zh-hant): a Traditional body is NOT injected a second time (no Simplified duplicate)', () => {
   const geo = syncGeoFromMarkdown(ZH_HK_MD, {}).geo;
-  const html = buildPostHtml(ZH_HK_MD, geo, 'zh-hk');
+  const html = buildPostHtml(ZH_HK_MD, geo, 'zh-hant');
   const heads = h2List(html);
   assert.equal(heads.filter((h) => isTakeawaysHeading(h.text)).length, 1, 'exactly one takeaways block');
   assert.equal(heads.filter((h) => isFaqHeading(h.text)).length, 1, 'exactly one FAQ block');
@@ -325,7 +325,7 @@ test('buildPostHtml(zh-hk): a Traditional body is NOT injected a second time (no
   assert.equal((html.match(/\*\*/g) || []).length, 0, 'no unrendered ** left in the HTML');
 });
 
-test('buildPostHtml(zh-hk): the fallback writes Traditional copy and lands before 關於通智雲', () => {
+test('buildPostHtml(zh-hant): the fallback writes Traditional copy and lands before 關於通智雲', () => {
   const geo = {
     key_takeaways: ['**要點**：說明。'],
     qa_pairs: [{ question: '問題？', answer: '答案。' }],
@@ -338,7 +338,7 @@ test('buildPostHtml(zh-hk): the fallback writes Traditional copy and lands befor
     '## 資料來源', '', '1. [s](https://example.com/s)：說明。', '',
     '## 立即行動', '', '[CTA](https://example.com/cta)',
   ].join('\n');
-  const html = buildPostHtml(md, geo, 'zh-hk');
+  const html = buildPostHtml(md, geo, 'zh-hant');
   const iFaq = html.indexOf('<h2>常見問題</h2>');
   const iTake = html.indexOf('<h2>關鍵要點</h2>');
   const iAbout = html.indexOf('關於通智雲');
@@ -356,7 +356,7 @@ test('buildPostHtml(zh-hk): the fallback writes Traditional copy and lands befor
   assert.equal((html.match(/\*\*/g) || []).length, 0, 'no literal ** anywhere');
 });
 
-test('buildPostHtml(en-us): the fallback copy is English, never Simplified Chinese', () => {
+test('buildPostHtml(en): the fallback copy is English, never Simplified Chinese', () => {
   const geo = {
     key_takeaways: ['**Point** one.'],
     qa_pairs: [{ question: 'Why?', answer: 'Because.' }],
@@ -367,7 +367,7 @@ test('buildPostHtml(en-us): the fallback copy is English, never Simplified Chine
     '## About TENGENCE Cloud', '', 'Brand.', '',
     '## Get Started', '', '[CTA](https://example.com/cta)',
   ].join('\n');
-  const html = buildPostHtml(md, geo, 'en-us');
+  const html = buildPostHtml(md, geo, 'en');
   assert.ok(html.includes('<h2>Key Takeaways</h2>'));
   assert.ok(html.includes('<h2>FAQ</h2>'));
   assert.ok(html.includes('<p><strong>Q: Why?</strong></p>'));
@@ -376,20 +376,20 @@ test('buildPostHtml(en-us): the fallback copy is English, never Simplified Chine
   assert.ok(html.indexOf('<h2>FAQ</h2>') < html.indexOf('About TENGENCE Cloud'), 'FAQ lands before "About"');
 });
 
-test('buildPostHtml(zh-cn): omitted lang is unchanged legacy behaviour', () => {
+test('buildPostHtml(zh-hans): omitted lang is unchanged legacy behaviour', () => {
   const geo = { key_takeaways: ['要点一'], qa_pairs: [{ question: '问题一', answer: '答案一' }] };
   const md = '# 标题\n\n导言。\n\n## 第一节\n\n正文。';
   const html = buildPostHtml(md, geo);
   assert.ok(html.includes('<h2>关键要点</h2>'));
   assert.ok(html.includes('<h2>常见问题</h2>'));
   assert.ok(html.includes('<p><strong>问：问题一</strong></p>'));
-  assert.equal(html, buildPostHtml(md, geo, 'zh-cn'), 'explicit zh-cn === omitted lang');
+  assert.equal(html, buildPostHtml(md, geo, 'zh-hans'), 'explicit zh-hans === omitted lang');
 });
 
-test('composeBody(zh-hk): idempotent — the Traditional blocks are never doubled', () => {
+test('composeBody(zh-hant): idempotent — the Traditional blocks are never doubled', () => {
   const geo = syncGeoFromMarkdown(ZH_HK_MD, {}).geo;
-  const once = buildPostHtml(ZH_HK_MD, geo, 'zh-hk');
-  const twice = composeBody(once, geo, 'zh-hk');
+  const once = buildPostHtml(ZH_HK_MD, geo, 'zh-hant');
+  const twice = composeBody(once, geo, 'zh-hant');
   assert.equal(twice, once, 're-running the fallback on a Traditional body is byte-identical');
 });
 
@@ -399,7 +399,7 @@ test('composeBody: numbered / 解答-style FAQ headings also suppress injection'
     const out = composeBody(
       markdownToHtml(`# 標題\n\n## 第一節\n\n正文。\n\n${heading}\n\n手寫內容。`),
       geo,
-      'zh-hk'
+      'zh-hant'
     );
     assert.ok(out.includes('手寫內容'), 'the handwritten section survives');
     assert.equal(
@@ -411,9 +411,9 @@ test('composeBody: numbered / 解答-style FAQ headings also suppress injection'
 });
 
 test('geoBlockLabels: language resolution (Traditional / English / fallback)', () => {
-  assert.equal(geoBlockLabels('zh-hk').takeaways, '關鍵要點');
+  assert.equal(geoBlockLabels('zh-hant').takeaways, '關鍵要點');
   assert.equal(geoBlockLabels('zh-hant').faq, '常見問題');
-  assert.equal(geoBlockLabels('en-us').takeaways, 'Key Takeaways');
+  assert.equal(geoBlockLabels('en').takeaways, 'Key Takeaways');
   assert.equal(geoBlockLabels('en').faq, 'FAQ');
   assert.equal(geoBlockLabels(undefined).takeaways, '关键要点');
   assert.equal(geoBlockLabels('zh-CN').takeaways, '关键要点');
@@ -523,7 +523,7 @@ test('buildPostHtml: plain-text metadata in the fallback block still renders as 
   const md = '# 标题\n\n## 一、正文\n\n正文。\n';
   const geo = syncGeoFromMarkdown(md, { key_takeaways: [], qa_pairs: [] }).geo;
   geo.key_takeaways = ['**结论**：先做诊断。'];
-  const html = buildPostHtml(md, geo, 'zh-cn');
+  const html = buildPostHtml(md, geo, 'zh-hans');
   assert.ok(html.includes('<h2>关键要点</h2>'));
   assert.ok(html.includes('<li>'), 'takeaways fallback still renders a list');
 });
@@ -756,7 +756,7 @@ test('removeImageByUrl: empty URL returns as-is (guards against empty values cle
 //      must be true. No delimiter ⇒ nothing ever calls `mermaid.run()`.
 //
 // ★ The first diagnosis (same day) claimed the class was the whole story and that
-// zh-cn post 570 "renders" while its zh-hk / en-us translations (1658 / 1652) do
+// zh-hans post 570 "renders" while its zh-hant / en translations (1658 / 1652) do
 // not. Refuted live: post 570 had `anyBlock = 0` too. All six affected posts
 // (523/570/1587/1593/1652/1658) enqueued no mermaid asset until the delimiter was
 // added. The class alone never rendered anything.
@@ -1014,11 +1014,11 @@ test('mermaidFencesToMerpress: un-parseable label is auto-repaired on the write 
 // ==================== ⑰ internal-link language prefix + CTA layout (2026-10-06) ====================
 
 test('langToPrefix: maps geo codes and plugin codes to URL prefixes', () => {
-  assert.equal(langToPrefix('zh-cn'), 'zh-hans');
   assert.equal(langToPrefix('zh-hans'), 'zh-hans');
-  assert.equal(langToPrefix('en-us'), 'en');
+  assert.equal(langToPrefix('zh-hans'), 'zh-hans');
   assert.equal(langToPrefix('en'), 'en');
-  assert.equal(langToPrefix('zh-hk'), 'zh-hant');
+  assert.equal(langToPrefix('en'), 'en');
+  assert.equal(langToPrefix('zh-hant'), 'zh-hant');
   assert.equal(langToPrefix('zh-hant'), 'zh-hant');
   assert.equal(langToPrefix('unknown'), 'zh-hans'); // safe fallback
 });
@@ -1027,10 +1027,10 @@ test('normalizeInternalArticleLinks: bare + wrong-prefix article links get the a
   const html =
     '<p><a href="https://www.tengence.com/blog/article/content-optimization-tips/" target="_blank">A</a></p>' +
     '<p><a href="https://www.tengence.com/zh-hant/blog/article/foo-bar/">wrong</a> ' +
-    '<a href="https://www.tengence.com/en-us/blog/article/baz/">enus</a> ' +
+    '<a href="https://www.tengence.com/en/blog/article/baz/">enus</a> ' +
     '<a href="https://www.tengence.com/contact-us">contact</a> ' +
     '<a href="https://example.com/x">ext</a></p>';
-  const out = normalizeInternalArticleLinks(html, 'en-us');
+  const out = normalizeInternalArticleLinks(html, 'en');
   assert.ok(out.includes('https://www.tengence.com/en/blog/article/content-optimization-tips/'));
   assert.ok(out.includes('https://www.tengence.com/en/blog/article/foo-bar/'));
   assert.ok(out.includes('https://www.tengence.com/en/blog/article/baz/'));
@@ -1038,7 +1038,7 @@ test('normalizeInternalArticleLinks: bare + wrong-prefix article links get the a
   assert.ok(out.includes('https://example.com/x'));
   assert.ok(!out.includes('/zh-hant/') && !out.includes('/en-us/') && !out.includes('tengence.com/blog/article/'));
   // idempotent
-  assert.equal(out, normalizeInternalArticleLinks(out, 'en-us'));
+  assert.equal(out, normalizeInternalArticleLinks(out, 'en'));
 });
 
 test('normalizeCtaBlock: single / pipe-joined CTA links become a list; prose paragraphs preserved; idempotent', () => {
@@ -1067,10 +1067,10 @@ test('normalizeCtaBlock: single / pipe-joined CTA links become a list; prose par
 });
 
 test('articlePrefixIssues: bare / wrong-prefix article links flagged, correct prefix passes', () => {
-  assert.equal(articlePrefixIssues('[x](https://www.tengence.com/blog/article/foo/)', 'zh-cn').length, 1);
-  assert.equal(articlePrefixIssues('https://www.tengence.com/zh-hant/blog/article/foo/', 'en-us').length, 1);
-  assert.equal(articlePrefixIssues('<a href="https://www.tengence.com/zh-hans/blog/article/foo/">x</a>', 'zh-cn').length, 0);
-  assert.equal(articlePrefixIssues('https://www.tengence.com/zh-hant/blog/article/foo/', 'zh-hk').length, 0);
+  assert.equal(articlePrefixIssues('[x](https://www.tengence.com/blog/article/foo/)', 'zh-hans').length, 1);
+  assert.equal(articlePrefixIssues('https://www.tengence.com/zh-hant/blog/article/foo/', 'en').length, 1);
+  assert.equal(articlePrefixIssues('<a href="https://www.tengence.com/zh-hans/blog/article/foo/">x</a>', 'zh-hans').length, 0);
+  assert.equal(articlePrefixIssues('https://www.tengence.com/zh-hant/blog/article/foo/', 'zh-hant').length, 0);
 });
 
 test('ctaPipeIssues: links joined by | in the CTA block flagged; lists pass; other blocks ignored', () => {

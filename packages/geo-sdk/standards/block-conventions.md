@@ -77,7 +77,7 @@ draft; the batch fix and the publish-time gates both enforce them):
 
 1. **Same-language internal links.** Every on-site article link
    (`tengence.com/blog/article/<slug>/`) must carry the **article's own language
-   prefix** — `/zh-hans/` for zh-cn, `/en/` for en-us, `/zh-hant/` for zh-hk.
+   prefix** — `/zh-hans/` for zh-hans, `/en/` for en, `/zh-hant/` for zh-hant.
    Bare links and links carrying *another* language's prefix are violations; the
    article must never jump between languages. Draft-time 404s on a same-language
    target are acceptable and are resolved by the translation backfill.

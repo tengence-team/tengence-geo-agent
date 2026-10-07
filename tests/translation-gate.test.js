@@ -105,68 +105,68 @@ Contact Tengence GEO for an AI visibility assessment.
 
 // ---- tests ----------------------------------------------------------------
 
-test('T1–T8 all pass for a faithful en-us translation', () => {
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: EN_MD, targetLang: 'en-us' });
+test('T1–T8 all pass for a faithful en translation', () => {
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: EN_MD, targetLang: 'en' });
   assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
 });
 
 test('T1: missing block fails', () => {
   const bad = EN_MD.replace(/^## Key Takeaways[\s\S]*?(?=^## )/m, '');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T1' && /Key Takeaways|takeaways/.test(e.message)));
 });
 
 test('T1: broken H2 numbering fails', () => {
   const bad = EN_MD.replace('## 2. Five Key Differences', '## 3. Five Key Differences');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T1' && /numbering|sequence/.test(e.message)));
 });
 
 test('T2: dropped source link fails', () => {
   const bad = EN_MD.replace('](https://example.com/seo-guide)', ']()');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T2' && /seo-guide/.test(e.message)));
 });
 
 test('T2: invented target link fails', () => {
   const bad = EN_MD.replace('## Get Started', '## Get Started\n\nSee [extra](https://example.com/extra).');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T2' && /extra/.test(e.message)));
 });
 
 test('T3: dropped image fails (incl. featured_image)', () => {
   const bad = EN_MD.replace('https://tengence.com/assets/images/geo-vs-seo-hero.png', '');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T3'));
 });
 
 test('T4: drifted number fails', () => {
   const bad = EN_MD.replace('12.5%', '13.5%');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T4'));
 });
 
-test('T5: CJK residue in en-us fails', () => {
+test('T5: CJK residue in en fails', () => {
   const bad = EN_MD.replace('GEO optimizes entity claiming', 'GEO 優化实体认领');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T5' && /CJK/.test(e.message)));
 });
 
-test('T5: Chinese punctuation in en-us fails', () => {
+test('T5: Chinese punctuation in en fails', () => {
   const bad = EN_MD.replace('serve different engines.', 'serve different engines。');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T5' && /punctuation/.test(e.message)));
 });
 
-test('T5: simplified terms in zh-hk fail', () => {
+test('T5: simplified terms in zh-hant fail', () => {
   // HK-style body with a simplified-only term ("用户") smuggled into the FAQ answer
   const hk = `---
 seo:
@@ -209,12 +209,12 @@ GEO（生成式引擎優化）與 SEO 服務於不同引擎。
 
 聯絡通智 GEO。
 `;
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: hk, targetLang: 'zh-hk' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: hk, targetLang: 'zh-hant' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T5' && /simplified term/.test(e.message)));
 });
 
-test('zh-hk: faithful translation passes', () => {
+test('zh-hant: faithful translation passes', () => {
   const hk = `---
 seo:
   meta_title: "GEO 與 SEO 的區別"
@@ -262,27 +262,27 @@ GEO（生成式引擎優化）與 SEO（搜尋引擎優化）服務於不同引�
 
 聯絡通智 GEO 獲取 AI 可見性評估。
 `;
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: hk, targetLang: 'zh-hk' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: hk, targetLang: 'zh-hant' });
   assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
 });
 
-test('T6: forbidden direct-translation term in en-us fails', () => {
+test('T6: forbidden direct-translation term in en fails', () => {
   const bad = EN_MD.replace('GEO (Generative Engine Optimization) and SEO', 'GEO (Generated Engine Optimization) and SEO');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T6'));
 });
 
 test('T8: meta_description out of range fails', () => {
   const bad = EN_MD.replace('meta_description: "Generative Engine Optimization (GEO) and SEO differ in mechanism, goal, and data sources. Learn the five key differences for a dual-engine acquisition strategy."', 'meta_description: "Too short"');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T8'));
 });
 
 test('T7: truncated section fails', () => {
   const bad = EN_MD.replace(/## 2\. Five Key Differences[\s\S]*?(?=^## )/m, '## 2. Five Key Differences\n\nToo short.\n\n');
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T7'));
 });
@@ -293,7 +293,7 @@ test('T9: bare parens in a target mermaid label fail', () => {
   const bad = EN_MD.replace('## Get Started', [
     '## Get Started', '', '```mermaid', 'graph TD', '    A[Node 1 (phone)] --> B', '```',
   ].join('\n'));
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T9' && /bare parens/.test(e.message)), JSON.stringify(r.errors));
 });
@@ -302,7 +302,7 @@ test('T9: bare parens in a source mermaid diagram fail too', () => {
   const badSrc = SOURCE_MD.replace('## 立即行动', [
     '## 立即行动', '', '```mermaid', 'graph TD', '    subgraph sg1 [World (real)]', '        A', '    end', '```',
   ].join('\n'));
-  const r = checkTranslation({ sourceMd: badSrc, targetMd: EN_MD, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: badSrc, targetMd: EN_MD, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T9' && /\(source\)/.test(e.message)), JSON.stringify(r.errors));
 });
@@ -312,7 +312,7 @@ test('T9: quoted labels and prose parens pass', () => {
     '## Get Started', '', '```mermaid',
     'graph TD', '    A["Node 1 (phone)"] -->|"linked (strong)"| B', '    subgraph "World (real)"', '        A', '    end', '```',
   ].join('\n'));
-  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: withFences, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: SOURCE_MD, targetMd: withFences, targetLang: 'en' });
   assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
   assert.ok(!r.errors.some((e) => e.id === 'T9'));
 });
@@ -331,47 +331,47 @@ const LINKED_EN = EN_MD.replace(
 
 test('T2: language-prefixed internal links are the same target (normalized)', () => {
   // source links /zh-hans/..., target links /en/... — same article, must NOT be drift
-  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: LINKED_EN, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: LINKED_EN, targetLang: 'en' });
   assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
   assert.ok(!r.errors.some((e) => e.id === 'T2'));
 });
 
 test('T2: normalized comparison still catches a genuinely dropped link', () => {
   const bad = LINKED_EN.replace('](https://www.tengence.com/en/blog/article/dual-engine-strategy/)', ']()');
-  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T2' && /dual-engine-strategy/.test(e.message)));
 });
 
-test('T10: bare internal article link in en-us target fails', () => {
+test('T10: bare internal article link in en target fails', () => {
   const bad = EN_MD.replace(
     '- [Dual-engine strategy deep dive](/blog/dual-engine-strategy/)',
     '- [Dual-engine strategy deep dive](https://www.tengence.com/blog/article/dual-engine-strategy/)'
   );
-  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T10' && /expected \/en\//.test(e.message)), JSON.stringify(r.errors));
 });
 
-test('T10: wrong-language prefix in en-us target fails', () => {
+test('T10: wrong-language prefix in en target fails', () => {
   const bad = EN_MD.replace(
     '- [Dual-engine strategy deep dive](/blog/dual-engine-strategy/)',
     '- [Dual-engine strategy deep dive](https://www.tengence.com/zh-hans/blog/article/dual-engine-strategy/)'
   );
-  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T10' && /found \/zh-hans\//.test(e.message)), JSON.stringify(r.errors));
 });
 
-test('T10: zh-hk target accepts /zh-hant/ prefix, rejects /en/', () => {
+test('T10: zh-hant target accepts /zh-hant/ prefix, rejects /en/', () => {
   const good = EN_MD.replace(
     '- [Dual-engine strategy deep dive](/blog/dual-engine-strategy/)',
     '- [Dual-engine strategy deep dive](https://www.tengence.com/zh-hant/blog/article/dual-engine-strategy/)'
   );
-  const r1 = checkTranslation({ sourceMd: LINKED_SRC, targetMd: good, targetLang: 'zh-hk' });
+  const r1 = checkTranslation({ sourceMd: LINKED_SRC, targetMd: good, targetLang: 'zh-hant' });
   assert.ok(r1.checks.T10 && r1.checks.T10.ok === true, JSON.stringify(r1.errors, null, 2));
   const bad = good.replace('https://www.tengence.com/zh-hant/', 'https://www.tengence.com/en/');
-  const r2 = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'zh-hk' });
+  const r2 = checkTranslation({ sourceMd: LINKED_SRC, targetMd: bad, targetLang: 'zh-hant' });
   assert.equal(r2.checks.T10.ok, false);
   assert.ok(r2.errors.some((e) => e.id === 'T10' && /expected \/zh-hant\//.test(e.message)), JSON.stringify(r2.errors));
 });
@@ -387,7 +387,7 @@ test('T11: CTA links joined with | fail', () => {
     'Contact Tengence GEO for an AI visibility assessment.',
     '[Free trial](https://console.tengence.com/register) | [Book a call](https://www.tengence.com/contact-us)'
   );
-  const r = checkTranslation({ sourceMd: LINKED_CTA_SRC, targetMd: bad, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: LINKED_CTA_SRC, targetMd: bad, targetLang: 'en' });
   assert.equal(r.ok, false);
   assert.ok(r.errors.some((e) => e.id === 'T11' && /\|/.test(e.message)), JSON.stringify(r.errors));
 });
@@ -397,7 +397,7 @@ test('T11: CTA as a bulleted list passes', () => {
     'Contact Tengence GEO for an AI visibility assessment.',
     '- [Free trial](https://console.tengence.com/register)\n- [Book a call](https://www.tengence.com/contact-us)'
   );
-  const r = checkTranslation({ sourceMd: LINKED_CTA_SRC, targetMd: good, targetLang: 'en-us' });
+  const r = checkTranslation({ sourceMd: LINKED_CTA_SRC, targetMd: good, targetLang: 'en' });
   assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
   assert.ok(!r.errors.some((e) => e.id === 'T11'));
 });

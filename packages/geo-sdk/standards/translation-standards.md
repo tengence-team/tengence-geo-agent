@@ -2,7 +2,7 @@
 
 > The hands-on spec for **every** multi-language translation task: target-language
 > profiles, the four hard rules (facts / structure / expression / title), the
-> GEO-domain glossary (zh-cn ↔ en-us ↔ zh-hk), the simplified→traditional conversion
+> GEO-domain glossary (zh-hans ↔ en ↔ zh-hant), the simplified→traditional conversion
 > table, the mechanical gate summary (T1–T11), and the per-language block headings.
 > Execution lives in the harness (`geo-article-translation` skill); the mechanical
 > gate lives in code (`geo-sdk/translate/gate.js`) and is authoritative for T1–T11.
@@ -12,28 +12,35 @@
 
 ## 1. Purpose & scope
 
-- Translate **already gate-passing Chinese articles** (`lang=zh-cn`) into English
-  (`en-us`) and traditional Chinese (`zh-hk`, Hong Kong style), as **separate rows**
+- Translate **already gate-passing Chinese articles** (`lang=zh-hans`) into English
+  (`en`) and traditional Chinese (`zh-hant`, Hong Kong style), as **separate rows**
   in `tengence_geo_articles` sharing the same `slug` and a common
   `translation_group`.
-- The zh-cn article is the **single source of truth**: translations never alter its
+- The zh-hans article is the **single source of truth**: translations never alter its
   facts, conclusions, numbers, links, or images.
 - Out of scope: term/category/tag translation (plugin v1.1), channel rewrites for
-  WeChat/CSDN/Juejin (stay zh-cn), audio/video localization.
+  WeChat/CSDN/Juejin (stay zh-hans), audio/video localization.
 
 ## 2. Language codes
 
 | Context | Codes |
 |---|---|
-| geo DB / CLI / MCP (`lang`) | `zh-cn` (default), `en-us`, `zh-hk` |
-| WP plugin taxonomy | `zh-hans`, `en`, `zh-hant` (mapping maintained by the geo→plugin language write API) |
-| Article URL prefix (plugin) | `/` (zh-cn), `/en/blog/article/{slug}/`, `/zh-hant/blog/article/{slug}/` |
-| Google GSC API parameter | `zh-cn` (external API format) |
+| geo DB / CLI / MCP (`lang`) | `zh-hans` / `en` / `zh-hant`（articles 表列默认 `en`；站点默认 `zh-hans`） |
+| WP plugin taxonomy | `zh-hans`, `en`, `zh-hant`（与内部码直接一致，无映射层） |
+| Article URL prefix (plugin) | `/` (zh-hans), `/en/blog/article/{slug}/`, `/zh-hant/blog/article/{slug}/` |
+| Google GSC API parameter | `zh-cn`（外部 API 格式，不在统一范围；保持原样） |
 
-All internal codes are **lowercase** — `zh-cn`, `en-us`, `zh-hk` are the only
-canonical values. Never introduce uppercase variants (`zh-CN`, `en-US`, `zh-HK`)
-inside geo code, config, or data. The plugin exposes `zh-hans` / `en` / `zh-hant`
-as its taxonomy; the mapping is owned by the geo→plugin language write API.
+All internal codes are **lowercase** — `zh-hans`, `en`, `zh-hant` are the only
+canonical values. Never introduce uppercase variants (`zh-Hans`, `en-US`, `zh-Hant`)
+or the legacy region codes (`zh-cn` / `en-us` / `zh-hk`) inside geo code, config,
+or data. 2026-10-07 migration: internal storage uses `zh-hans` / `zh-hant` / `en`
+directly; the former `LANG_MAP` mapping layer was removed and `normalizeLang` is an
+identity pass-through. The plugin taxonomy matches internal codes directly.
+
+> **内部语言标识规范（2026-10-07 起生效，SSOT）**：内部体系（DB、CLI/MCP `lang`、
+> 站点配置、inbox 目录名、文章内链 URL 前缀）一律直存 `zh-hans` / `zh-hant` / `en`，
+> 不设映射层。内链一律保留目标语言的 URL 前缀（同语言互链，禁止裸链、禁止跨语言跳转）。
+> 外部接口例外：Google GSC 等第三方 API 参数按其自身格式（如 `zh-cn`）使用，不在统一范围。
 
 ## 3. The four hard rules
 
@@ -45,7 +52,7 @@ as its taxonomy; the mapping is owned by the geo→plugin language write API.
   share one featured image).
 - **Internal article links** (`tengence.com/blog/article/<slug>/`): the **slug stays
   identical**, but the **language segment is rewritten to the target language
-  prefix** — zh-cn→`/zh-hans/`, en-us→`/en/`, zh-hk→`/zh-hant/`. A translation's
+  prefix** — zh-hans→`/zh-hans/`, en→`/en/`, zh-hant→`/zh-hant/`. A translation's
   internal links must carry the *target* language prefix (same-language internal
   linking — never keep the source language's prefix, never a bare link, never hop
   between languages). T2 compares links with the language segment normalized, so
@@ -64,7 +71,7 @@ as its taxonomy; the mapping is owned by the geo→plugin language write API.
 - No Markdown residue in the final body; no bare URLs.
 
 ### 3.3 Expression — idiomatic, not literal
-- English: en-us, neutral tone, native-speaker prose. Reorganize sentences to sound
+- English: en, neutral tone, native-speaker prose. Reorganize sentences to sound
   natural; do not translate word-for-word. Use the GEO-domain vocabulary of §6.
 - Traditional Chinese: Hong Kong style on a common-traditional base (see §5). Never
   produce OpenCC-style glyph-only conversion (简→繁 glyph swap without term
@@ -76,10 +83,10 @@ as its taxonomy; the mapping is owned by the geo→plugin language write API.
   habits, provided: the core keyword(s) of the source title survive, and the
   conclusion stays identical.
 - `meta_title` / `meta_description` are re-created per target-language length
-  standards (English meta_description 150–160 chars; zh-hk ≈ 60–80 chars).
+  standards (English meta_description 150–160 chars; zh-hant ≈ 60–80 chars).
 - No mixed-language titles (brand names excepted).
 
-## 4. English target profile (en-us)
+## 4. English target profile (en)
 
 - Spelling: American English (optimize, organization, center, behavior).
 - Tone: neutral, professional B2B/SaaS style; no hype, no filler, no exclamation
@@ -107,9 +114,9 @@ as its taxonomy; the mapping is owned by the geo→plugin language write API.
 - Keywords keep their English form where the industry does (GEO, AI, SEO, API,
   WordPress, SaaS) — no forced Chinese gloss for established acronyms.
 
-## 6. GEO-domain glossary (zh-cn ↔ en-us ↔ zh-hk)
+## 6. GEO-domain glossary (zh-hans ↔ en ↔ zh-hant)
 
-| zh-cn (source) | en-us | zh-hk (Hong Kong style) |
+| zh-hans (source) | en | zh-hant (Hong Kong style) |
 |---|---|---|
 | GEO / 生成式引擎优化 | Generative Engine Optimization (GEO) | GEO / 生成式引擎優化 |
 | AI 可见性 | AI visibility | AI 可見性 |
@@ -167,10 +174,10 @@ as its taxonomy; the mapping is owned by the geo→plugin language write API.
 
 ## 7. Simplified → Traditional high-frequency conversion table
 
-> Applied to zh-hk output. Never glyph-swap without checking this table; glyph-only
+> Applied to zh-hant output. Never glyph-swap without checking this table; glyph-only
 > conversion of the words below is a T6/T5 failure.
 
-| zh-cn | zh-hk (use) | avoid (TW-only or simplified) |
+| zh-hans | zh-hant (use) | avoid (TW-only or simplified) |
 |---|---|---|
 | 软件 | 軟件 | 軟體 |
 | 信息 | 資訊 | — |
@@ -222,20 +229,20 @@ as its taxonomy; the mapping is owned by the geo→plugin language write API.
 | T2 | Link fidelity | Outbound citation URL set identical to source; internal-link URL set identical **after normalizing the language segment** (zh-hans/zh-hant/en prefixes are stripped, so a language-prefix rewrite in the target is expected, not drift) |
 | T3 | Image fidelity | Image URL set identical (incl. `featured_image`); alt may be translated but non-empty |
 | T4 | Number fidelity | Numeric set (years/percent/versions/amounts) matches source modulo thousand-separator/decimal format |
-| T5 | No residue | en-us: no CJK outside whitelist (brand/proper nouns), no Chinese punctuation; zh-hk: no simplified terms (§7) and no simplified glyphs; both: no Markdown residue |
-| T6 | Term compliance | Target-language glossary hits: en-us has no direct-translation of glossary terms; zh-hk has no zh-cn-only terms |
-| T7 | Length floor | Each H2 maps 1:1 to source structure; no truncated section; en-us H2 ≥ ~50% of source length |
+| T5 | No residue | en: no CJK outside whitelist (brand/proper nouns), no Chinese punctuation; zh-hant: no simplified terms (§7) and no simplified glyphs; both: no Markdown residue |
+| T6 | Term compliance | Target-language glossary hits: en has no direct-translation of glossary terms; zh-hant has no zh-hans-only terms |
+| T7 | Length floor | Each H2 maps 1:1 to source structure; no truncated section; en H2 ≥ ~50% of source length |
 | T8 | Title spec | H1 keeps core keyword; no mixed-language title; meta_description length per target profile |
-| T10 | Internal-link language prefix | every on-site article link in the target carries the **target** language prefix (/zh-hans/ zh-cn, /en/ en-us, /zh-hant/ zh-hk); bare links or another language's prefix fail |
+| T10 | Internal-link language prefix | every on-site article link in the target carries the **target** language prefix (/zh-hans/ zh-hans, /en/ en, /zh-hant/ zh-hant); bare links or another language's prefix fail |
 | T11 | CTA layout | the Get Started / 立即行动 block lists each link on its own line; links joined by `|` on one line fail |
 
 ## 9. Block headings per target language
 
-> The zh-cn forms are the legacy canonical (unchanged). Additions for en-us / zh-hk
+> The zh-hans forms are the legacy canonical (unchanged). Additions for en / zh-hant
 > are new recognition points for the parser (`content/md.js`, `check/index.js`,
 > `publish/index.js`) — add, never replace (block-conventions §3 rule).
 
-| Role | zh-cn (legacy) | en-us | zh-hk (new) |
+| Role | zh-hans (legacy) | en | zh-hant (new) |
 |---|---|---|---|
 | Opening summary | `> **摘要**：…` | `> **Summary:** …` | `> **摘要**：…` |
 | Key takeaways | `## 关键要点` | `## Key Takeaways` | `## 關鍵要點` |
@@ -245,7 +252,7 @@ as its taxonomy; the mapping is owned by the geo→plugin language write API.
 | Call to action | `## 立即行动` | `## Get Started` | `## 立即行動` |
 | Brand blurb | `## 关于<品牌>` | `## About <Brand>` | `## 關於<品牌>` |
 
-FAQ pairs in zh-hk: `> **問：{問題}？**` / `> 答：{答案}`.
+FAQ pairs in zh-hant: `> **問：{問題}？**` / `> 答：{答案}`.
 
 ## 10. Deliverable format
 

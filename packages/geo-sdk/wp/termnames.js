@@ -15,7 +15,9 @@
  *   - POST   /author-names/batch               author batch set
  *
  * Language keys: the plugin stores en / zh-hans / zh-hant and silently drops any
- * other key, so the geo codes en-us / zh-cn / zh-hk are mapped here (normalizeNames).
+ * other key. Since 2026-10-07 the geo DB stores the SAME codes (zh-hans / zh-hant / en)
+ * directly — the former LANG_MAP (zh-cn→zh-hans, en-us→en, zh-hk→zh-hant) was removed;
+ * normalizeLang / normalizeNames are kept as pass-through identity for API stability.
  *
  * siteKey: optional in every function — geo-cli bins pass nothing (the process
  * argv carries --site); MCP tools pass the resolved site key explicitly.
@@ -25,17 +27,15 @@
 const { pluginApi } = require('./plugin');
 
 const TAXONOMIES = ['category', 'post_tag'];
-const LANG_MAP = { 'zh-cn': 'zh-hans', 'en-us': 'en', 'zh-hk': 'zh-hant' };
 
 /**
- * Map a single geo language code to the plugin code (en-us→en, zh-cn→zh-hans,
- * zh-hk→zh-hant); anything else passes through unchanged.
+ * Identity pass-through (kept for API stability; language codes are unified:
+ * zh-hans / zh-hant / en everywhere).
  * @param {string} lang
  * @returns {string}
  */
 function normalizeLang(lang) {
-  if (!lang) return lang;
-  return LANG_MAP[lang] || lang;
+  return lang;
 }
 
 /**

@@ -110,7 +110,7 @@ async function extractInternalLinks(item) {
   const md = await t.db.withConn(async (conn) => {
     const [rows] = await conn.query(
       'SELECT content_longtext FROM tengence_geo_articles WHERE app_id = ? AND slug = ? AND lang = ? LIMIT 1',
-      [APP_ID, item.slug, 'zh-cn']
+      [APP_ID, item.slug, 'zh-hans']
     );
     return (rows[0] && rows[0].content_longtext) || '';
   });
@@ -143,10 +143,10 @@ async function runCheck(item) {
  * de-subprocessed 2026-09-20).
  *
  * Multi-language: IndexNow receives every language URL (it is per-URL and free);
- * Baidu 普通收录 is quota-bound and only indexes the zh-cn site, so translations are
+ * Baidu 普通收录 is quota-bound and only indexes the zh-hans site, so translations are
  * pushed there only through the canonical-language URL.
  * @param {string[]} urls all language URLs (canonical, read back from WP)
- * @param {string} zhUrl the zh-cn canonical URL (the only one sent to Baidu)
+ * @param {string} zhUrl the zh-hans canonical URL (the only one sent to Baidu)
  */
 async function submitUrls(urls, zhUrl) {
   const list = [...new Set(urls.filter(Boolean))];
@@ -167,7 +167,7 @@ async function submitUrls(urls, zhUrl) {
     if (!token) throw new Error('BAIDU_TOKEN not configured');
     const site = process.env.BAIDU_SITE || `www.${SITE.site.domain || 'tengence.com'}`;
     await t.search.baidu.submitBatch([zhUrl], { token, site });
-    console.log(`    ↳ submit-baidu.js pushed (zh-cn only)`);
+    console.log(`    ↳ submit-baidu.js pushed (zh-hans only)`);
   } catch (e) {
     console.log(`    ↳ submit-baidu.js push failed (logged only, no rollback)`);
   }
@@ -176,8 +176,8 @@ async function submitUrls(urls, zhUrl) {
 /**
  * Bring the translations of an article online together with their source.
  *
- * The plan table only tracks the zh-cn row, so without this step a scheduled promote
- * would publish the source and leave en-us / zh-hk sitting in the draft box forever.
+ * The plan table only tracks the zh-hans row, so without this step a scheduled promote
+ * would publish the source and leave en / zh-hant sitting in the draft box forever.
  * Translations are found through the DB (same slug, wp_post_id > 0), promoted to
  * publish, and their post_date / post_modified are aligned to the source afterwards
  * (a status change refreshes modified, so the date sync must come last).
@@ -185,13 +185,13 @@ async function submitUrls(urls, zhUrl) {
  * Failures are logged and never abort the run: a missing translation must not block
  * the source article from going live.
  * @param {string} slug
- * @param {number} sourcePostId the zh-cn WP post id
+ * @param {number} sourcePostId the zh-hans WP post id
  * @returns {Promise<Array<{lang:string, wp_post_id:number, link:string, status:string}>>}
  */
 async function promoteTranslations(slug, sourcePostId) {
   const rows = await t.db.withConn(async (conn) => {
     const [r] = await conn.query(
-      "SELECT lang, wp_post_id FROM tengence_geo_articles WHERE app_id = ? AND slug = ? AND lang <> 'zh-cn' AND wp_post_id > 0 ORDER BY lang",
+      "SELECT lang, wp_post_id FROM tengence_geo_articles WHERE app_id = ? AND slug = ? AND lang <> 'zh-hans' AND wp_post_id > 0 ORDER BY lang",
       [APP_ID, slug]
     );
     return r || [];
@@ -250,7 +250,7 @@ async function promoteTranslations(slug, sourcePostId) {
 
 /**
  * Build the work items for `--slug` mode: one item per slug, carrying the source post
- * (zh-cn when present) and, implicitly, every other language row of that slug —
+ * (zh-hans when present) and, implicitly, every other language row of that slug —
  * promoteTranslations() picks those up by slug, so whatever languages exist in the
  * draft box go live together.
  */
@@ -269,7 +269,7 @@ async function itemsFromSlugs(slugs) {
       console.log(`    ✗ 该 slug 没有已入库（wp_post_id>0）的草稿: ${slug}`);
       continue;
     }
-    const source = rows.find((r) => r.lang === 'zh-cn') || rows[0];
+    const source = rows.find((r) => r.lang === 'zh-hans') || rows[0];
     const planRow = plans.find((p) => p.slug === slug);
     out.push({
       slug,
@@ -391,7 +391,7 @@ async function promoteOne(item, { dryRun = false, publishDate = null } = {}) {
       console.warn(`    ⚠️ Plan write-back failed: ${e.message}`);
     }
 
-    // step 7: inclusion push (IndexNow: every language; Baidu: zh-cn only)
+    // step 7: inclusion push (IndexNow: every language; Baidu: zh-hans only)
     await submitUrls([url, ...translations.map((x) => x.link)], url);
 
   return { status: 'published', item, url, translations };

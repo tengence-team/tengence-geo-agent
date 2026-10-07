@@ -565,9 +565,9 @@ function checkSlugExistsInDB(connection, slug, excludeId = null, lang = null) {
 /**
  * Smart WordPress article lookup (per language)
  * Supports exact and fuzzy matching (handles slugs with numeric suffixes).
- * Multi-language: for translations (lang not zh-cn) the plugin multilingual query
+ * Multi-language: for translations (lang not zh-hans) the plugin multilingual query
  * API resolves slug+lang and fuzzy matching is disabled (a wrong-language match
- * is worse than no match); zh-cn keeps the legacy path.
+ * is worse than no match); zh-hans keeps the legacy path.
  * @param {string} slug
  * @param {string|null} lang geo language code (default null → legacy behavior)
  */
@@ -591,10 +591,10 @@ async function findPostBySlugSmart(slug, lang = null) {
       }
       // translations: never fall back to the ambiguous slug lookup (would risk
       // matching another language's post) — absence means "create new".
-      // zh-cn keeps the legacy exact/fuzzy fallback below only when the plugin
+      // zh-hans keeps the legacy exact/fuzzy fallback below only when the plugin
       // query itself is unavailable; the DB wp_post_id override at the call
       // site still takes precedence either way.
-      if (lang !== 'zh-cn') return null;
+      if (lang !== 'zh-hans') return null;
     }
     // 1. exact match
     const exact = await s.t.wp.posts.findBySlug(slug);
@@ -657,8 +657,8 @@ async function findExistingPost(slug) {
  *   - skipDuplicateCheck  skip the slug duplicate check (when the caller already ran
  *                         the idempotence gate)
  *   - featuredMedia force a specific WP media ID as the featured image
- *   - syncSourceDates  inherit the zh-cn source article's publish/update time
- *                       (default true; only applies to en-us / zh-hk rows, needs the
+ *   - syncSourceDates  inherit the zh-hans source article's publish/update time
+ *                       (default true; only applies to en / zh-hant rows, needs the
  *                       plugin dates API because wp/v2 cannot write post_modified)
  *   - skipGsc / skipIndexnow / skipBaidu  skip the corresponding post-publish
  *                                         inclusion submission
@@ -808,7 +808,7 @@ async function publishArticle(connection, articleId, options = {}) {
   const geoTakeaways = geo.key_takeaways || [];
   const geoQa = geo.qa_pairs || [];
   // report via the SSOT heading predicates — a hardcoded `关键要点` check reported
-  // "false" for perfectly good zh-hk / en-us bodies (2026-10-06)
+  // "false" for perfectly good zh-hant / en bodies (2026-10-06)
   const bodyHeadings = s.t.content.md.h2List(htmlContent);
   const bodyHasTakeaways = bodyHeadings.some((h) => s.t.content.md.isTakeawaysHeading(h.text));
   const bodyHasFaq = bodyHeadings.some((h) => s.t.content.md.isFaqHeading(h.text));
@@ -851,7 +851,7 @@ async function publishArticle(connection, articleId, options = {}) {
 
   // 6. find or create the article
   s.logger('\n[6/8] Checking whether it exists in WordPress...');
-  let existing = await findPostBySlugSmart(article.slug, article.lang || 'zh-cn');
+  let existing = await findPostBySlugSmart(article.slug, article.lang || 'zh-hans');
 
   // prefer the DB's wp_post_id when present
   if (article.wpPostId) {
@@ -963,15 +963,15 @@ async function publishArticle(connection, articleId, options = {}) {
       }
     } catch (e) {
       const is404 = /404/.test(String(e.message));
-      if (is404 && article.lang === 'zh-cn') {
+      if (is404 && article.lang === 'zh-hans') {
         s.logger(`  ⚠️ Plugin language API not available; default language assumed (${e.message})`);
       } else {
         throw e;
       }
     }
 
-    // 7.1 date inheritance: a translation (en-us / zh-hk) must carry its source
-    // zh-cn article's publish time AND update time, so the three languages of one
+    // 7.1 date inheritance: a translation (en / zh-hant) must carry its source
+    // zh-hans article's publish time AND update time, so the three languages of one
     // article form a single timeline.
     //
     // The native WP REST API treats `modified` (post_modified) as READONLY — it is
@@ -982,17 +982,17 @@ async function publishArticle(connection, articleId, options = {}) {
     // Best-effort: a failure here must never lose an already-published article, so
     // it warns instead of throwing (the dates can be re-applied with
     // publish_update_fields / copy_dates_from at any time).
-    if (!dryRun && options.syncSourceDates !== false && article.lang && article.lang !== 'zh-cn') {
+    if (!dryRun && options.syncSourceDates !== false && article.lang && article.lang !== 'zh-hans') {
       try {
         const [srcRows] = await connection.query(
           `SELECT a.wp_post_id, a.slug
              FROM tengence_geo_articles a
-            WHERE a.slug = ? AND a.lang = 'zh-cn' AND a.app_id = ? AND a.wp_post_id > 0
+            WHERE a.slug = ? AND a.lang = 'zh-hans' AND a.app_id = ? AND a.wp_post_id > 0
             LIMIT 1`,
           [article.slug, s.CONFIG.app_id]
         );
         if (!srcRows.length) {
-          s.logger(`  ⚠️ No zh-cn source article found for "${article.slug}"; dates left as-is`);
+          s.logger(`  ⚠️ No zh-hans source article found for "${article.slug}"; dates left as-is`);
         } else {
           const sourceWpId = srcRows[0].wp_post_id;
           const srcDates = await s.t.wp.posts.getPostDates(sourceWpId);
@@ -1004,10 +1004,10 @@ async function publishArticle(connection, articleId, options = {}) {
               modified_gmt: srcDates.modified_gmt,
             });
             s.logger(
-              `  ✓ Dates inherited from zh-cn WP ${sourceWpId}: date ${srcDates.date} / modified ${srcDates.modified}`
+              `  ✓ Dates inherited from zh-hans WP ${sourceWpId}: date ${srcDates.date} / modified ${srcDates.modified}`
             );
           } else {
-            s.logger(`  ⚠️ Could not read dates of zh-cn WP ${sourceWpId}; dates left as-is`);
+            s.logger(`  ⚠️ Could not read dates of zh-hans WP ${sourceWpId}; dates left as-is`);
           }
         }
       } catch (e) {
@@ -1044,17 +1044,17 @@ async function publishArticle(connection, articleId, options = {}) {
   try {
     if (result.status === 'publish') {
       // Target the row for THIS article's language: a translation publishes its own
-      // post id onto its own (app_id, slug, lang) row, never onto the zh-cn row.
+      // post id onto its own (app_id, slug, lang) row, never onto the zh-hans row.
       await s.t.plan.markPublished(article.slug, {
         wpPostId: result.id,
         publishedUrl: `${s.CONFIG.urls.article}${article.slug}/`,
       }, { lang: article.lang });
       s.logger(`  ✓ Plan table updated: ${article.slug} → published`);
     } else {
-      // Plan rows track the zh-cn SOURCE post — the row the daily queue promotes.
+      // Plan rows track the zh-hans SOURCE post — the row the daily queue promotes.
       // Publishing a translation used to repoint the plan at the translation, so the
-      // queue would then promote the zh-hk post as if it were the source
-      // (2026-10-05: A11 ended up with plan.wp_post_id = zh-hk 1547 instead of 1145).
+      // queue would then promote the zh-hant post as if it were the source
+      // (2026-10-05: A11 ended up with plan.wp_post_id = zh-hant 1547 instead of 1145).
       const planWpPostId = await resolvePlanSourceWpId(connection, article, s.CONFIG.app_id, result.id);
       await s.t.plan.markQueued(article.slug, { articleId, wpPostId: planWpPostId });
       s.logger(`  ✓ Plan table updated: ${article.slug} → queued (source post ${planWpPostId})`);
@@ -1134,10 +1134,10 @@ async function publishArticle(connection, articleId, options = {}) {
   //     networks, no proxy.
   //     2026-09-20: the protocol layer sank into t.search.baidu.submitBatch
   //     (including the site-not-URL-encoded constraint); reused here.
-  // Baidu normal inclusion is a Simplified-Chinese engine (index built for zh-cn);
-  // only submit zh-cn URLs — en-us / zh-hk submissions waste the daily quota
+  // Baidu normal inclusion is a Simplified-Chinese engine (index built for zh-hans);
+  // only submit zh-hans URLs — en / zh-hant submissions waste the daily quota
   // (see standards/translation-standards.md §6.4 rationale).
-  if (!options.dryRun && !options.skipBaidu && result.status === 'publish' && article.lang === 'zh-cn' && process.env.BAIDU_TOKEN) {
+  if (!options.dryRun && !options.skipBaidu && result.status === 'publish' && article.lang === 'zh-hans' && process.env.BAIDU_TOKEN) {
     s.logger('\n[11/11] Submitting to Baidu normal inclusion...');
     const baiduSite = process.env.BAIDU_SITE || `www.${s.SITE_DOMAIN || 'tengence.com'}`;
     try {
@@ -1169,19 +1169,19 @@ async function publishArticle(connection, articleId, options = {}) {
 }
 
 /**
- * The post id a plan row should point at: the zh-cn SOURCE post.
+ * The post id a plan row should point at: the zh-hans SOURCE post.
  *
  * Publishing a translation must never repoint the plan at the translation, otherwise
  * the daily queue promotes a translation as if it were the source article. Order of
- * preference: zh-cn article row → current plan value → this run's post (last resort).
+ * preference: zh-hans article row → current plan value → this run's post (last resort).
  */
 async function resolvePlanSourceWpId(connection, article, appId, fallbackId) {
-  const isSource = !article.lang || article.lang === 'zh-cn';
+  const isSource = !article.lang || article.lang === 'zh-hans';
   if (isSource) return fallbackId;
   try {
     const [src] = await connection.query(
       `SELECT wp_post_id FROM tengence_geo_articles
-        WHERE slug = ? AND lang = 'zh-cn' AND app_id = ? AND wp_post_id > 0 LIMIT 1`,
+        WHERE slug = ? AND lang = 'zh-hans' AND app_id = ? AND wp_post_id > 0 LIMIT 1`,
       [article.slug, appId]
     );
     if (src.length && src[0].wp_post_id) return src[0].wp_post_id;
@@ -1191,7 +1191,7 @@ async function resolvePlanSourceWpId(connection, article, appId, fallbackId) {
     );
     if (plan.length && plan[0].wp_post_id) return plan[0].wp_post_id;
   } catch (e) {
-    console.warn(`  ⚠️ Could not resolve the zh-cn source post for the plan row: ${e.message}`);
+    console.warn(`  ⚠️ Could not resolve the zh-hans source post for the plan row: ${e.message}`);
   }
   return fallbackId;
 }

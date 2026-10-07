@@ -146,7 +146,7 @@ async function getByArticleId(articleId, { appId = DEFAULT_APP_ID(), lang } = {}
 
 /**
  * Register / update a row (idempotent; field-merge semantics live in the repository).
- * Keyed on (app_id, slug, lang) — pass { lang:'en-us' } to create/update a translation row.
+ * Keyed on (app_id, slug, lang) — pass { lang:'en' } to create/update a translation row.
  */
 async function upsert(record, { appId = DEFAULT_APP_ID(), lang } = {}) {
   if (!record || !record.slug) throw new Error('plan.upsert requires record.slug');

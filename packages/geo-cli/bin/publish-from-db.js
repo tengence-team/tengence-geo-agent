@@ -15,8 +15,8 @@
  *   --batch=1,2,3         publish multiple articles in batch
  *   --all                 publish all draft articles
  *   --featured-media <id>  force a specific WP media ID as the featured image
- *   --no-sync-dates        do NOT inherit the zh-cn source article's publish/update
- *                         time (by default a translation en-us/zh-hk always does, via
+ *   --no-sync-dates        do NOT inherit the zh-hans source article's publish/update
+ *                         time (by default a translation en/zh-hant always does, via
  *                         the plugin dates API — wp/v2 cannot write post_modified)
  *   --skip-gsc            skip Google Search Console sitemap submission after publishing
  *                         (default: submitted on publish)
@@ -59,7 +59,7 @@ function usage() {
   console.log('  --batch=1,2,3         publish multiple articles in batch');
   console.log('  --all                 publish all draft articles');
   console.log('  --featured-media <id>  force a specific WP media ID as the featured image (produced by the image pipeline)');
-  console.log('  --no-sync-dates        do not inherit the zh-cn source publish/update time (translations do by default)');
+  console.log('  --no-sync-dates        do not inherit the zh-hans source publish/update time (translations do by default)');
   console.log('  --skip-gsc            skip Google Search Console sitemap submission after publishing');
   console.log('  --skip-indexnow       skip IndexNow submission after publishing (default: submitted, requires INDEXNOW_KEY)');
   console.log('  --skip-baidu          skip Baidu normal-inclusion submission after publishing (default: submitted, requires BAIDU_TOKEN)');
@@ -170,9 +170,9 @@ async function main() {
         );
         lang = rows[0] && rows[0].lang;
       }
-      // Translation rows (en-us / zh-hk) are gated by check_translation (T1–T8), which the
+      // Translation rows (en / zh-hant) are gated by check_translation (T1–T8), which the
       // harness runs before ingest; the zh writing gate (checkArticle) does not apply to them.
-      const isTranslation = lang && lang !== 'zh-CN' && lang !== 'zh-cn';
+      const isTranslation = lang && lang !== 'zh-hans';
       const gateDir = (planRow && planRow.category) || 'industry-insights';
       if (slug) {
         if (isTranslation) {

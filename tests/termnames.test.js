@@ -19,9 +19,9 @@ const termnames = require('../packages/geo-sdk/wp/termnames');
 const { normalizeLang, normalizeNames, requireTaxonomy, requireSlug, requireAuthorId } = termnames;
 
 test('normalizeLang: maps geo codes to plugin codes, passes others through', () => {
-  assert.equal(normalizeLang('zh-cn'), 'zh-hans');
-  assert.equal(normalizeLang('en-us'), 'en');
-  assert.equal(normalizeLang('zh-hk'), 'zh-hant');
+  assert.equal(normalizeLang('zh-hans'), 'zh-hans');
+  assert.equal(normalizeLang('en'), 'en');
+  assert.equal(normalizeLang('zh-hant'), 'zh-hant');
   assert.equal(normalizeLang('en'), 'en');
   assert.equal(normalizeLang('zh-hans'), 'zh-hans');
   assert.equal(normalizeLang('fr'), 'fr'); // unknown passes through (plugin drops it server-side)
@@ -31,11 +31,11 @@ test('normalizeLang: maps geo codes to plugin codes, passes others through', () 
 
 test('normalizeNames: maps every key, preserves values incl. empty-string clear', () => {
   assert.deepEqual(
-    normalizeNames({ 'en-us': 'GEO & AI Search', 'zh-cn': 'GEO与AI搜索', 'zh-hk': 'GEO與AI搜尋' }),
+    normalizeNames({ 'en': 'GEO & AI Search', 'zh-hans': 'GEO与AI搜索', 'zh-hant': 'GEO與AI搜尋' }),
     { en: 'GEO & AI Search', 'zh-hans': 'GEO与AI搜索', 'zh-hant': 'GEO與AI搜尋' }
   );
   assert.deepEqual(normalizeNames({ en: 'A', 'zh-hans': 'B' }), { en: 'A', 'zh-hans': 'B' });
-  assert.deepEqual(normalizeNames({ 'zh-cn': '' }), { 'zh-hans': '' }); // "" = clear that language
+  assert.deepEqual(normalizeNames({ 'zh-hans': '' }), { 'zh-hans': '' }); // "" = clear that language
   assert.deepEqual(normalizeNames({}), {});
   assert.deepEqual(normalizeNames(null), {});
   assert.deepEqual(normalizeNames(undefined), {});

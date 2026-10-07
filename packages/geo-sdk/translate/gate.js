@@ -21,9 +21,9 @@ const { loadForbidden } = require('./glossary');
 
 /** Target-language block heading patterns (§9 of translation-standards.md). */
 const HEADINGS = {
-  // zh-cn articles may use Chinese OR English block headings (block-conventions §3).
+  // zh-hans articles may use Chinese OR English block headings (block-conventions §3).
   // All patterns are multiline: headings can appear anywhere in the body.
-  'zh-cn': {
+  'zh-hans': {
     summary: /^>\s*\*\*(摘要|Summary)\*\*[：:]/im,
     takeaways: /^##\s*(关键要点|核心要点|要点速览|Key Takeaways|Key Points)/im,
     faq: /^##\s*(常见问题|FAQ)/im,
@@ -32,7 +32,7 @@ const HEADINGS = {
     get_started: /^##\s*(立即行动|Get Started)/im,
     about: /^##\s*(关于|About\s)/im,
   },
-  'en-us': {
+  'en': {
     summary: /^>\s*\*\*Summary:?\*\*/im,
     takeaways: /^##\s*(Key Takeaways|Key Points)/im,
     faq: /^##\s*FAQ/im,
@@ -41,7 +41,7 @@ const HEADINGS = {
     get_started: /^##\s*Get Started/im,
     about: /^##\s*About\s/im,
   },
-  'zh-hk': {
+  'zh-hant': {
     summary: /^>\s*\*\*摘要\*\*[：:]/im,
     takeaways: /^##\s*(關鍵要點|核心要點)/im,
     faq: /^##\s*(常見問題|FAQ)/im,
@@ -53,9 +53,9 @@ const HEADINGS = {
 };
 
 /** meta_description length bounds per target language (§3.4). */
-const META_DESC_LEN = { 'en-us': [150, 160], 'zh-hk': [60, 80] };
+const META_DESC_LEN = { 'en': [150, 160], 'zh-hant': [60, 80] };
 /** Per-section length floor relative to the source section (§3.3, §8 T7). */
-const SECTION_RATIO = { 'en-us': 0.5, 'zh-hk': 0.6 };
+const SECTION_RATIO = { 'en': 0.5, 'zh-hant': 0.6 };
 
 // ---- character / structure detectors ------------------------------------
 
@@ -71,7 +71,7 @@ const MARKDOWN_RESIDUE_RE = /\*\*[ \t]*\*\*|\(\s*\)|\[\s*\]/;
 const NUM_H2_RE = /^##\s+([0-9]+)[.、．]\s+/;
 const CN_NUM_H2_RE = /^##\s+([一二三四五六七八九十]+)[、．]/;
 /** Roman-numeral H2 (`## I.`, `## IV.`): the English rendering of 一、二、… . Without
- *  this the en-us target counted 0 numbered sections and T7 reported a false
+ *  this the en target counted 0 numbered sections and T7 reported a false
  *  section-count mismatch against the Chinese source. */
 const ROMAN_H2_RE = /^##\s+([IVXLCDM]+)[.、．]\s+/i;
 const CN_DIGITS = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
@@ -242,7 +242,7 @@ function splitNumberedSections(mdText) {
 }
 
 function hasBlock(mdText, lang, role) {
-  const patterns = HEADINGS[lang] || HEADINGS['en-us'];
+  const patterns = HEADINGS[lang] || HEADINGS['en'];
   const re = patterns[role];
   if (!re) return true; // role not defined for this lang: treat as present
   return re.test(mdText);
@@ -280,20 +280,20 @@ function checkNumbering(mdText, targetLang) {
 /**
  * Run the T1–T9 mechanical gate on a translation.
  * @param {object} opts
- * @param {string} opts.sourceMd   source (zh-cn) markdown (may include front matter)
+ * @param {string} opts.sourceMd   source (zh-hans) markdown (may include front matter)
  * @param {string} opts.targetMd   translated markdown (may include front matter)
- * @param {string} opts.targetLang 'en-us' | 'zh-hk'
- * @param {string} [opts.sourceLang='zh-cn']
+ * @param {string} opts.targetLang 'en' | 'zh-hant'
+ * @param {string} [opts.sourceLang='zh-hans']
  * @param {string} [opts.siteKey]  site key (for site-level glossary)
  * @returns {{ok:boolean, errors:Array<{id:string,message:string}>, checks:object}}
  */
-function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn', siteKey, targetSeo } = {}) {
+function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-hans', siteKey, targetSeo } = {}) {
   const errors = [];
   const checks = {};
   if (!targetMd || typeof targetMd !== 'string') {
     return { ok: false, errors: [{ id: 'T1', message: 'targetMd is empty' }], checks: {} };
   }
-  const targetLangNorm = targetLang || 'en-us';
+  const targetLangNorm = targetLang || 'en';
   const sourceBody = stripFm(sourceMd || '');
   const targetBody = stripFm(targetMd || '');
   // Structural / link / image / number / residue analysis runs on the code-stripped
@@ -320,7 +320,7 @@ function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn'
 
   // ---- T2 link fidelity ----------------------------------------------------
   // 2026-10-06: internal article links are normalized (language segment stripped)
-  // before comparison — zh-cn source now links /zh-hans/..., en target links /en/...,
+  // before comparison — zh-hans source now links /zh-hans/..., en target links /en/...,
   // which are the SAME target and must not be reported as drift. Non-article links
   // pass through unchanged.
   const srcLinks = extractHrefs(sourceClean);
@@ -354,7 +354,7 @@ function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-cn'
 
   // ---- T5 residue ----------------------------------------------------------
   /**
- * zh-hk forbidden-term search with CJK word boundaries. The forbidden list holds
+ * zh-hant forbidden-term search with CJK word boundaries. The forbidden list holds
  * simplified-only words (e.g. 算法), but a legitimate HK word may contain the
  * simplified form as a substring (演算法 ⊃ 算法); match only as a standalone word
  * (neither side a CJK character) so 演算法 is allowed while a bare 算法 is not.
@@ -365,16 +365,16 @@ function findForbiddenZh(body, w) {
 }
 
 const t5 = [];
-  if (targetLangNorm === 'en-us') {
+  if (targetLangNorm === 'en') {
     const cjk = targetClean.match(CJK_RE);
-    if (cjk) t5.push(`CJK characters present in en-us body (near: …${targetClean.slice(Math.max(0, cjk.index - 20), cjk.index + 20)}…)`);
+    if (cjk) t5.push(`CJK characters present in en body (near: …${targetClean.slice(Math.max(0, cjk.index - 20), cjk.index + 20)}…)`);
     const cp = targetClean.match(CN_PUNCT_RE);
-    if (cp) t5.push(`Chinese punctuation present in en-us body (near: …${targetClean.slice(Math.max(0, cp.index - 20), cp.index + 20)}…)`);
-  } else if (targetLangNorm === 'zh-hk') {
-    const fb = forbidden['zh-hk'] || [];
+    if (cp) t5.push(`Chinese punctuation present in en body (near: …${targetClean.slice(Math.max(0, cp.index - 20), cp.index + 20)}…)`);
+  } else if (targetLangNorm === 'zh-hant') {
+    const fb = forbidden['zh-hant'] || [];
     for (const w of fb) {
       const idx = findForbiddenZh(targetClean, w);
-      if (idx >= 0) t5.push(`simplified term "${w}" present in zh-hk body (near: …${targetClean.slice(Math.max(0, idx - 15), idx + 15)}…)`);
+      if (idx >= 0) t5.push(`simplified term "${w}" present in zh-hant body (near: …${targetClean.slice(Math.max(0, idx - 15), idx + 15)}…)`);
     }
   }
   const residue = targetClean.match(MARKDOWN_RESIDUE_RE);
@@ -385,14 +385,14 @@ const t5 = [];
   // ---- T6 term compliance --------------------------------------------------
   const t6 = [];
   const fbTarget = (forbidden[targetLangNorm] || []).filter((w) => {
-    // en-us list is case-insensitive
-    return targetLangNorm === 'en-us' ? true : true;
+    // en list is case-insensitive
+    return targetLangNorm === 'en' ? true : true;
   });
   const bodyLower = targetClean.toLowerCase();
   for (const w of fbTarget) {
-    const haystack = targetLangNorm === 'en-us' ? bodyLower : targetClean;
-    const needle = targetLangNorm === 'en-us' ? w.toLowerCase() : w;
-    const idx = targetLangNorm === 'zh-hk' ? findForbiddenZh(targetClean, w) : haystack.indexOf(needle);
+    const haystack = targetLangNorm === 'en' ? bodyLower : targetClean;
+    const needle = targetLangNorm === 'en' ? w.toLowerCase() : w;
+    const idx = targetLangNorm === 'zh-hant' ? findForbiddenZh(targetClean, w) : haystack.indexOf(needle);
     if (idx >= 0) {
       const start = Math.max(0, idx - 15);
       t6.push(`forbidden term "${w}" present in ${targetLangNorm} body (near: …${targetClean.slice(start, start + 40)}…)`);
@@ -423,9 +423,9 @@ const t5 = [];
   // ---- T8 title spec -------------------------------------------------------
   const t8 = [];
   const h1 = h1s.length ? h1s[0].replace(/^#\s+/, '').trim() : '';
-  if (targetLangNorm === 'en-us' && CJK_RE.test(h1)) t8.push('H1 contains CJK characters');
-  if (targetLangNorm === 'zh-hk') {
-    const fb = forbidden['zh-hk'] || [];
+  if (targetLangNorm === 'en' && CJK_RE.test(h1)) t8.push('H1 contains CJK characters');
+  if (targetLangNorm === 'zh-hant') {
+    const fb = forbidden['zh-hant'] || [];
     for (const w of fb) if (h1.includes(w)) t8.push(`H1 contains simplified term "${w}"`);
   }
   // meta_description lives in the `articles.seo` column (front matter is stripped at
@@ -464,7 +464,7 @@ const t5 = [];
 
   // ---- T10 internal-link language prefix (2026-10-06) -----------------------
   // Every on-site article link in the target must carry the TARGET language prefix
-  // (/zh-hans/ for zh-cn, /en/ for en-us, /zh-hant/ for zh-hk) — same-language
+  // (/zh-hans/ for zh-hans, /en/ for en, /zh-hant/ for zh-hant) — same-language
   // internal linking, no cross-language hops. Bare links or a wrong prefix fail.
   // (Draft-time 404s are accepted; existence is enforced by check_article's
   // related-links-target-exists row / T10 wiring at publish time.)

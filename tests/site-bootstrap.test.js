@@ -86,7 +86,7 @@ test('initSite: creates the full skeleton once', () => {
   );
   assert.ok(siteYaml.includes('key: www_example_com'));
   assert.ok(siteYaml.includes('domain: www.example.com'));
-  assert.ok(siteYaml.includes('default: zh-cn'));
+  assert.ok(siteYaml.includes('default: zh-hans'));
   assert.ok(siteYaml.includes('posts: inbox'));
 
   const env = fs.readFileSync(path.join(TMP, 'www_example_com', '.env'), 'utf8');

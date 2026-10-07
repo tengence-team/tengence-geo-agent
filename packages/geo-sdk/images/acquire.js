@@ -53,8 +53,8 @@ async function deriveQuery({ slug, query, keywords, appId = Number(process.env.A
   if (slug) {
     const t = require('../index');
     const title = await t.db.withConn((connection) =>
-      // image acquisition is a zh-cn authoring-flow step
-      t.db.articles.findTitleBySlug(connection, slug, appId, 'zh-cn')
+      // image acquisition is a zh-hans authoring-flow step
+      t.db.articles.findTitleBySlug(connection, slug, appId, 'zh-hans')
     );
     if (title) {
       return sanitizeQuery(`${title} ${slug.split('-').slice(0, 3).join(' ')}`);
@@ -69,7 +69,7 @@ async function getArticleIdBySlug(slug, appId = Number(process.env.APP_ID || 1))
   if (!slug) return null;
   const t = require('../index');
   return t.db.withConn((connection) =>
-    t.db.articles.findIdBySlug(connection, slug, appId, 'zh-cn')
+    t.db.articles.findIdBySlug(connection, slug, appId, 'zh-hans')
   );
 }
 

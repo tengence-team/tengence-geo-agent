@@ -7,7 +7,7 @@ site:
   name: Example Site
   domain: demo.example.com
   languages:
-    default: zh-cn
+    default: zh-hans
   content:
     root: data
     posts: inbox

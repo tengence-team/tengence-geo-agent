@@ -120,7 +120,7 @@ async function updatePostMeta(postId, meta, options = {}) {
  * wp_update_post() forwards to wp_insert_post(), which for updates forces
  * post_modified to current_time() (wp-includes/post.php:4789) and discards any
  * passed value; /wp/v2 declares `modified` readonly; and no filter in wp-includes
- * can intervene. A translation therefore could never be given its source zh-cn
+ * can intervene. A translation therefore could never be given its source zh-hans
  * article's update time through the native API. The plugin endpoint writes the
  * value and then READS IT BACK, failing loudly if it did not stick — so this can
  * never silently degrade into "wrote now instead of the requested time".
@@ -155,11 +155,11 @@ async function getPostDates(postId, options = {}) {
 
 /**
  * geo language code → plugin language taxonomy code (multilingual v1).
- * @param {string} lang geo DB language code (zh-cn / en-us / zh-hk)
+ * @param {string} lang geo DB language code (zh-hans / en / zh-hant)
  * @returns {string} plugin taxonomy code (zh-hans / en / zh-hant)
  */
 function toPluginLanguage(lang) {
-  const map = { 'zh-cn': 'zh-hans', 'en-us': 'en', 'zh-hk': 'zh-hant' };
+  const map = { 'zh-hans': 'zh-hans', 'en': 'en', 'zh-hant': 'zh-hant' };
   return map[lang] || 'zh-hans';
 }
 
@@ -172,7 +172,7 @@ function toPluginLanguage(lang) {
  * @returns {Promise<object>} plugin API response
  */
 async function setPostLanguage(postId, { language, translationGroup = null } = {}, options = {}) {
-  const body = { language: toPluginLanguage(language || 'zh-cn') };
+  const body = { language: toPluginLanguage(language || 'zh-hans') };
   if (translationGroup) body.translation_group = translationGroup;
   return pluginApi(`/posts/${postId}/language`, { method: 'PUT', body, siteKey: options.siteKey });
 }
@@ -183,12 +183,12 @@ async function setPostLanguage(postId, { language, translationGroup = null } = {
  * the WP side, so the native WP slug lookup is ambiguous for translations — this
  * is the disambiguation endpoint the plugin v1 exposes.
  * @param {string} slug
- * @param {string} lang geo language code (zh-cn|en-us|zh-hk)
+ * @param {string} lang geo language code (zh-hans|en|zh-hant)
  * @returns {Promise<object|null>} the matching post (plugin response shape) or null
  *   when the plugin API is unavailable (pre-multilingual plugin) / not found
  */
 async function findPostByLanguage(slug, lang, options = {}) {
-  const code = toPluginLanguage(lang || 'zh-cn');
+  const code = toPluginLanguage(lang || 'zh-hans');
   const res = await pluginApi(`/language/posts?slug=${encodeURIComponent(slug)}&lang=${code}`, {
     siteKey: options.siteKey,
   });

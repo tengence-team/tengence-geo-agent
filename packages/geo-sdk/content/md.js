@@ -22,7 +22,7 @@
 const marked = require('marked');
 const yaml = require('js-yaml');
 const { loadSite } = require('../site/config');
-const { normalizeLang } = require('../wp/termnames'); // LANG_MAP SSOT (wp/termnames.js:28)
+const { normalizeLang } = require('../wp/termnames'); // language codes unified: zh-hans/zh-hant/en (wp/termnames.js)
 
 // ==================== site domain (lazy cache) ====================
 
@@ -198,9 +198,9 @@ function restoreRawHtml(html, blocks) {
 //      must be true. Without the delimiter nothing ever calls `mermaid.run()`.
 //
 // ★ CORRECTION of the first diagnosis (2026-10-06, same day): it concluded that the
-// class was the whole story and that the zh-cn `oneid-cross-platform-identity`
+// class was the whole story and that the zh-hans `oneid-cross-platform-identity`
 // (post 570) "renders" because it had been hand-inserted in Gutenberg while its
-// zh-hk / en-us translations (1658 / 1652) did not. That was wrong — post 570 had
+// zh-hant / en translations (1658 / 1652) did not. That was wrong — post 570 had
 // `anyBlock = 0` too, so it was equally dead. Verified live: before the fix none of
 // the six affected posts (523/570/1587/1593/1652/1658) loaded `mermaid.min.js`;
 // after adding the delimiter all six enqueue mermaid.min.js + build/mermaid.js +
@@ -400,7 +400,7 @@ const TAKEAWAYS_PLACEHOLDER = /<!--\s*tengence-takeaways\s*-->/;
 /** FAQ placeholder comment */
 const FAQ_PLACEHOLDER = /<!--\s*tengence-faq\s*-->/;
 /** "lead-type" first-section headings: takeaways should follow these, not precede them.
- *  Traditional forms included — a zh-hk lead section is spelled 導語/導讀/前言/結論. */
+ *  Traditional forms included — a zh-hant lead section is spelled 導語/導讀/前言/結論. */
 const LEAD_SECTION_RE = /^(导语|引言|导读|前言|摘要|结论|導語|導讀|結論)$/;
 
 /** HTML-escape (only for plain-text fields: takeaway items, questions, plain-text answers) */
@@ -435,23 +435,23 @@ function h2List(html) {
 // (2026-10-06 incident, zh-hant enterprise-geo-playbook).
 
 const GEO_BLOCK_LABELS = {
-  'zh-cn': { takeaways: '关键要点', faq: '常见问题', q: '问', a: '答', sep: '：' },
-  'zh-hk': { takeaways: '關鍵要點', faq: '常見問題', q: '問', a: '答', sep: '：' },
-  'en-us': { takeaways: 'Key Takeaways', faq: 'FAQ', q: 'Q', a: 'A', sep: ': ' },
+  'zh-hans': { takeaways: '关键要点', faq: '常见问题', q: '问', a: '答', sep: '：' },
+  'zh-hant': { takeaways: '關鍵要點', faq: '常見問題', q: '問', a: '答', sep: '：' },
+  'en': { takeaways: 'Key Takeaways', faq: 'FAQ', q: 'Q', a: 'A', sep: ': ' },
 };
 
 /**
  * Resolve the copy labels for one article language.
- * Unknown / missing language falls back to the site default (zh-cn) — never throws,
+ * Unknown / missing language falls back to the site default (zh-hans) — never throws,
  * so every existing 2-argument call site keeps its current output byte-for-byte.
- * @param {string} [lang] geo language code (zh-cn | zh-hk | en-us, accepts zh-hant/zh-tw/en)
+ * @param {string} [lang] geo language code (zh-hans | zh-hant | en, accepts zh-hant/zh-tw/en)
  * @returns {{takeaways:string, faq:string, q:string, a:string, sep:string}}
  */
 function geoBlockLabels(lang) {
   const k = String(lang == null ? '' : lang).trim().toLowerCase();
-  if (k === 'zh-hk' || k === 'zh-hant' || k === 'zh-tw') return GEO_BLOCK_LABELS['zh-hk'];
-  if (k === 'en' || k.startsWith('en-')) return GEO_BLOCK_LABELS['en-us'];
-  return GEO_BLOCK_LABELS['zh-cn'];
+  if (k === 'zh-hant' || k === 'zh-hant' || k === 'zh-tw') return GEO_BLOCK_LABELS['zh-hant'];
+  if (k === 'en' || k.startsWith('en-')) return GEO_BLOCK_LABELS['en'];
+  return GEO_BLOCK_LABELS['zh-hans'];
 }
 
 /**
@@ -481,7 +481,7 @@ function renderInlineMarkdown(text) {
  * JSON-LD is emitted separately by the plugin and unrelated.
  *
  * @param {string[]} items plain-text bullet texts (from `geo.key_takeaways`)
- * @param {string} [lang] article language for the heading; defaults to zh-cn
+ * @param {string} [lang] article language for the heading; defaults to zh-hans
  */
 function renderTakeaways(items, lang) {
   if (!Array.isArray(items)) return '';
@@ -503,7 +503,7 @@ function renderTakeaways(items, lang) {
  * Shape: `<h2>常见问题</h2>` + each pair as
  * `<blockquote><p><strong>问：question?</strong></p><p>答：answer</p></blockquote>`.
  * The heading and the Q/A prefixes are language-aware (關鍵要點/常見問題/問： for
- * zh-hk, Key Takeaways/FAQ/Q:/A: for en-us) — see {@link geoBlockLabels}.
+ * zh-hant, Key Takeaways/FAQ/Q:/A: for en) — see {@link geoBlockLabels}.
  * The heading is not numbered ("N、常见问题") — when body subheadings aren't numbered
  * uniformly, a numbered block would look unbalanced against them.
  *
@@ -520,7 +520,7 @@ function renderTakeaways(items, lang) {
  *
  * @param {Array<{question:string,answer:string}>} qaPairs
  * @param {string} [lang] article language for the heading and the Q/A prefixes;
- *   defaults to zh-cn (so 2-argument callers keep their previous output exactly)
+ *   defaults to zh-hans (so 2-argument callers keep their previous output exactly)
  */
 function renderFaq(qaPairs, lang) {
   if (!Array.isArray(qaPairs)) return '';
@@ -578,7 +578,7 @@ function insertTakeaways(html, block) {
  * FAQ landing: ① placeholder comment → ② before "关于 Tengence" → ③ before
  * "相关阅读" → ④ before "数据来源" → ⑤ end of body
  *
- * The anchors cover all three languages: a zh-hk body spells them 關於通智雲 /
+ * The anchors cover all three languages: a zh-hant body spells them 關於通智雲 /
  * 相關閱讀 / 資料來源, and without those forms the fallback block fell through to
  * "append at the end of the body" — i.e. *after* the CTA (2026-10-06 incident).
  */
@@ -605,8 +605,8 @@ function insertFaq(html, block) {
  * @param {{key_takeaways?: string[], qa_pairs?: Array<{question:string,answer:string}>}} [geo]
  *        the `geo` node of the article config (one of the return values of `t.db.config.getFull()`)
  * @param {string} [lang] article language used for the injected copy (headings + Q/A
- *        prefixes); defaults to zh-cn. Pass it whenever the body is not Simplified
- *        Chinese, so a zh-hk / en-us page never receives Simplified fallback blocks.
+ *        prefixes); defaults to zh-hans. Pass it whenever the body is not Simplified
+ *        Chinese, so a zh-hant / en page never receives Simplified fallback blocks.
  * @returns {string} the materialized body HTML (returned unchanged when GEO is disabled)
  */
 function composeBody(html, geo, lang) {
@@ -616,7 +616,7 @@ function composeBody(html, geo, lang) {
   // Idempotency detection reuses the reverse-parse SSOT predicates
   // (`isTakeawaysHeading` / `isFaqHeading`) rather than ad-hoc regexes. The old
   // hardcoded `关键要点|Key Takeaways` and `常见问题` patterns silently missed the
-  // Traditional headings 關鍵要點 / 常見問題 ⇒ every zh-hk body reached the fallback
+  // Traditional headings 關鍵要點 / 常見問題 ⇒ every zh-hant body reached the fallback
   // and got both blocks injected a second time: a Simplified duplicate, with the
   // takeaways' `**` markdown left unrendered (2026-10-06 incident, zh-hant
   // enterprise-geo-playbook). One predicate set = the two can never drift again.
@@ -657,7 +657,7 @@ function composeBody(html, geo, lang) {
  *
  * @param {string} markdown body Markdown (Front Matter already stripped)
  * @param {{key_takeaways?: string[], qa_pairs?: Array<{question:string,answer:string}>}} [geo]
- * @param {string} [lang] article language (zh-cn | zh-hk | en-us) — drives the copy of
+ * @param {string} [lang] article language (zh-hans | zh-hant | en) — drives the copy of
  *   the injected fallback blocks; omit for Simplified Chinese content
  * @returns {string} body HTML ready to write into WP
  */
@@ -675,14 +675,14 @@ function buildPostHtml(markdown, geo, lang) {
 //
 // 2026-10-06 内链语言归属 + CTA 版式：
 //   - 站内文章内链（tengence.com/blog/article/<slug>/）无条件带**文章自身语言前缀**
-//     （zh-cn→/zh-hans/、en-us→/en/、zh-hk→/zh-hant/），同语言文章互链、不跨语言跳转；
+//     （zh-hans→/zh-hans/、en→/en/、zh-hant→/zh-hant/），同语言文章互链、不跨语言跳转；
 //   - CTA 区块（## 立即行动 / Get Started 等）每条链接独立成行（<ul><li>），
 //     消除 `<a>A</a> | <a>B</a>` 管道挤在一行的问题。
 // 挂载点 = buildPostHtml（写 WP 正文唯一出口）；**不进 markdownToHtml** ——
 // 微信/CSDN/掘金渠道改写共用 markdownToHtml，渠道规则要求相关阅读保持站外裸链。
 // 幂等：已带正确前缀 / 已是列表的区块改写后逐字节不变。
 
-/** 文章语言 → URL 语言前缀（复用 termnames 的 LANG_MAP SSOT；接受 geo 码或插件码）。 */
+/** 文章语言 → URL 语言前缀（语言码统一：zh-hans/zh-hant/en，直用）。 */
 function langToPrefix(lang) {
   const k = String(lang == null ? '' : lang).trim().toLowerCase();
   const mapped = normalizeLang(k);
@@ -690,20 +690,20 @@ function langToPrefix(lang) {
 }
 
 /** 站内文章链接 URL（含语言段）。group1 = 语言段（可无），group2 = slug。 */
-const TEN_ARTICLE_URL_RE = /(?:https?:)?\/\/(?:www\.)?tengence\.com\/((?:zh-hans|zh-hant|en|en-us)\/)?blog\/article\/([a-z0-9][a-z0-9-]*)\/?/gi;
+const TEN_ARTICLE_URL_RE = /(?:https?:)?\/\/(?:www\.)?tengence\.com\/((?:zh-hans|zh-hant|en)\/)?blog\/article\/([a-z0-9][a-z0-9-]*)\/?/gi;
 
 /**
  * 站内文章内链无条件带文章自身语言前缀。
  * 只作用于 `tengence.com/blog/article/<slug>/` 形态（裸 URL / 错误前缀 / 正确前缀），
  * 其他站内路径（/contact-us、/console/…）与站外链接一律不动。
  * @param {string} html WP 正文 HTML
- * @param {string} [lang] 文章语言（zh-cn | en-us | zh-hk，接受插件码）
+ * @param {string} [lang] 文章语言（zh-hans | en | zh-hant，接受插件码）
  * @returns {string} 归一化后的 HTML（幂等）
  */
 function normalizeInternalArticleLinks(html, lang) {
   const prefix = langToPrefix(lang);
   return String(html || '').replace(
-    /href=["'](?:https?:)?\/\/(?:www\.)?tengence\.com\/(?:(?:zh-hans|zh-hant|en|en-us)\/)?blog\/article\/([a-z0-9][a-z0-9-]*)\/?["']/gi,
+    /href=["'](?:https?:)?\/\/(?:www\.)?tengence\.com\/(?:(?:zh-hans|zh-hant|en)\/)?blog\/article\/([a-z0-9][a-z0-9-]*)\/?["']/gi,
     (m, slug) => `href="https://www.tengence.com/${prefix}/blog/article/${slug}/"`
   );
 }
@@ -761,13 +761,13 @@ function extractUrls(text) {
 }
 
 /**
- * 归一化用于门禁比对的站内文章链接：剥离语言段（zh-hans|zh-hant|en|en-us），
+ * 归一化用于门禁比对的站内文章链接：剥离语言段（zh-hans|zh-hant|en），
  * 跨语言指向视为同一目标（T2 据此不再误报译文的语言前缀差异）。
  * 非站内文章链接原样返回。
  */
 function normalizeArticleUrlForCompare(u) {
   return String(u || '').replace(
-    /^((?:https?:)?\/\/(?:www\.)?tengence\.com)\/(?:zh-hans|zh-hant|en|en-us)\/blog\/article\//,
+    /^((?:https?:)?\/\/(?:www\.)?tengence\.com)\/(?:zh-hans|zh-hant|en)\/blog\/article\//,
     '$1/blog/article/'
   );
 }
@@ -851,7 +851,7 @@ function normalizeHeading(text) {
 
 /**
  * Takeaways block heading (includes legacy numbered forms).
- * zh-hk forms are listed explicitly: without them every Traditional-Chinese article
+ * zh-hant forms are listed explicitly: without them every Traditional-Chinese article
  * silently lost its takeaways / FAQ / citations blocks on ingest (2026-10-05).
  */
 function isTakeawaysHeading(text) {
@@ -1350,7 +1350,7 @@ module.exports = {
   // GEO block heading predicates + <h2> listing — the **single source of truth** for
   // "what counts as a takeaways / FAQ / citations heading". Exported so callers
   // (the publish gate above all) stop re-declaring Simplified-only regexes, which is
-  // exactly how the zh-hk duplicate-block defect slipped through (2026-10-06).
+  // exactly how the zh-hant duplicate-block defect slipped through (2026-10-06).
   isTakeawaysHeading,
   isFaqHeading,
   isCitationsHeading,

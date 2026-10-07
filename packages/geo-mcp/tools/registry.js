@@ -238,7 +238,7 @@ const tools = [
       key: z.string().describe('site key (lowercase letters, digits, underscore)'),
       domain: z.string().optional().describe('canonical domain, defaults to the key'),
       name: z.string().optional().describe('display name, defaults to the domain'),
-      lang: z.string().optional().describe('default language (default zh-cn)'),
+      lang: z.string().optional().describe('default language (default zh-hans)'),
     }),
     async run(args) {
       try {
@@ -318,7 +318,7 @@ const tools = [
     inputSchema: z.object({
       site: siteField,
       status: z.string().optional().describe('draft|queued|published etc. (optional)'),
-      lang: z.string().optional().describe('language filter (zh-cn|en-us|zh-hk; default all)'),
+      lang: z.string().optional().describe('language filter (zh-hans|en|zh-hant; default all)'),
       limit: z.number().optional().describe('max rows (default 50)'),
     }),
     async run(args) {
@@ -353,7 +353,7 @@ const tools = [
       lang: z
         .string()
         .optional()
-        .describe('language code for a slug lookup: zh-cn | en-us | zh-hk (default zh-cn)'),
+        .describe('language code for a slug lookup: zh-hans | en | zh-hant (default zh-hans)'),
       include_content: z
         .boolean()
         .optional()
@@ -364,7 +364,7 @@ const tools = [
         const S = withSite(args);
         const siteKey = S.siteKey || S.key;
         let postId = args.wp_post_id ? Number(args.wp_post_id) : null;
-        const lang = args.lang || 'zh-cn';
+        const lang = args.lang || 'zh-hans';
         if (!postId) {
           if (!args.slug) return fail(new Error('either wp_post_id or slug is required'));
           const found = await t.wp.posts.findPostByLanguage(args.slug, lang, { siteKey });
@@ -439,7 +439,7 @@ const tools = [
     inputSchema: z.object({
       slug: z.string().describe('article slug'),
       site: siteField,
-      lang: z.string().optional().describe('language (zh-cn|en-us|zh-hk; default the site default)'),
+      lang: z.string().optional().describe('language (zh-hans|en|zh-hant; default the site default)'),
     }),
     async run(args) {
       if (!args.slug) return fail(new Error('article_export requires slug'));
@@ -458,7 +458,7 @@ const tools = [
       slug: z.string().describe('article slug'),
       site: siteField,
       type: z.string().optional().describe('T1..T7 (hard word-count check by type when declared)'),
-      lang: z.string().optional().describe('article language (zh-cn|en-us|zh-hk; default the site default)'),
+      lang: z.string().optional().describe('article language (zh-hans|en|zh-hant; default the site default)'),
     }),
     async run(args) {
       if (!args.slug) return fail(new Error('check_article requires slug'));
@@ -495,13 +495,13 @@ const tools = [
       'Read it via standards_read("translation-standards") once per article, then consult this tool for the concrete terms the harness must apply',
     inputSchema: z.object({
       site: siteField,
-      target_lang: z.string().describe('target language (en-us|zh-hk)'),
+      target_lang: z.string().describe('target language (en|zh-hant)'),
     }),
     async run(args) {
       try {
         const S = withSite(args);
         const full = t.translate.glossary.loadFull(S.siteKey);
-        const lang = args.target_lang || 'en-us';
+        const lang = args.target_lang || 'en';
         const out = {
           brands: full.brands || {},
           phrases: full.phrases || {},
@@ -521,8 +521,8 @@ const tools = [
       'The harness translates with its own LLM and runs this before article_ingest --lang',
     inputSchema: z.object({
       slug: z.string().describe('article slug (source and, when md_path is absent, target DB row)'),
-      source_lang: z.string().describe('source language (zh-cn)'),
-      target_lang: z.string().describe('target language (en-us|zh-hk)'),
+      source_lang: z.string().describe('source language (zh-hans)'),
+      target_lang: z.string().describe('target language (en|zh-hant)'),
       md_path: z.string().optional().describe('absolute path to the translated Markdown (preferred; when absent the target is read from the DB row slug+target_lang)'),
       site: siteField,
     }),
@@ -531,7 +531,7 @@ const tools = [
       try {
         const S = withSite(args);
         const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
-        const sourceLang = args.source_lang || 'zh-cn';
+        const sourceLang = args.source_lang || 'zh-hans';
         const targetLang = args.target_lang;
         let sourceMd = null;
         let targetMd = null;
@@ -611,7 +611,7 @@ const tools = [
   {
     name: 'publish_from_db',
     description: 'Publish an article from the DB to WordPress (--force updates an existing article). ' +
-      'For translations (en-us / zh-hk) the zh-cn source article\'s publish + update time is inherited by default ' +
+      'For translations (en / zh-hant) the zh-hans source article\'s publish + update time is inherited by default ' +
       '(via the plugin dates API); pass sync_source_dates=false to opt out.',
     inputSchema: z.object({
       article_id: z.number().describe('articles.id'),
@@ -619,7 +619,7 @@ const tools = [
       status: z.string().optional().describe('draft|publish (default draft)'),
       force: z.boolean().optional().describe('force-update when it already exists'),
       translation_group: z.string().optional().describe('translation-group UUID shared by the languages of one article (multilingual v1)'),
-      sync_source_dates: z.boolean().optional().describe('inherit the zh-cn source publish/update time (default true; translations only)'),
+      sync_source_dates: z.boolean().optional().describe('inherit the zh-hans source publish/update time (default true; translations only)'),
     }),
     async run(args) {
       if (!args.article_id) return fail(new Error('publish_from_db requires article_id'));
@@ -648,7 +648,7 @@ const tools = [
       site: siteField,
       article_id: z.number().optional().describe('articles.id (DB) — resolved to its slug + lang + wp_post_id; the simplest way to target an article'),
       slug: z.string().optional().describe('target slug'),
-      lang: z.string().optional().describe('article language for slug lookup (zh-cn|en-us|zh-hk; default the site default)'),
+      lang: z.string().optional().describe('article language for slug lookup (zh-hans|en|zh-hant; default the site default)'),
       post_id: z.number().optional().describe('target WP post id (either slug or post_id)'),
     }).passthrough(),
     async run(args) {
@@ -705,7 +705,7 @@ const tools = [
     description: 'Run the daily promotion task (promotes due drafts to publish by plan publish_order; default 1/day). ' +
       'Optional date sets the promoted article publish/modified time (YYYY-MM-DDTHH:MM:SS, site timezone). ' +
       'Optional slug switches to SLUG MODE: publish that slug with every language version it has in the draft box ' +
-      '(zh-cn / en-us / zh-hk), still running the internal-link check and the gate re-check; comma-separated slugs allowed.',
+      '(zh-hans / en / zh-hant), still running the internal-link check and the gate re-check; comma-separated slugs allowed.',
     inputSchema: z.object({
       site: siteField,
       date: z.string().optional().describe('publish/modified time for the promoted article, YYYY-MM-DDTHH:MM:SS in the site timezone; omit to leave WordPress untouched'),
@@ -740,7 +740,7 @@ const tools = [
       site: siteField,
       article_id: z.number().optional().describe('articles.id (DB) — resolved to its wp_post_id; omit when wp_post_id is given'),
       wp_post_id: z.number().optional().describe('target WP post id; overrides the DB mapping when given'),
-      lang: z.string().optional().describe('article language for the DB mirror (zh-cn|en-us|zh-hk; default the site default)'),
+      lang: z.string().optional().describe('article language for the DB mirror (zh-hans|en|zh-hant; default the site default)'),
 
       // --- WP native ---
       title: z.string().optional().describe('post title (WP native)'),
@@ -792,10 +792,10 @@ const tools = [
       date_gmt: z.string().optional().describe('publish time (GMT)'),
       modified: z.string().optional().describe('update time, YYYY-MM-DDTHH:MM:SS (site timezone)'),
       modified_gmt: z.string().optional().describe('update time (GMT)'),
-      copy_dates_from: z.number().optional().describe('WP post id to copy all four date values from (e.g. the zh-cn source article)'),
+      copy_dates_from: z.number().optional().describe('WP post id to copy all four date values from (e.g. the zh-hans source article)'),
 
       // --- language / translation group ---
-      language: z.string().optional().describe('set the post language (zh-cn|en-us|zh-hk) via the plugin language API'),
+      language: z.string().optional().describe('set the post language (zh-hans|en|zh-hant) via the plugin language API'),
       translation_group: z.string().optional().describe('translation-group UUID shared by the languages of one article'),
 
       // --- behavior ---
@@ -2081,7 +2081,7 @@ const tools = [
       site: siteField,
       wp_post_id: z.number().optional().describe('target WordPress post id; omit when slug is given'),
       slug: z.string().optional().describe('target article slug (required when wp_post_id is omitted)'),
-      lang: z.string().optional().describe('language for a slug lookup: zh-cn|en-us|zh-hk (default zh-cn)'),
+      lang: z.string().optional().describe('language for a slug lookup: zh-hans|en|zh-hant (default zh-hans)'),
       copy_from: z.number().optional().describe('source wp_post_id whose categories+tags should be mirrored onto the target'),
       category_slugs: z.array(z.string()).optional().describe('category slugs to set, e.g. ["product-solutions"]'),
       tag_slugs: z.array(z.string()).optional().describe('tag slugs to set, e.g. ["geo-seo","saas"]'),
@@ -2095,7 +2095,7 @@ const tools = [
         let postId = args.wp_post_id ? Number(args.wp_post_id) : null;
         if (!postId) {
           if (!args.slug) return fail(new Error('either wp_post_id or slug is required'));
-          const lang = args.lang || 'zh-cn';
+          const lang = args.lang || 'zh-hans';
           let found = await t.wp.posts.findPostByLanguage(args.slug, lang, { siteKey });
           if (found && found.id) postId = found.id;
           if (!postId) {
@@ -2224,7 +2224,7 @@ const tools = [
       '{"names":{"en":"GEO & AI Search","zh-hans":"GEO与AI搜索","zh-hant":"GEO與AI搜尋"}}. Idempotent partial update: ' +
       'only the passed language keys change, the others are kept; an EMPTY STRING ("") for a language CLEARS that ' +
       'language (display falls back to the original term name). Language keys accept plugin codes en / zh-hans / ' +
-      'zh-hant and geo codes en-us / zh-cn / zh-hk (auto-mapped). Fails 404 when the term slug does not exist on WP.',
+      'zh-hant and geo codes en / zh-hans / zh-hant (auto-mapped). Fails 404 when the term slug does not exist on WP.',
     inputSchema: z.object({
       taxonomy: z.enum(['category', 'post_tag']).describe('category (类目) or post_tag (标签)'),
       slug: z.string().describe('term slug, e.g. geo-ai-search'),
@@ -2250,7 +2250,7 @@ const tools = [
     name: 'term_name_delete',
     description:
       'Delete the multilingual display names of ONE WP term (DELETE /term-names/{taxonomy}/{slug}). Without lang the ' +
-      'whole entry is removed; pass lang (en / zh-hans / zh-hant or en-us / zh-cn / zh-hk) to remove only that language. ' +
+      'whole entry is removed; pass lang (en / zh-hans / zh-hant or en / zh-hans / zh-hant) to remove only that language. ' +
       'The WP term itself is never touched.',
     inputSchema: z.object({
       taxonomy: z.enum(['category', 'post_tag']).describe('category (类目) or post_tag (标签)'),
@@ -2340,7 +2340,7 @@ const tools = [
       'Set (UPSERT) the multilingual display names of ONE WP author — PUT /author-names/{id} with ' +
       '{"names":{"en":"John Doe","zh-hans":"张三"}}. Idempotent partial update; an EMPTY STRING ("") for a language ' +
       'CLEARS that language (falls back to the original display_name). Language keys accept plugin codes en / zh-hans / ' +
-      'zh-hant and geo codes en-us / zh-cn / zh-hk (auto-mapped). Fails 404 when the author id does not exist.',
+      'zh-hant and geo codes en / zh-hans / zh-hant (auto-mapped). Fails 404 when the author id does not exist.',
     inputSchema: z.object({
       id: z.number().int().positive().describe('WP author/user ID'),
       names: z.record(z.string(), z.string()).describe('language code → display name; "" clears that language'),
@@ -2360,7 +2360,7 @@ const tools = [
     name: 'author_name_delete',
     description:
       'Delete the multilingual display names of ONE WP author (DELETE /author-names/{id}). Without lang the whole entry ' +
-      'is removed; pass lang (en / zh-hans / zh-hant or en-us / zh-cn / zh-hk) to remove only that language. The WP user ' +
+      'is removed; pass lang (en / zh-hans / zh-hant or en / zh-hans / zh-hant) to remove only that language. The WP user ' +
       'itself is never touched.',
     inputSchema: z.object({
       id: z.number().int().positive().describe('WP author/user ID'),

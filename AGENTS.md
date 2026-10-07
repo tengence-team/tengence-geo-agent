@@ -80,7 +80,7 @@ The gate (`packages/geo-sdk/check/index.js`) is the *codified mirror* of
 
 ## 7. Multilingual publish — shared featured image (no re-upload)
 
-- An article's languages (zh-cn / en-us / zh-hk) share **one** featured image, and
+- An article's languages (zh-hans / en / zh-hant) share **one** featured image, and
   `publishArticle` (`packages/geo-sdk/publish/index.js`) never re-uploads it per language:
   1. `--featured-media <id>` forces a media ID directly — the URL download / media upload
      is skipped entirely.
@@ -90,17 +90,17 @@ The gate (`packages/geo-sdk/check/index.js`) is the *codified mirror* of
      (multilingual shared featured image; no download, no re-upload).
   3. Fallback (first language publish): the `featured_image` URL is downloaded and uploaded
      to the media library once.
-- Translation rows (`en-us` / `zh-hk`) are gated by `check_translation` (T1–T11), which the
+- Translation rows (`en` / `zh-hant`) are gated by `check_translation` (T1–T11), which the
   harness runs before ingest; `publish-from-db.js` therefore **skips the zh writing gate**
   (`checkArticle`) for translation rows — do not run `checkArticle` on a translation.
 - **Same-language internal links (every language, published or draft)** — every on-site
   article link (`tengence.com/blog/article/<slug>/`) carries the article's own language
-  prefix: zh-cn → `/zh-hans/`, en-us → `/en/`, zh-hk → `/zh-hant/`. No bare links, no
+  prefix: zh-hans → `/zh-hans/`, en → `/en/`, zh-hant → `/zh-hant/`. No bare links, no
   cross-language hops; a translation rewrites the source's prefix to the target language
   (slug unchanged). **CTA layout** — the Get Started / 立即行动 block lists each link on
   its own line; never join links with `|` on one line. Both rules are enforced by the
   translation gate (T10 / T11) and `check_article` rows, and normalized automatically on
   the WP write exit (`buildPostHtml`).
-- Translation rows are ingested via `article-ingest.js <slug> <md> --lang en-us|zh-hk`
+- Translation rows are ingested via `article-ingest.js <slug> <md> --lang en|zh-hant`
   (file in `<site>/data/inbox/<lang>/<slug>.md`, YAML front matter per
   `standards/translation-standards.md` §10).

@@ -169,7 +169,7 @@ function writeIfAbsent(file, content) {
  * @returns {{ok:boolean, key:string, site_key:string, domain:string, site_dir:string,
  *            created:boolean, structure:string[]}}
  */
-function initSite({ key, domain, name, lang = 'zh-cn' } = {}) {
+function initSite({ key, domain, name, lang = 'zh-hans' } = {}) {
   const root = requireSitesRoot();
   if (!key || !/^[a-z0-9_]+$/.test(key)) {
     throw new Error(`Invalid site key: ${key} (lowercase alphanumeric + underscore only)`);
@@ -349,7 +349,7 @@ function sitePath(siteDir, ...segments) {
 function contentPaths(site) {
   const conf = (site && site.site && site.site.content) || {};
   const root = path.join(site.siteDir, conf.root || 'content');
-  const lang = (site.site.languages && site.site.languages.default) || 'zh-cn';
+  const lang = (site.site.languages && site.site.languages.default) || 'zh-hans';
   const posts = path.join(root, conf.posts || 'posts');
   const drafts = path.join(root, conf.drafts || 'drafts');
   return {

@@ -68,7 +68,7 @@ function parseArgs(argv) {
       'meta-title': { type: 'string' },
       'meta-desc': { type: 'string' },
       'post-title': { type: 'string' },
-      lang: { type: 'string', default: 'zh-cn' },
+      lang: { type: 'string', default: 'zh-hans' },
       site: { type: 'string', default: DEFAULT_SITE },
     },
     argv
@@ -445,7 +445,7 @@ async function main() {
   console.log(`✓ Converted, HTML length: ${htmlContent.length}`);
   // Report with the SSOT heading predicates (Simplified + Traditional + English).
   // The previous hardcoded `关键要点` / `常见问题` strings reported "false" for a
-  // zh-hk body whose headings are 關鍵要點 / 常見問題 (2026-10-06).
+  // zh-hant body whose headings are 關鍵要點 / 常見問題 (2026-10-06).
   const bodyHeadings = t.content.md.h2List(htmlContent);
   console.log(
     `  Body has takeaways block: ${bodyHeadings.some((h) => t.content.md.isTakeawaysHeading(h.text))}` +

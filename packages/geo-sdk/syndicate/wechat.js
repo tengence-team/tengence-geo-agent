@@ -393,7 +393,7 @@ async function prepareArticle(conn, slug, siteDomain, overrides = {}) {
 
   console.log(`\n📄 Processing article: ${slug}`);
 
-  const detail = await t.db.articles.getDetail(conn, APP_ID, slug, 'zh-cn');
+  const detail = await t.db.articles.getDetail(conn, APP_ID, slug, 'zh-hans');
   if (!detail) throw new Error(`Article not found: ${slug}`);
 
   const articleId = detail.id;
@@ -647,7 +647,7 @@ async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKe
     // sort by publish time descending unless keepOrder is set (1st slug = headline)
     const articlesMeta = [];
     for (const slug of slugs) {
-      const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug, 'zh-cn');
+      const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug, 'zh-hans');
       if (!detail) throw new Error(`Article not found: ${slug}`);
       articlesMeta.push({ slug, publishedAt: detail.published_at || detail.lastmod || 0 });
     }
@@ -660,7 +660,7 @@ async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKe
 
     if (dryRun) {
       for (const slug of sortedSlugs) {
-        const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug, 'zh-cn');
+        const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug, 'zh-hans');
         console.log(`  - ${slug} | ${detail.title}`);
       }
       console.log('\n[dry-run] done');
@@ -790,7 +790,7 @@ async function syncProgressFromWechat({ siteKey, dryRun = false, fetchers } = {}
       const titles = [];
       for (const slug of row.article_slugs) {
         try {
-          const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug, 'zh-cn');
+          const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug, 'zh-hans');
           if (detail && detail.title) titles.push(detail.title);
         } catch (_) { /* article missing → skip */ }
       }

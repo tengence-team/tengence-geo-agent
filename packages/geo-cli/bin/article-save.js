@@ -150,8 +150,8 @@ Notes:
   region, author, SEO/GEO config and other metadata fields are left untouched.
 
 Examples:
-  tengence-geo article-save.js 6 sites/tengence/data/inbox/zh-cn/seo-geo-dual-engine-case-study.md
-  tengence-geo article-save.js 6 sites/tengence/data/inbox/zh-cn/seo-geo-dual-engine-case-study.md --title
+  tengence-geo article-save.js 6 sites/tengence/data/inbox/zh-hans/seo-geo-dual-engine-case-study.md
+  tengence-geo article-save.js 6 sites/tengence/data/inbox/zh-hans/seo-geo-dual-engine-case-study.md --title
     `);
     process.exit(1);
   }

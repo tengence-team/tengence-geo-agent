@@ -140,8 +140,8 @@ Rules:
 5. Off-site links (citations) use HTML `<a>` with
    `target="_blank" rel="noopener noreferrer"`.
 6. **Every on-site article link carries this article's own language prefix**
-   (2026-10-06, gate-enforced): zh-cn → `/zh-hans/blog/article/<slug>/`, en-us →
-   `/en/blog/article/<slug>/`, zh-hk → `/zh-hant/blog/article/<slug>/`. Bare links
+   (2026-10-06, gate-enforced): zh-hans → `/zh-hans/blog/article/<slug>/`, en →
+   `/en/blog/article/<slug>/`, zh-hant → `/zh-hant/blog/article/<slug>/`. Bare links
    (`/blog/article/<slug>/`) and links carrying another language's prefix are
    violations — internal links must stay inside the same language, never hop
    between languages. The publish chain normalizes the prefix automatically on the
@@ -192,7 +192,7 @@ All 16 must pass before publishing; any failure sends the article back.
 | G12 | No Markdown residue | no stray `###` or markers in the rendered body |
 | G13 | Compliant images | no third-party logos; every image carries real content |
 | G14 | Correct CTA | routed by product line, no broken links; **each link on its own line, never joined by `|`** |
-| G15 | Internal-link language prefix | every on-site article link carries the article's own language prefix (zh-cn→/zh-hans/, en-us→/en/, zh-hk→/zh-hant/); no cross-language hops |
+| G15 | Internal-link language prefix | every on-site article link carries the article's own language prefix (zh-hans→/zh-hans/, en→/en/, zh-hant→/zh-hant/); no cross-language hops |
 | G16 | CTA list layout | the Get Started / 立即行动 block renders as a list (`<ul><li>`), never a single paragraph with several links |
 
 ## 9. Site-specific items

@@ -145,7 +145,7 @@ const noopStore = {
 };
 
 /**
- * Read a run's per-model token-usage totals (SUM over the answers table).
+ * Read a run's per-model tokenage totals (SUM over the answers table).
  * @returns {Promise<Array<{model,promptTokens,completionTokens}>>}
  */
 async function readTokenTotals({ runId } = {}) {

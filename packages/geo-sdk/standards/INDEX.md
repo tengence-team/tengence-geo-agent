@@ -23,7 +23,7 @@
 | `llm-visibility-monitoring.md` | LLM monitoring: AI-crawler policy, model priority lists, AI search engines, GEO visibility dimensions, content engineering for citability | done |
 | `content-platform-integration.md` | Content-platform integration: entity-claim platforms, general & technical platforms, encyclopedias, four integration modes, one-draft-many-places SOP | done |
 | `block-conventions.md` | Canonical GEO block headings + the bilingual (EN/ZH) parser contract | done |
-| `translation-standards.md` | Multi-language translation spec: en-us & zh-hk (HK-style) target profiles, four hard rules, GEO-domain glossary (zh-cn/en-us/zh-hk), simplified→traditional table, T1–T8 mechanical gate summary, per-language block headings | done |
+| `translation-standards.md` | Multi-language translation spec: en & zh-hant (HK-style) target profiles, four hard rules, GEO-domain glossary (zh-hans/en/zh-hant), simplified→traditional table, T1–T8 mechanical gate summary, per-language block headings | done |
 | `site-profile.md` | The contract listing what a site must supply as a supplement | done |
 | `templates/research-brief.md` | Pre-writing research brief (hard-gated: publishing is blocked when missing) | done |
 | `templates/skeletons/` | T1–T7 body skeletons: `definition` (T1), `howto` (T2), `product` (T3), `case` (T4), `industry` (T5), `comparison` (T6), `guide` (T7) | done |

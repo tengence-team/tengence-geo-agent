@@ -26,7 +26,7 @@ let server;
 let BASE;
 
 const HOMEPAGE = `<!doctype html>
-<html lang="zh-cn">
+<html lang="zh-hans">
 <head>
   <meta charset="utf-8">
   <title>示例站点 - GEO/SEO 诊断测试</title>
@@ -72,7 +72,7 @@ const SITEMAP = `<?xml version="1.0" encoding="UTF-8"?>
 </urlset>`;
 
 const ARTICLE = `<!doctype html>
-<html lang="zh-cn">
+<html lang="zh-hans">
 <head>
   <title>文章一 | 示例站点</title>
   <meta name="description" content="文章一的描述，用于诊断代表页面的结构化数据与标题层级。">
@@ -147,7 +147,7 @@ test('diagnose_site: full diagnosis against local site (bootstrap + evidence + c
   assert.equal(hp.images.missingAlt, 1);
   assert.ok(hp.links.internal >= 2);
   assert.ok(hp.links.external >= 1);
-  assert.equal(hp.lang, 'zh-cn');
+  assert.equal(hp.lang, 'zh-hans');
   assert.ok(hp.og.title);
 
   // robots + sitemap

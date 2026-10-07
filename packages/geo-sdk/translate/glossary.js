@@ -42,10 +42,10 @@ function loadSiteGlossary(siteKey) {
 /**
  * Merge forbidden-term lists per target language (global base + site override).
  * @param {string} [siteKey]
- * @returns {{'en-us':string[], 'zh-hk':string[]}}
+ * @returns {{'en':string[], 'zh-hant':string[]}}
  */
 function loadForbidden(siteKey) {
-  const out = { 'en-us': [], 'zh-hk': [] };
+  const out = { 'en': [], 'zh-hant': [] };
   const global = loadGlobal();
   if (global && global.forbidden && typeof global.forbidden === 'object') {
     for (const lang of Object.keys(out)) {

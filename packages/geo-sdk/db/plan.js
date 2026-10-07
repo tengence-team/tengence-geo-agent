@@ -106,7 +106,7 @@ async function list(conn, appId, filters = {}) {
 
 /**
  * Canonical language code for a plan row.
- * The table stores lowercase codes ('zh-cn' | 'en-us' | 'zh-hk'); the DDL default is
+ * The table stores lowercase codes ('zh-hans' | 'en' | 'zh-hant'); the DDL default is
  * the legacy 'zh-CN', so any incoming casing is normalized before it hits SQL — SQLite's
  * `=` is case-sensitive, so an unnormalized 'zh-CN' would silently miss every row.
  */
@@ -117,7 +117,7 @@ function normalizeLang(lang) {
 /**
  * Optional `lang` WHERE fragment + bound param.
  * Omitted when no lang is given, which preserves the historical slug-only behaviour
- * (callers that only ever deal with the zh-cn source article keep working unchanged).
+ * (callers that only ever deal with the zh-hans source article keep working unchanged).
  */
 function langClause(alias, lang) {
   const v = normalizeLang(lang);
@@ -152,14 +152,14 @@ async function getByArticleId(conn, appId, articleId, lang) {
  *
  * The lookup is keyed on (app_id, slug, lang) to match the table's UNIQUE constraint.
  * Keying on slug alone could never create a translation row: it would always match the
- * zh-cn source row and update it in place, which is how en-us/zh-hk plan rows went missing.
+ * zh-hans source row and update it in place, which is how en/zh-hant plan rows went missing.
  *
  * @param {object} record see the import/upsert calls in plan/index.js
- * @param {object} [opts] { lang } — defaults to the record's own lang, else 'zh-cn'
+ * @param {object} [opts] { lang } — defaults to the record's own lang, else 'zh-hans'
  * @returns {Promise<{created:boolean, id:number}>}
  */
 async function upsert(conn, appId, record, opts = {}) {
-  const lang = normalizeLang((opts && opts.lang) || record.lang) || 'zh-cn';
+  const lang = normalizeLang((opts && opts.lang) || record.lang) || 'zh-hans';
   const existing = await getBySlug(conn, appId, record.slug, lang);
   if (existing) {
     const set = [];
@@ -239,7 +239,7 @@ async function updateStatus(conn, appId, slug, fields, opts = {}) {
   }
   if (!set.length) return { updated: false };
   // Without an explicit lang, fall back to the record's own value so a translation
-  // status write targets its own row instead of the zh-cn source row.
+  // status write targets its own row instead of the zh-hans source row.
   const lang = normalizeLang((opts && opts.lang) || fields.lang);
   const lc = langClause('', lang);
   values.push(appId, slug, ...lc.params);
@@ -255,11 +255,11 @@ async function updateStatus(conn, appId, slug, fields, opts = {}) {
  * ascending by publish_order, at most count rows (over-fetch handled by callers via
  * count+OVERFETCH as needed).
  *
- * Only zh-cn source rows are eligible: translations must never be promoted through the
+ * Only zh-hans source rows are eligible: translations must never be promoted through the
  * source pipeline (they are published with the source article, via publish_from_db).
  * @param {object} opts { count, skipSlugs, lang }
  */
-async function nextDue(conn, appId, { count = 1, skipSlugs = [], lang = 'zh-cn' } = {}) {
+async function nextDue(conn, appId, { count = 1, skipSlugs = [], lang = 'zh-hans' } = {}) {
   const lc = langClause('', lang);
   let sql = `
     SELECT * FROM ${TABLES.articlePlan}

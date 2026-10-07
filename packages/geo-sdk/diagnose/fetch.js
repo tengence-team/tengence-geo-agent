@@ -27,7 +27,7 @@ async function fetchPage(url, { timeoutMs = 15000, maxRedirects = 6, headers = {
   const common = {
     'user-agent': UA,
     accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-    'accept-language': 'zh-cn,zh;q=0.9,en;q=0.8',
+    'accept-language': 'zh-hans,zh;q=0.9,en;q=0.8',
     ...headers,
   };
 
