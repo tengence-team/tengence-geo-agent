@@ -213,6 +213,14 @@ function printReconcile(report) {
     }
     if (report.wp_not_in_plan.length > 30) console.log(`  … ${report.wp_not_in_plan.length - 30} more`);
   }
+
+  if (report.articles_updated && report.articles_updated.length) {
+    console.log(`\n🩹 articles.status healed to mirror plan (${report.articles_updated.length}${report.dryRun ? ', DRY-RUN' : ''}):`);
+    for (const a of report.articles_updated.slice(0, 40)) {
+      console.log(`  ${a.slug} [${a.lang || '-'}] → ${a.to}${a.wp_post_id ? ` (wp=${a.wp_post_id})` : ''}`);
+    }
+    if (report.articles_updated.length > 40) console.log(`  … ${report.articles_updated.length - 40} more`);
+  }
   console.log(`\nHint: full status distribution is in \`plan.js list\``);
 }
 

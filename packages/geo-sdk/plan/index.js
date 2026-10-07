@@ -193,6 +193,89 @@ async function setFeaturedImage(slug, url, { appId = DEFAULT_APP_ID() } = {}) {
   });
 }
 
+/**
+ * Reconcile-side heal of articles.status so it mirrors the plan / WP truth. This is
+ * the permanent fix for the "articles.status untrustworthy" defect: previously only
+ * the publish pipeline (markPublished) ever wrote the column, so posts published
+ * outside it — e.g. directly in WP — were stranded at 'draft'.
+ *
+ * Self-gating: it reads the current row first and only writes when status (and, when
+ * applicable, wp_post_id) actually differs, so an unchanged row is never churned.
+ * Runs for every iterated plan row (not just plan_status changes), because the plan
+ * table can be correct while articles.status is independently drifted.
+ *
+ * Keyed by article_id when present (exact FK), else slug+lang, else slug-only, so a
+ * slug whose languages have differing publish states never bleeds one language's
+ * status onto another row. Only SETs (never clears) wp_post_id, to avoid dropping
+ * valid data.
+ *
+ * @returns {Promise<{changed:boolean, from:?string}>}
+ */
+async function healArticleStatus({ appId, planRow, status, wpPostId, dryRun = false }) {
+  return withConn(async (conn) => {
+    let rows;
+    if (planRow.article_id) {
+      [rows] = await conn.query(
+        `SELECT id, status, wp_post_id FROM ${TABLES.articles} WHERE app_id = ? AND id = ?`,
+        [appId, planRow.article_id]
+      );
+    } else if (planRow.lang) {
+      [rows] = await conn.query(
+        `SELECT id, status, wp_post_id FROM ${TABLES.articles} WHERE app_id = ? AND slug = ? AND lang = ?`,
+        [appId, planRow.slug, String(planRow.lang).trim().toLowerCase()]
+      );
+    } else {
+      [rows] = await conn.query(
+        `SELECT id, status, wp_post_id FROM ${TABLES.articles} WHERE app_id = ? AND slug = ?`,
+        [appId, planRow.slug]
+      );
+    }
+    if (!rows.length) return { changed: false, from: null };
+    const cur = rows[0];
+
+    const set = [];
+    const params = [];
+    if (cur.status !== status) {
+      set.push('status = ?');
+      params.push(status);
+    }
+    if (wpPostId != null && String(cur.wp_post_id) !== String(wpPostId)) {
+      set.push('wp_post_id = ?');
+      params.push(wpPostId);
+    }
+    if (!set.length) return { changed: false, from: cur.status };
+
+    if (dryRun) return { changed: true, from: cur.status };
+
+    set.push('lastmod = NOW()');
+    params.push(appId, cur.id);
+    const [result] = await conn.query(
+      `UPDATE ${TABLES.articles} SET ${set.join(', ')} WHERE app_id = ? AND id = ?`,
+      params
+    );
+    return { changed: result.affectedRows > 0, from: cur.status };
+  });
+}
+
+/** Derive a geo language code from a WP post's permalink (the language prefix is the
+ * only reliable signal: /zh-hans/ → zh-hans, /zh-hant/ → zh-hant, bare → en). */
+function langFromLink(link) {
+  if (!link) return null;
+  if (link.includes('/zh-hans/')) return 'zh-hans';
+  if (link.includes('/zh-hant/')) return 'zh-hant';
+  return 'en';
+}
+
+/** Normalize a plan/DB language code into the link-space code used by {@link langFromLink}. */
+function toLinkLang(lang) {
+  if (!lang) return null;
+  const l = String(lang).trim().toLowerCase();
+  if (l === 'zh-cn' || l === 'zh-hans') return 'zh-hans';
+  if (l === 'zh-hk' || l === 'zh-hant') return 'zh-hant';
+  if (l === 'en-us' || l === 'en') return 'en';
+  return l;
+}
+
 /** Queue candidates: the articles due next (for promote-daily; count may include overshoot) */
 async function nextDue({ count = 1, skipSlugs = [], appId = DEFAULT_APP_ID() } = {}) {
   return withConn((conn) => repo.nextDue(conn, appId, { count, skipSlugs }));
@@ -516,6 +599,17 @@ async function reconcile({
 } = {}) {
   const rows = await list({ appId });
   const wpBySlug = new Map(wpPosts.map((p) => [p.slug, p]));
+  // Lang-aware WP index. WP's native slug is ambiguous across translations (the same
+  // slug exists once per language); the post `link` carries the language prefix
+  // (/zh-hans/, /zh-hant/, bare = en), so we index by slug|lang to match precisely.
+  // Without this, a slug with mixed publish states would wrongly inherit one
+  // language's WP status onto every language row — for both the plan table and
+  // (via healArticleStatus) articles.status.
+  const wpBySlugLang = new Map();
+  for (const p of wpPosts) {
+    const l = langFromLink(p.link);
+    if (l && p.slug) wpBySlugLang.set(`${p.slug}|${l}`, p);
+  }
   const rowSlugs = new Set(rows.map((r) => r.slug));
   const site = require('../site/config').loadSite();
   const domain = (site.site.site && site.site.site.domain) || 'tengence.com';
@@ -527,6 +621,7 @@ async function reconcile({
     total_spoke: 0,
     unchanged: 0,
     updated: [],
+    articles_updated: [],
     taxonomy_mismatch: [],
     wp_not_in_plan: [],
   };
@@ -543,7 +638,10 @@ async function reconcile({
     if (p.node_type === 'hub' || p.plan_status === 'paused') continue;
     report.total_spoke += 1;
 
-    const wp = wpBySlug.get(p.slug);
+    // Prefer the lang-matched WP post; fall back to slug-only (preserves historical
+    // behaviour for posts whose language can't be derived from the link).
+    const langKey = p.lang ? `${p.slug}|${toLinkLang(p.lang)}` : null;
+    const wp = (langKey && wpBySlugLang.get(langKey)) || wpBySlug.get(p.slug) || null;
     let to = null;
     const patch = {};
 
@@ -584,20 +682,41 @@ async function reconcile({
 
     if (to === null) continue;
     const changed = to !== p.plan_status || Object.keys(patch).length > 0;
-    if (!changed) {
-      report.unchanged += 1;
-      continue;
+    if (!changed) report.unchanged += 1;
+
+    // Root-cause fix: articles.status was only ever written by the publish pipeline
+    // (markPublished), so posts published outside it — e.g. directly in WP — stayed
+    // stuck at 'draft', making the field untrustworthy. Mirror the WP/plan truth onto
+    // articles.status here. This runs for EVERY iterated row, NOT just plan_status
+    // changes: the plan table can already be correct while articles.status is
+    // independently drifted, and that drift is exactly what we must repair. Keyed by
+    // article_id (exact) then slug+lang, so a slug with mixed-language publish states
+    // never bleeds one language's status onto another.
+    const articlesStatus = to === 'published' ? 'publish' : 'draft';
+    const articlesWpPostId = wp ? wp.id : null;
+    const healed = await healArticleStatus({ appId, planRow: p, status: articlesStatus, wpPostId: articlesWpPostId, dryRun });
+    if (healed.changed) {
+      report.articles_updated.push({
+        slug: p.slug,
+        lang: p.lang || null,
+        from: healed.from,
+        to: articlesStatus,
+        wp_post_id: articlesWpPostId,
+      });
     }
-    if (!dryRun) {
-      await updateStatus(p.slug, { plan_status: to, ...patch }, { appId });
+
+    if (changed) {
+      if (!dryRun) {
+        await updateStatus(p.slug, { plan_status: to, ...patch }, { appId });
+      }
+      report.updated.push({
+        slug: p.slug,
+        from: p.plan_status,
+        to,
+        wp_post_id: patch.wp_post_id || p.wp_post_id || null,
+        ...(patch.published_url ? { published_url: patch.published_url } : {}),
+      });
     }
-    report.updated.push({
-      slug: p.slug,
-      from: p.plan_status,
-      to,
-      wp_post_id: patch.wp_post_id || p.wp_post_id || null,
-      ...(patch.published_url ? { published_url: patch.published_url } : {}),
-    });
   }
 
   return report;
