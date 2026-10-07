@@ -1499,6 +1499,39 @@ const tools = [
     },
   },
 
+  // ---------- site_geo_plan_skill (site-geo-plan skill spec, MCP-managed) ----------
+  {
+    name: 'site_geo_plan_skill',
+    description:
+      'Read-only access to the site-geo-plan skill specification (SKILL.md + references/plan-template.md) ' +
+      'that governs geo_solution plan generation: chapter structure, diagnosis→plan mapping, default ' +
+      'parameters (keyword matrix size, article counts, timeline, quote rules). Returns both files ' +
+      'verbatim so callers can implement/verify plans against the canonical spec.',
+    inputSchema: z.object({}),
+    async run() {
+      try {
+        const path = require('path');
+        const dir = path.join(__dirname, '..', '..', 'geo-sdk', 'site-geo-plan');
+        const fs = require('fs');
+        const skill = fs.readFileSync(path.join(dir, 'SKILL.md'), 'utf8');
+        let template = null;
+        try {
+          template = fs.readFileSync(path.join(dir, 'references', 'plan-template.md'), 'utf8');
+        } catch (_e) {
+          template = null;
+        }
+        return ok({
+          skill_path: path.join(dir, 'SKILL.md'),
+          plan_template_path: template ? path.join(dir, 'references', 'plan-template.md') : null,
+          skill,
+          plan_template: template,
+        });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+
   // ---------- util / diagnostics ----------
   {
     name: 'util_ping',

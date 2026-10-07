@@ -40,3 +40,6 @@ npm-debug.log*
 
 # Local-only runtime (MCP server start scripts / env / logs, never committed)
 .local/
+
+# Local test-run artifacts (auto-initialized by diagnose tests)
+examples/127_0_0_1/
