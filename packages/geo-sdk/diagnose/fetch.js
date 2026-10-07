@@ -67,6 +67,14 @@ async function fetchPage(url, { timeoutMs = 15000, maxRedirects = 6, headers = {
     body = '';
   }
 
+  // raw Set-Cookie values (undici merges them in entries(); getSetCookie keeps them)
+  let rawCookies = [];
+  try {
+    rawCookies = typeof res.headers.getSetCookie === 'function' ? res.headers.getSetCookie() : [];
+  } catch {
+    rawCookies = [];
+  }
+
   return {
     ok: res.ok,
     status: res.status,
@@ -74,10 +82,46 @@ async function fetchPage(url, { timeoutMs = 15000, maxRedirects = 6, headers = {
     finalUrl: current,
     redirects,
     headers: Object.fromEntries(res.headers.entries()),
+    rawCookies,
     ttfbMs,
     bodyLength: Buffer.byteLength(body),
     body,
   };
 }
 
-module.exports = { fetchPage, UA };
+/**
+ * Parse raw Set-Cookie strings into {name, secure, httpOnly, sameSite}.
+ * Flags are the parts of a cookie the diagnosis cares about: Secure / HttpOnly /
+ * SameSite=Lax|Strict|None. Missing flag = a real exposure signal on B2B sites.
+ *
+ * @param {string[]} rawCookies
+ * @returns {{cookies:Array<object>, flags:{secure:number,httpOnly:number,sameSite:number},
+ *            worst:number, total:number}}
+ */
+function parseCookieFlags(rawCookies = []) {
+  const cookies = [];
+  let secure = 0;
+  let httpOnly = 0;
+  let sameSite = 0;
+  for (const raw of rawCookies) {
+    const parts = String(raw).split(';').map((p) => p.trim()).filter(Boolean);
+    const first = parts.shift() || '';
+    const name = first.split('=')[0].trim();
+    const flags = parts.map((p) => p.toLowerCase());
+    const hasSecure = flags.includes('secure');
+    const hasHttpOnly = flags.includes('httponly');
+    const hasSameSite = flags.some((f) => f.startsWith('samesite='));
+    if (hasSecure) secure++;
+    if (hasHttpOnly) httpOnly++;
+    if (hasSameSite) sameSite++;
+    cookies.push({
+      name,
+      secure: hasSecure,
+      httpOnly: hasHttpOnly,
+      sameSite: hasSameSite,
+    });
+  }
+  return { cookies, flags: { secure, httpOnly, sameSite }, total: cookies.length };
+}
+
+module.exports = { fetchPage, parseCookieFlags, UA };

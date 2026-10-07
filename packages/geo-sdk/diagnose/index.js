@@ -12,12 +12,15 @@
  */
 
 const { siteKeyFromUrl, loadSite } = require('../site');
-const { fetchPage } = require('./fetch');
+const { fetchPage, parseCookieFlags } = require('./fetch');
 const { parsePage } = require('./parse');
 const { fingerprint } = require('./fingerprint');
 const { dnsProbe } = require('./dns');
 const { parseRobots } = require('./robots');
 const { probeSitemaps } = require('./sitemap');
+const { probeRange } = require('./probeRange');
+const { aiReachability, probeLlms, probeLanguages, robotsAiBlocks, countWords } = require('./aiBots');
+const { alpnProbe } = require('./proto');
 const { buildChecks } = require('./checks');
 
 const SITEMAP_CANDIDATES = ['/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml'];
@@ -117,10 +120,25 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
   evidence.rootPage = rootPage;
   const baseUrl = rootPage.finalUrl || url;
 
+  // When a WAF hijacks the homepage (final response left the target host, e.g.
+  // jumped to waf.xxx.com/verification), infrastructure probes (robots/sitemap/
+  // llms/langs/AI crawlers) must still target the ORIGINAL site, not the
+  // challenge domain — otherwise every GEO probe "succeeds" against a WAF page.
+  const probeBase = (() => {
+    try {
+      if (new URL(url).hostname.toLowerCase() !== new URL(baseUrl).hostname.toLowerCase()) {
+        return url;
+      }
+    } catch {
+      /* keep baseUrl */
+    }
+    return baseUrl;
+  })();
+
   // ---- parallel: robots / sitemap / 404 probe / domain intelligence ----
-  const robotsUrl = new URL('/robots.txt', baseUrl).href;
+  const robotsUrl = new URL('/robots.txt', probeBase).href;
   const rand = `__geo_probe_${Math.random().toString(36).slice(2, 8)}__`;
-  const notFoundUrl = new URL(`/${rand}`, baseUrl).href;
+  const notFoundUrl = new URL(`/${rand}`, probeBase).href;
 
   const [robotsRes, notFoundRes, dnsInfo] = await Promise.all([
     fetchPage(robotsUrl, { timeoutMs: 10000 }),
@@ -138,7 +156,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
   const sitemapCandidates = evidence.robots.sitemaps.length
     ? evidence.robots.sitemaps
     : SITEMAP_CANDIDATES;
-  evidence.sitemap = await probeSitemaps(sitemapCandidates, baseUrl);
+  evidence.sitemap = await probeSitemaps(sitemapCandidates, probeBase);
 
   // ---- homepage parse + fingerprint (needed early for link fallback) ----
   evidence.rootParsed = rootPage.error ? null : parsePage(rootPage.body, baseUrl);
@@ -174,7 +192,69 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
   }
   evidence.pages = pages;
 
+  // ---- GEO/scale evidence pack (parallel, all soft-fail) ----
+  const hostForAlpn = (() => {
+    try {
+      return new URL(probeBase).hostname;
+    } catch {
+      return '';
+    }
+  })();
+  const [scaleRes, aiRes, llmsRes, langRes, protoRes] = await Promise.all([
+    evidence.sitemap.found && evidence.sitemap.urls.length
+      ? probeRange(evidence.sitemap.urls, { concurrency: 8, maxUrls: 500 })
+      : Promise.resolve({ total: 0, ok200: 0, errorCount: 0, statusDist: {}, failures: [], abnormal: [], okUrls: [] }),
+    aiReachability(url, {
+      baselineWords: (evidence.rootParsed && evidence.rootParsed.wordCount) || 0,
+    }),
+    probeLlms(probeBase),
+    probeLanguages(probeBase),
+    hostForAlpn ? alpnProbe(hostForAlpn) : Promise.resolve({ protocol: null, alpn: false }),
+  ]);
+  evidence.scale = scaleRes;
+  evidence.aiBots = aiRes;
+  evidence.llms = llmsRes;
+  evidence.langs = langRes;
+  evidence.proto = protoRes;
+  evidence.aiBlocks = robotsAiBlocks(evidence.robots);
+
+  // ---- cross-page title / meta duplication (the "all titles identical" check) ----
+  const titleMeta = { titles: [], descriptions: [], titleSet: new Set(), descSet: new Set() };
+  const pagesForCompare = [evidence.rootParsed, ...pages.map((p) => p.parsed)].filter(Boolean);
+  for (const pg of pagesForCompare) {
+    if (pg.title) {
+      titleMeta.titles.push(pg.title);
+      titleMeta.titleSet.add(pg.title);
+    }
+    const d = (pg.meta && pg.meta.description) || '';
+    if (d) {
+      titleMeta.descriptions.push(d);
+      titleMeta.descSet.add(d);
+    }
+  }
+  titleMeta.uniqueTitles = titleMeta.titleSet.size;
+  titleMeta.uniqueDescs = titleMeta.descSet.size;
+  titleMeta.pagesCompared = pagesForCompare.length;
+  evidence.titleMeta = titleMeta;
+
+  // ---- cookie flags (Set-Cookie from the final response) ----
+  evidence.cookieFlags = parseCookieFlags(rootPage.rawCookies || []);
+
   // ---- checks ----
+  const reqHost = (() => {
+    try {
+      return new URL(url).hostname.toLowerCase();
+    } catch {
+      return '';
+    }
+  })();
+  const finalHost = (() => {
+    try {
+      return new URL(baseUrl).hostname.toLowerCase();
+    } catch {
+      return '';
+    }
+  })();
   const rootForChecks = {
     ...(evidence.rootParsed || {}),
     title: evidence.rootParsed && evidence.rootParsed.title,
@@ -191,9 +271,14 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
     ttfbMs: rootPage.ttfbMs,
     bodyLength: rootPage.bodyLength,
     mixedContent: evidence.rootParsed ? evidence.rootParsed.mixedContent : 0,
+    // WAF / anti-bot interception: the final response left the target host
+    // (e.g. jumped to a waf.xxx.com verification page) — headless fetching got
+    // a challenge page, not the real site content.
+    wafIntercepted: !!(reqHost && finalHost && reqHost !== finalHost),
   };
   const checks = buildChecks({
     url: baseUrl,
+    probeBase,
     root: rootForChecks,
     rootPage: rootForChecks,
     fingerprint: evidence.fingerprint,
@@ -201,6 +286,15 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
     robots: evidence.robots,
     sitemap: evidence.sitemap,
     probe404: notFoundRes,
+    scale: scaleRes,
+    aiBots: aiRes,
+    llms: llmsRes,
+    langs: langRes,
+    proto: protoRes,
+    aiBlocks: evidence.aiBlocks,
+    titleMeta: titleMeta,
+    cookieFlags: evidence.cookieFlags,
+    pages: pages,
   });
 
   return {
@@ -235,6 +329,14 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
       })),
       probe404: { status: notFoundRes.status, finalUrl: notFoundRes.finalUrl },
       homepage: evidence.rootParsed,
+      scale: scaleRes,
+      aiBots: aiRes,
+      llms: llmsRes,
+      langs: langRes,
+      proto: protoRes,
+      aiBlocks: evidence.aiBlocks,
+      titleMeta: titleMeta,
+      cookieFlags: evidence.cookieFlags,
     },
     checks,
   };

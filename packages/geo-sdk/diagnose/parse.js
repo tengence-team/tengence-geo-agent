@@ -88,13 +88,17 @@ function parsePage(html, baseUrl) {
   }
 
   // ---- images ----
-  const images = { count: 0, missingAlt: 0, lazy: 0, srcs: [] };
+  const images = { count: 0, missingAlt: 0, lazy: 0, webp: 0, avif: 0, missingSize: 0, srcs: [] };
   $('img').each((i, el) => {
     images.count++;
     const src = $(el).attr('src') || $(el).attr('data-src') || '';
     const alt = $(el).attr('alt');
     if (alt === undefined || alt === null || alt === '') images.missingAlt++;
     if ($(el).attr('loading') === 'lazy' || $(el).attr('data-src')) images.lazy++;
+    const ext = (src.split('?')[0].split('.').pop() || '').toLowerCase();
+    if (ext === 'webp') images.webp++;
+    if (ext === 'avif') images.avif++;
+    if (!$(el).attr('width') && !$(el).attr('height')) images.missingSize++;
     if (images.srcs.length < 20 && src) images.srcs.push(src);
   });
 
@@ -154,6 +158,31 @@ function parsePage(html, baseUrl) {
   const forms = $('form').length;
   const iframes = $('iframe').length;
 
+  // ---- word count (CJK chars + latin words; the "78 words" shell test) ----
+  const cjkChars = (bodyText.match(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g) || []).length;
+  const latinWords = (
+    bodyText.replace(/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/g, ' ').match(/[a-zA-Z0-9]+(?:['-][a-zA-Z0-9]+)*/g) || []
+  ).length;
+  const wordCount = cjkChars + latinWords;
+
+  // ---- analytics / statistics scripts (legacy UA- is a real "dead signal") ----
+  const htmlLower = html.toLowerCase();
+  const analytics = [];
+  const ANALYTIC_RULES = [
+    { name: 'GA4', kind: 'ga4', re: /googletagmanager\.com\/gtag\/js|gtag\(/i },
+    { name: 'Universal Analytics (UA-)', kind: 'ua-legacy', re: /google-analytics\.com\/analytics\.js|ga\('create'|_trackPageview|ua-\d{4,}-\d+/i },
+    { name: '百度统计', kind: 'baidu', re: /hm\.baidu\.com\/hm\.js/i },
+    { name: 'CNZZ 站长统计', kind: 'cnzz', re: /v1\.cnzz\.com|w\.cnzz\.com|cnzz\.com\/z\.js/i },
+    { name: 'Matomo/Piwik', kind: 'matomo', re: /matomo\.js|piwik\.js/i },
+  ];
+  for (const r of ANALYTIC_RULES) {
+    const mm = r.re.exec(htmlLower);
+    if (mm) analytics.push({ name: r.name, kind: r.kind, sample: mm[0].slice(0, 80) });
+  }
+
+  // ---- viewport details (user-scalable=no hurts mobile usability signal) ----
+  const userScalableNo = /user-scalable\s*=\s*(no|0)/i.test(viewport || '');
+
   return {
     title: $('title').first().text().replace(/\s+/g, ' ').trim() || null,
     meta,
@@ -169,6 +198,11 @@ function parsePage(html, baseUrl) {
       missingAlt: images.missingAlt,
       missingAltPct: images.count ? Math.round((images.missingAlt / images.count) * 100) : 0,
       lazy: images.lazy,
+      webp: images.webp,
+      avif: images.avif,
+      missingSize: images.missingSize,
+      modernPct: images.count ? Math.round(((images.webp + images.avif) / images.count) * 100) : 0,
+      missingSizePct: images.count ? Math.round((images.missingSize / images.count) * 100) : 0,
       srcs: images.srcs,
     },
     links: {
@@ -198,10 +232,15 @@ function parsePage(html, baseUrl) {
       image: meta['twitter:image'] || null,
     },
     textLength: bodyText.length,
+    wordCount,
+    cjkChars,
+    latinWords,
     blockquotes,
     lists,
     forms,
     iframes,
+    analytics,
+    userScalableNo,
     httpResources: httpResources.slice(0, 20),
     mixedContent: httpResources.length,
   };

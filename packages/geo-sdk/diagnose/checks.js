@@ -21,6 +21,15 @@ function buildChecks(ev) {
   const dns = ev.dns || {};
   const rob = ev.robots || {};
   const sm = ev.sitemap || {};
+  const sc = ev.scale || {};
+  const ai = ev.aiBots || [];
+  const llms = ev.llms || {};
+  const langs = ev.langs || {};
+  const alpn = ev.proto || {};
+  const aiBlocks = ev.aiBlocks || { count: 0, blocked: [] };
+  const titleMeta = ev.titleMeta || {};
+  const ck = ev.cookieFlags || {};
+  const pages = ev.pages || [];
   const h = rp.headers || {};
 
   const lower = {};
@@ -74,6 +83,9 @@ function buildChecks(ev) {
   }
   C.push(check('tech', 'HTTPS 强制', proto === 'https:' ? 'pass' : 'fail',
     `最终协议: ${proto || '未知'}`));
+  C.push(check('tech', 'HTTP 协议版本',
+    alpn && alpn.protocol === 'h2' || alpn && alpn.protocol === 'h3' ? 'pass' : alpn && alpn.protocol === 'http/1.1' ? 'warn' : 'info',
+    alpn && alpn.protocol ? `协商协议: ${alpn.protocol}${alpn.alpn ? '（ALPN）' : ''}` : '无法探测（无 ALPN 或非标准 TLS）'));
   C.push(check('tech', '首页状态码', rp.status === 200 ? 'pass' : 'fail',
     `HTTP ${rp.status} ${rp.statusText || ''}`));
   const redirs = rp.redirects || [];
@@ -121,6 +133,29 @@ function buildChecks(ev) {
   C.push(check('security', '混合内容', rp.mixedContent === 0 ? 'pass' : 'warn',
     `页面引用了 ${rp.mixedContent} 个 http:// 资源`));
 
+  // ---- cookie security flags (Secure / HttpOnly / SameSite) ----
+  if (ck.total && ck.total > 0) {
+    const insecure = (ck.cookies || []).filter((c) => !c.secure || !c.httpOnly || !c.sameSite).length;
+    const st = insecure === 0 ? 'pass' : insecure === ck.total ? 'fail' : 'warn';
+    C.push(check('security', 'Cookie 安全标志', st,
+      `共 ${ck.total} 个 Cookie：Secure×${ck.flags.secure} HttpOnly×${ck.flags.httpOnly} SameSite×${ck.flags.sameSite}${insecure ? `｜${insecure} 个缺标志: ${(ck.cookies || []).filter((c) => !c.secure || !c.httpOnly || !c.sameSite).map((c) => c.name).join(', ').slice(0, 80)}` : ''}`));
+  } else {
+    C.push(check('security', 'Cookie 安全标志', 'info', '未下发 Cookie（无可评）'));
+  }
+
+  // ---- apex HTTPS availability (direct example.com visits) ----
+  const apexCert = dns.apexCertificate;
+  if (apexCert && apexCert.error) {
+    C.push(check('security', 'apex HTTPS 可用性', 'fail', `apex 443 无法建立 TLS: ${apexCert.error}`));
+  } else if (apexCert && apexCert.daysLeft !== null && apexCert.daysLeft !== undefined) {
+    C.push(check('security', 'apex HTTPS 可用性', 'pass',
+      `apex 证书有效，剩余 ${apexCert.daysLeft} 天 | ${apexCert.issuer?.O || apexCert.issuer?.CN || '未知'}`));
+  } else if (apexCert) {
+    C.push(check('security', 'apex HTTPS 可用性', 'info', 'apex 与 www 同证书或未知'));
+  } else {
+    C.push(check('security', 'apex HTTPS 可用性', 'info', '未探测'));
+  }
+
   // ============ 爬取可达性 ============
   C.push(check('crawl', 'robots.txt', rob.exists ? 'pass' : 'fail', rob.exists ? '已提供' : '缺失/空'));
   if (rob.exists) {
@@ -134,7 +169,7 @@ function buildChecks(ev) {
   if (sm.found) {
     const host = (() => {
       try {
-        return new URL(finalUrl).hostname.toLowerCase();
+        return new URL(ev.probeBase || finalUrl).hostname.toLowerCase();
       } catch {
         return '';
       }
@@ -149,18 +184,68 @@ function buildChecks(ev) {
     });
     C.push(check('crawl', 'sitemap 域一致性', other.length === 0 ? 'pass' : 'warn',
       `${urls.length} 个样本中 ${other.length} 个指向站外域名`));
+
+    // protocol / www consistency inside the sitemap itself
+    const nonCanonical = urls.filter((u) => {
+      try {
+        const uu = new URL(u);
+        return uu.protocol !== 'https:' || uu.hostname.toLowerCase() !== host;
+      } catch {
+        return true;
+      }
+    });
+    C.push(check('crawl', 'sitemap 协议一致性', nonCanonical.length === 0 ? 'pass' : 'warn',
+      `${urls.length} 个 URL 中 ${nonCanonical.length} 个非 https://${host} 规范形态（http/www 混用会重复收录）`));
+
+    // sitemap inventory: what share of sitemap URLs actually resolve (200)
+    if (sc.total > 0) {
+      const pct = Math.round((sc.ok200 / sc.total) * 100);
+      C.push(check('crawl', 'sitemap 收录页可访问性', sc.failures.length === 0 ? 'pass' : sc.failures.length <= sc.total * 0.1 ? 'warn' : 'fail',
+        `${sc.ok200}/${sc.total} 个 sitemap URL 返回 200（${pct}%）| 异常: ${sc.failures.slice(0, 6).map((f) => `${new URL(f.url).pathname}:${f.status}`).join(' ') || '无'}`));
+      C.push(check('crawl', 'sitemap 500/异常软错误', sc.abnormal.length === 0 ? 'pass' : 'fail',
+        sc.abnormal.length ? `发现 ${sc.abnormal.length} 个稳定 ${[...new Set(sc.abnormal.map((f) => f.status))].join('/')} 页: ${sc.abnormal.slice(0, 8).map((f) => new URL(f.url).pathname).join(', ')}` : '无 5xx/403/429 软错误'));
+    } else {
+      C.push(check('crawl', 'sitemap 收录页可访问性', 'info', 'sitemap 未解析出 URL，无法盘点'));
+    }
   }
   const p404 = ev.probe404;
   C.push(check('crawl', '404 处理', p404 && p404.status === 404 ? 'pass' : p404 && p404.status === 200 ? 'fail' : 'info',
     p404 ? `随机路径返回 HTTP ${p404.status}` : '未探测'));
 
+  // ---- WAF / anti-bot interception ----
+  C.push(check('crawl', 'WAF/反爬拦截', rp.wafIntercepted ? 'fail' : 'pass',
+    rp.wafIntercepted
+      ? `抓取被重定向到 ${rp.finalUrl}（离开目标域名）——无头客户端拿到 WAF 验证页而非真实内容，正文/Title/结构化等页面级检查以挑战页为准，须浏览器补充核实`
+      : '普通抓取可直接获取内容（未被 WAF 挑战拦截）'));
+
   // ============ 内容 SEO ============
   const t = (rp.title || '').length;
   C.push(check('content', 'Title', t >= 10 && t <= 70 ? 'pass' : t > 0 ? 'warn' : 'fail',
     rp.title ? `「${rp.title.slice(0, 60)}」 (${t} 字符)` : '缺失'));
+
+  // ---- cross-page title uniqueness (the "every page has the same title" failure) ----
+  if (titleMeta.pagesCompared > 1) {
+    const allSame = titleMeta.uniqueTitles === 1 && titleMeta.titles.length > 1;
+    const st = allSame ? 'fail' : titleMeta.uniqueTitles === titleMeta.titles.length ? 'pass' : 'warn';
+    C.push(check('content', '跨页 Title 唯一性', st,
+      `比较 ${titleMeta.pagesCompared} 页：${titleMeta.uniqueTitles}/${titleMeta.titles.length} 个唯一 Title${allSame ? `（全站重复: ${(titleMeta.titles[0] || '').slice(0, 50)}…）` : ''}`));
+  } else {
+    C.push(check('content', '跨页 Title 唯一性', 'info', '仅首页，无法跨页比较'));
+  }
+
   const d = (rp.meta && (rp.meta.description || '')) || '';
   C.push(check('content', 'Meta Description', d.length >= 50 && d.length <= 160 ? 'pass' : d.length > 0 ? 'warn' : 'fail',
     d ? `${d.slice(0, 80)}… (${d.length} 字符)` : '缺失'));
+
+  // ---- cross-page meta description uniqueness ----
+  if (titleMeta.descriptions.length > 1) {
+    const allSame = titleMeta.uniqueDescs === 1;
+    const st = allSame ? 'fail' : titleMeta.uniqueDescs === titleMeta.descriptions.length ? 'pass' : 'warn';
+    C.push(check('content', '跨页 Meta 唯一性', st,
+      `比较 ${titleMeta.descriptions.length} 个非空 description：${titleMeta.uniqueDescs} 个唯一${allSame ? '（相互复制）' : ''}`));
+  } else {
+    C.push(check('content', '跨页 Meta 唯一性', 'info', titleMeta.descriptions.length === 0 ? '各页均无 description' : '仅 1 个非空 description，无法比较'));
+  }
   C.push(check('content', 'Canonical', rp.canonical ? 'pass' : 'warn',
     rp.canonical ? rp.canonical : '缺失 canonical'));
   const h1 = rp.headings && rp.headings.h1;
@@ -174,13 +259,37 @@ function buildChecks(ev) {
   const altPct = (rp.images && rp.images.missingAltPct) || 0;
   C.push(check('content', '图片 alt 覆盖', altPct <= 5 ? 'pass' : altPct <= 20 ? 'warn' : 'fail',
     `共 ${rp.images ? rp.images.count : 0} 张图，${altPct}% 缺 alt`));
+  const modernPct = (rp.images && rp.images.modernPct) || 0;
+  C.push(check('content', '图片格式 (WebP/AVIF)',
+    rp.images && rp.images.count ? (modernPct >= 50 ? 'pass' : modernPct > 0 ? 'warn' : 'info') : 'info',
+    rp.images && rp.images.count ? `WebP×${rp.images.webp} AVIF×${rp.images.avif}（${modernPct}% 现代格式）` : '无图'));
+  const sizePct = (rp.images && rp.images.missingSizePct) || 0;
+  C.push(check('content', '图片尺寸属性', sizePct <= 20 ? 'pass' : sizePct <= 50 ? 'warn' : 'fail',
+    `${rp.images ? rp.images.missingSize : 0}/${rp.images ? rp.images.count : 0} 张图缺 width/height（${sizePct}%，CLS 风险）`));
   C.push(check('content', '正文量', rp.textLength >= 200 ? 'pass' : rp.textLength > 0 ? 'warn' : 'fail',
     `正文约 ${rp.textLength} 字符`));
+  // ---- word count + JS-shell detection ----
+  const wc = rp.wordCount || 0;
+  const jsFramework = ['Next.js', 'Nuxt', 'Gatsby', 'React', 'Vue', 'Svelte', 'Astro'].includes(fp.framework || '');
+  C.push(check('content', '正文词数', wc >= 300 ? 'pass' : wc >= 100 ? 'warn' : 'fail',
+    `正文约 ${wc} 词（CJK ${rp.cjkChars || 0} + 拉丁 ${rp.latinWords || 0}）${wc < 100 && jsFramework ? '｜疑似 JS 渲染空壳（框架 ' + fp.framework + '，爬虫不执行 JS 将读到极少量文本）' : ''}`));
   C.push(check('content', '内链数量', rp.links && rp.links.internal >= 10 ? 'pass' : 'info',
     `${rp.links ? rp.links.internal : 0} 个站内链接`));
   C.push(check('content', 'viewport', rp.viewport ? 'pass' : 'fail', rp.viewport ? rp.viewport : '缺失 viewport'));
   C.push(check('content', 'lang 属性', rp.lang ? 'pass' : 'warn', rp.lang ? `<html lang="${rp.lang}">` : '缺失'));
   C.push(check('content', 'charset', rp.charset ? 'pass' : 'warn', rp.charset ? rp.charset : '未声明'));
+
+  // ---- analytics stack (legacy UA- is a dead measurement signal since 2023-07) ----
+  const analytics = (rp.analytics || []).map((a) => a.kind);
+  if (analytics.includes('ga4')) {
+    C.push(check('content', '统计代码', 'pass', `GA4/gtag 已部署（${rp.analytics.filter((a) => a.kind === 'ga4').map((a) => a.sample).join(' | ')}）`));
+  } else if (analytics.includes('ua-legacy')) {
+    C.push(check('content', '统计代码', 'warn', '仅 Universal Analytics（UA-），该版本已于 2023-07 停用——国际流量实质失盲，需升级 GA4'));
+  } else if (analytics.length) {
+    C.push(check('content', '统计代码', 'info', `${rp.analytics.map((a) => a.name).join('、')}（第三方统计）`));
+  } else {
+    C.push(check('content', '统计代码', 'info', '未检测到统计脚本（可观测性缺口）'));
+  }
 
   const og = rp.og || {};
   const ogScore = [og.title, og.description, og.image].filter(Boolean).length;
@@ -205,6 +314,51 @@ function buildChecks(ev) {
     `blockquote×${rp.blockquotes} · 列表×${rp.lists}`));
   C.push(check('geo', 'robots meta', rp.robotsMeta ? 'info' : 'info',
     rp.robotsMeta ? `robots=${rp.robotsMeta}` : '未设置 robots meta（默认可索引）'));
+
+  // ---- llms.txt (generative-engine site map) ----
+  C.push(check('geo', 'llms.txt', llms.found ? 'pass' : 'info',
+    llms.found ? `发现 ${llms.probes.filter((p) => p.status === 200).map((p) => new URL(p.url).pathname).join(', ')}｜${(llms.content || '').slice(0, 60).replace(/\n/g, ' ')}…` : '未发现 /llms.txt（生成式引擎无结构化入口）'));
+
+  // ---- AI crawler reachability (deterministic, UA-based) ----
+  const gpt = ai.find((a) => a.bot === 'GPTBot') || ai[0];
+  if (gpt) {
+    const st = gpt.status === 200 && gpt.full ? 'pass' : 'fail';
+    let hostNote = '';
+    if (!gpt.hostSame && gpt.finalUrl) {
+      try {
+        hostNote = `（被重定向到 ${new URL(gpt.finalUrl).hostname}）`;
+      } catch {
+        hostNote = '（被重定向）';
+      }
+    }
+    C.push(check('geo', 'AI 爬虫可达性', st,
+      `${gpt.bot}: HTTP ${gpt.status}${hostNote}，正文 ${gpt.wordCount} 词${gpt.full ? '（内容完整，可引用）' : gpt.status === 200 && !gpt.hostSame ? '（WAF 验证页，AI 读不到真实内容）' : gpt.status === 200 ? '（疑似 JS 空壳或内容极少）' : `（${gpt.error || '被拦截'}）`}`));
+  } else {
+    C.push(check('geo', 'AI 爬虫可达性', 'info', '未探测'));
+  }
+  C.push(check('geo', 'AI 爬虫 robots 屏蔽', aiBlocks.count === 0 ? 'pass' : 'warn',
+    aiBlocks.count ? `robots.txt 对 ${aiBlocks.count} 项规则涉及 AI/机器爬虫: ${aiBlocks.blocked.map((b) => `${b.ua} → ${b.rule}`).join('；').slice(0, 120)}` : 'robots 未屏蔽 AI 爬虫'));
+
+  // ---- independent language version (i18n) ----
+  const lang200 = (langs.probes || []).filter((p) => p.is200);
+  if (lang200.length) {
+    C.push(check('geo', '多语言独立版本', 'pass', `独立语言路径可访问: ${lang200.map((p) => new URL(p.url).pathname).join(', ')}`));
+  } else if (rp.hreflang && rp.hreflang.length) {
+    C.push(check('geo', '多语言独立版本', 'warn', `声明了 hreflang（${rp.hreflang.map((x) => x.hreflang).join(', ')}）但无独立语言路径可访问（疑似查询参数切换）`));
+  } else {
+    C.push(check('geo', '多语言独立版本', 'info', '未发现独立语言版本（单语站点或仅查询参数切换）'));
+  }
+
+  // ---- Product/Offer structured entity on product-like pages ----
+  const pageTypes = [];
+  for (const p of pages) {
+    if (p.parsed && p.parsed.jsonld) pageTypes.push(...p.parsed.jsonld.types);
+  }
+  const allTypes = [...types, ...pageTypes];
+  const hasProduct = ['Product', 'Offer', 'ProductGroup', 'ItemList'].some((t) => allTypes.includes(t));
+  const hasProductPage = pages.some((p) => /product|goods|case|item|service/i.test(new URL(p.url).pathname));
+  C.push(check('geo', 'Product/Offer 实体', hasProduct ? 'pass' : hasProductPage ? 'warn' : 'info',
+    hasProduct ? '已声明 Product/Offer 级实体' : hasProductPage ? '有产品类页面但未声明 Product 结构化实体' : '未发现产品类页面/实体'));
 
   // ============ 性能 ============
   const resCount = (rp.scripts ? rp.scripts.count : 0) + (rp.stylesheets || 0) + (rp.images ? rp.images.count : 0);

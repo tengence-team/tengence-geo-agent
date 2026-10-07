@@ -69,7 +69,13 @@ const SITEMAP = `<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>__BASE__/post/3</loc></url>
   <url><loc>__BASE__/category/seo</loc></url>
   <url><loc>__BASE__/about</loc></url>
+  <url><loc>__BASE__/broken</loc></url>
 </urlset>`;
+
+const LLMS = `# ${'llms.txt for the test site'}
+> 示例站点 llms.txt
+- [Home](__BASE__/)
+- [Article One](__BASE__/post/1)`;
 
 const ARTICLE = `<!doctype html>
 <html lang="zh-hans">
@@ -93,7 +99,12 @@ before(async () => {
   server = http.createServer((req, res) => {
     const url = req.url || '/';
     if (url === '/' || url === '') {
-      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'public, max-age=300' });
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Cache-Control': 'public, max-age=300',
+        // one cookie with NO Secure/HttpOnly/SameSite → the cookie-flags check fails
+        'Set-Cookie': 'geo_test=1; Path=/',
+      });
       res.end(HOMEPAGE.replaceAll('__BASE__', BASE));
     } else if (url === '/robots.txt') {
       res.writeHead(200, { 'Content-Type': 'text/plain' });
@@ -101,6 +112,16 @@ before(async () => {
     } else if (url === '/sitemap.xml') {
       res.writeHead(200, { 'Content-Type': 'application/xml' });
       res.end(SITEMAP.replaceAll('__BASE__', BASE));
+    } else if (url === '/llms.txt') {
+      res.writeHead(200, { 'Content-Type': 'text/plain' });
+      res.end(LLMS.replaceAll('__BASE__', BASE));
+    } else if (url === '/broken') {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Server Error');
+    } else if (url === '/waf-redir') {
+      // WAF-style interception: jump the client off the target host
+      res.writeHead(302, { Location: 'https://waf.example.com/verification?source=redir' });
+      res.end();
     } else if (url === '/post/1') {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(ARTICLE);
@@ -155,20 +176,43 @@ test('diagnose_site: full diagnosis against local site (bootstrap + evidence + c
   assert.ok(res.evidence.robots.sitemaps.length >= 1);
   assert.equal(res.evidence.sitemap.found, true);
   assert.equal(res.evidence.sitemap.type, 'urlset');
-  assert.equal(res.evidence.sitemap.urlCount, 6);
+  assert.equal(res.evidence.sitemap.urlCount, 7);
+
+  // scale inventory: sitemap URLs probed, /broken returns 500
+  assert.ok(res.evidence.scale, 'scale inventory should be present');
+  assert.equal(res.evidence.scale.total, 7);
+  assert.equal(res.evidence.scale.ok200, 6);
+  assert.equal(res.evidence.scale.abnormal.length, 1, 'the /broken 500 must be flagged as abnormal');
+
+  // GEO evidence pack: aiBots / llms / langs / proto / cookieFlags / titleMeta
+  assert.ok(res.evidence.aiBots.length >= 5, 'AI crawler reachability probes expected');
+  const gpt = res.evidence.aiBots.find((b) => b.bot === 'GPTBot');
+  assert.equal(gpt.status, 200);
+  assert.equal(gpt.full, true, 'GPTBot should see full content on the SSR homepage');
+  assert.equal(res.evidence.llms.found, true, '/llms.txt exists in fixture');
+  assert.ok(res.evidence.langs && Array.isArray(res.evidence.langs.probes));
+  assert.ok(res.evidence.proto && typeof res.evidence.proto.protocol !== 'undefined');
+  assert.ok(res.evidence.cookieFlags, 'cookie flags parsed');
+  assert.equal(res.evidence.cookieFlags.total, 1);
+  assert.equal(res.evidence.cookieFlags.flags.secure, 0, 'fixture cookie has no Secure flag');
+  assert.ok(res.evidence.titleMeta && res.evidence.titleMeta.pagesCompared >= 4);
+  assert.equal(res.evidence.homepage.wordCount > 0, true, 'word count present on homepage');
 
   // representative pages: sampled by path-segment cluster, never the whole site
-  assert.ok(res.evidence.pages.length === 3, `sampled 3 pages from 6 sitemap URLs, got ${res.evidence.pages.length}`);
+  // (7 sitemap URLs → 4 path segments: about / broken / category / post)
+  assert.ok(res.evidence.pages.length === 4, `sampled 4 pages from 7 sitemap URLs, got ${res.evidence.pages.length}`);
   const samplePaths = res.evidence.pages.map((p) => new URL(p.url).pathname).sort();
-  assert.deepEqual(samplePaths, ['/about', '/category/seo', '/post/1']);
-  assert.ok(res.evidence.pages.every((p) => p.status === 200));
+  assert.deepEqual(samplePaths, ['/about', '/broken', '/category/seo', '/post/1']);
+  const brokenPage = res.evidence.pages.find((p) => new URL(p.url).pathname === '/broken');
+  assert.equal(brokenPage.status, 500, 'the /broken representative page returns 500');
+  assert.ok(res.evidence.pages.filter((p) => p !== brokenPage).every((p) => p.status === 200));
 
   // 404 probe
   assert.equal(res.evidence.probe404.status, 404);
 
   // checks
   const checks = res.checks;
-  assert.ok(Array.isArray(checks) && checks.length > 20, `expected many checks, got ${checks.length}`);
+  assert.ok(Array.isArray(checks) && checks.length > 30, `expected many checks, got ${checks.length}`);
   const byId = Object.fromEntries(checks.map((c) => [c.id, c]));
   assert.equal(byId['tech-首页状态码'].status, 'pass');
   assert.equal(byId['content-H1 唯一性'].status, 'pass');
@@ -177,6 +221,19 @@ test('diagnose_site: full diagnosis against local site (bootstrap + evidence + c
   assert.equal(byId['crawl-404 处理'].status, 'pass');
   assert.equal(byId['content-Open Graph'].status, 'pass');
   assert.equal(byId['security-安全响应头'].status, 'warn', 'local server has no security headers');
+
+  // ---- new checks (from the enriched engine) ----
+  assert.equal(byId['security-Cookie 安全标志'].status, 'fail', 'fixture cookie lacks all three flags');
+  assert.equal(byId['crawl-sitemap 收录页可访问性'].status, 'fail', '/broken 500 in sitemap');
+  assert.equal(byId['crawl-sitemap 500-异常软错误'].status, 'fail', 'one stable 500 in sitemap');
+  assert.equal(byId['geo-llms.txt'].status, 'pass', 'fixture ships /llms.txt');
+  assert.equal(byId['geo-AI 爬虫可达性'].status, 'pass', 'GPTBot sees full SSR content');
+  assert.equal(byId['geo-AI 爬虫 robots 屏蔽'].status, 'pass', 'robots does not block AI bots');
+  assert.ok(byId['tech-HTTP 协议版本'], 'HTTP protocol version check exists');
+  assert.ok(byId['content-正文词数'], 'word-count check exists');
+  assert.ok(byId['content-统计代码'], 'analytics check exists');
+  assert.ok(byId['content-跨页 Title 唯一性'], 'cross-page title check exists');
+  assert.ok(byId['geo-Product-Offer 实体'], 'product entity check exists');
 });
 
 test('diagnose_site: second run is idempotent (created:false)', async () => {
@@ -184,6 +241,26 @@ test('diagnose_site: second run is idempotent (created:false)', async () => {
   assert.equal(res.ok, true);
   assert.equal(res.site_key, '127_0_0_1');
   assert.equal(res._bootstrap.created, false);
+});
+
+test('diagnose_site: WAF interception is detected when the final response leaves the host', async () => {
+  const res = await diagnose.runDiagnosis({ url: `${BASE}/waf-redir` });
+  assert.equal(res.ok, true);
+  // either the WAF host resolves and returns a challenge (200) or the fetch
+  // errors — either way the client never saw content on the target host
+  assert.ok(
+    (res.evidence.rootPage.finalUrl || '').includes('waf.example.com') ||
+      (res.evidence.rootPage.redirects || []).some((x) => /waf\.example\.com/.test(x.location)),
+    'final response left the target host',
+  );
+  const checks = res.checks;
+  const byId = Object.fromEntries(checks.map((c) => [c.id, c]));
+  assert.equal(byId['crawl-WAF-反爬拦截'].status, 'fail', 'redirect to a foreign host = intercepted');
+  // AI reachability must NOT report "full" content it never saw (challenge page)
+  const gpt = res.evidence.aiBots.find((b) => b.bot === 'GPTBot');
+  assert.ok(gpt, 'GPTBot probe present');
+  assert.equal(gpt.full, false, 'a WAF challenge page is not full content');
+  assert.equal(byId['geo-AI 爬虫可达性'].status, 'fail');
 });
 
 test('report_write: writes into data/reports and rejects traversal', async () => {

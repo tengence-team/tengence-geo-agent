@@ -51,7 +51,10 @@ function whoisQuery(server, query, { timeoutMs = 8000, maxBytes = 60000 } = {}) 
 /** TLS certificate probe over a raw socket (no CA verification needed for diagnosis). */
 function certProbe(host, { timeoutMs = 8000 } = {}) {
   return new Promise((resolve) => {
-    const sock = tls.connect({ host, port: 443, servername: host, rejectUnauthorized: false });
+    const opts = { host, port: 443, rejectUnauthorized: false };
+    // RFC 6066: ServerName must not be an IP literal
+    if (!IP_RE.test(host) && host !== LOCALHOST) opts.servername = host;
+    const sock = tls.connect(opts);
     let settled = false;
     const done = (val) => {
       if (settled) return;
@@ -126,6 +129,7 @@ async function dnsProbe(host) {
     mx: [],
     txt: [],
     certificate: null,
+    apexCertificate: null,
     whois: null,
     errors: [],
   };
@@ -148,6 +152,13 @@ async function dnsProbe(host) {
 
   if (!IP_RE.test(host) && host !== LOCALHOST) {
     out.certificate = await certProbe(host).catch((e) => ({ error: e.message }));
+    // apex HTTPS availability is a separate signal (e.g. www works but apex 443
+    // has no valid cert → direct `example.com` visits fail)
+    if (apex !== host) {
+      out.apexCertificate = await certProbe(apex).catch((e) => ({ error: e.message }));
+    } else {
+      out.apexCertificate = out.certificate;
+    }
     // WHOIS is per registrable domain: strip the common www subdomain
     out.whois = await whoisLookup(apex).catch((e) => ({ error: e.message }));
   }
