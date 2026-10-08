@@ -47,6 +47,15 @@ identity pass-through. The plugin taxonomy matches internal codes directly.
 ### 3.1 Facts — never change
 - Numbers: years, percentages, versions, amounts, counts, dates stay **exactly as in
   the source** (only thousands-separator / decimal-format differences allowed).
+  - **Magnitude wording is normalized, not literal.** A Chinese source magnitude
+    (`万` / `亿`) and its English wording (`thousand` / `million` / `billion`) are
+    treated as equal by the gate, so you may write either `8 亿` → `800 million` *or*
+    `800,000,000`, and `2300 万` → `23 million` *or* `23,000,000`. Do **not** distort
+    the target into an unnatural form just to satisfy the gate (e.g. never write
+    `9/2022` to satisfy a month check).
+  - **Dates with a month:** a Chinese `2022 年 9 月` and an English
+    `September 2022` are equivalent — the gate folds the month name to its ordinal
+    when a 4-digit year is adjacent, so write the month name naturally.
 - Every outbound citation URL and every image URL stays **identical**.
   `featured_image` is copied from the source article unchanged (the three languages
   share one featured image).
@@ -233,6 +242,7 @@ identity pass-through. The plugin taxonomy matches internal codes directly.
 | T6 | Term compliance | Target-language glossary hits: en has no direct-translation of glossary terms; zh-hant has no zh-hans-only terms |
 | T7 | Length floor | Each H2 maps 1:1 to source structure; no truncated section; en H2 ≥ ~50% of source length |
 | T8 | Title spec | H1 keeps core keyword; no mixed-language title; meta_description length per target profile |
+| T9 | Mermaid label syntax | bare `( )` inside a mermaid node / edge / subgraph label is a lexing error; quote the whole label (`A["text (x)"]`) |
 | T10 | Internal-link language prefix | every on-site article link in the target carries the **target** language prefix (/zh-hans/ zh-hans, /en/ en, /zh-hant/ zh-hant); bare links or another language's prefix fail |
 | T11 | CTA layout | the Get Started / 立即行动 block lists each link on its own line; links joined by `|` on one line fail |
 

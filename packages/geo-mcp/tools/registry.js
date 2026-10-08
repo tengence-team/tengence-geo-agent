@@ -419,7 +419,8 @@ const tools = [
             });
           }
         }
-        const fields = 'id,slug,status,link,date,modified' + (args.include_content ? ',content' : '');
+        const fields =
+          'id,slug,status,link,date,modified,featured_media' + (args.include_content ? ',content' : '');
         const query = `?_fields=${fields}` + (args.include_content ? '&context=edit' : '');
         const post = await t.wp.posts.get(postId, query, { siteKey });
         const out = {
@@ -429,7 +430,23 @@ const tools = [
           link: post.link,
           date: post.date,
           modified: post.modified,
+          featured_media: post.featured_media || null,
         };
+        // Featured image lives in WP (drafts are prepared in wp-admin with their image
+        // already attached) — read it back from the media library so callers can reuse
+        // the SAME image instead of acquiring a new one.
+        if (post.featured_media) {
+          try {
+            const media = await t.wp.media.getMedia(post.featured_media, { siteKey });
+            out.featured_image = media ? media.url : null;
+            if (media) out.featured_alt = media.alt;
+          } catch (e) {
+            out.featured_image = null;
+            out.featured_error = String(e.message).slice(0, 200);
+          }
+        } else {
+          out.featured_image = null;
+        }
         if (args.include_content) {
           out.content = post.content && post.content.raw !== undefined ? post.content.raw : (post.content || {}).rendered;
         }
@@ -1831,6 +1848,30 @@ const tools = [
         //   draft-only creation → status "draft"  (NOT published)
         //   article went live   → status "published"
         //   attempt failed      → status "failed" (leaves the slug eligible for a retry)
+        // ---- wechat: ONE message = ONE 第N期 row holding the WHOLE group ----------
+        // A wechat send merges N articles into a single 图文 message (one media_id), so
+        // the calendar row must keep the group (article_slugs) intact. Logging per-slug
+        // (as the other platforms do) would shred the group and lose the
+        // "which articles went into this message" mapping forever.
+        if (args.platform === 'wechat' && !args.dryRun && result.ok) {
+          const group = (result.slugs && result.slugs.length ? result.slugs : args.slugs) || [];
+          const mediaId = (result.refs && result.refs.mediaId) || null;
+          if (group.length) {
+            try {
+              const issue = await t.plan.channel.recordWechatIssue({
+                slugs: group,
+                mediaId,
+                status: 'draft', // draft box is the terminal state — we never mass-send
+                topic: group.length === 1 ? null : `${group.length} 篇合辑`,
+                notes: `merged into one WeChat message (media_id: ${mediaId || 'n/a'})`,
+              });
+              result.loggedIssue = issue;
+            } catch (logErr) {
+              // logging failure must not mask the publish result
+              console.error('[channel_publish] recordWechatIssue failed:', logErr.message);
+            }
+          }
+        }
         if (PUBLISH_LOG_PLATFORMS.includes(args.platform) && !args.dryRun) {
           const ch = t.plan.channel;
           const wentLive = args.asDraft === false;
@@ -1884,12 +1925,21 @@ const tools = [
       'csdn queue starts from the very first blog article.',
     inputSchema: z.object({
       platform: z.string().optional().describe('filter rows to one platform (default: all platforms)'),
+      count: z
+        .number()
+        .optional()
+        .describe(
+          'how many articles the NEXT send should contain (wechat merges them into ONE 图文 message, ' +
+            'so count=3 returns the next 3 un-dispatched articles as one issue). Default 1.'
+        ),
     }),
     async run(args) {
       try {
         const ch = t.plan.channel;
         const rows = await ch.list({ platform: args.platform });
-        const next = args.platform ? await ch.nextDue(args.platform) : null;
+        const next = args.platform
+          ? await ch.nextDue(args.platform, { count: args.count || 1 })
+          : null;
         return ok({ ok: true, next, rows });
       } catch (e) {
         return fail(e);

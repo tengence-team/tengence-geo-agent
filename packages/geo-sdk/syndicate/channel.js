@@ -243,6 +243,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
       platform,
       action: dryRun ? 'dry-run' : action,
       refs: { mediaId },
+      // the group actually merged into this ONE message — the caller (MCP) persists
+      // it as one 第N期 row so "which articles went into this message" is never lost
+      slugs: wechatSlugs,
       skipped: skipped.length ? skipped : undefined,
       logPath: logFile(site.siteDir),
     };

@@ -401,3 +401,108 @@ test('T11: CTA as a bulleted list passes', () => {
   assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
   assert.ok(!r.errors.some((e) => e.id === 'T11'));
 });
+
+// ---- 2026-10-08: T4 magnitude / month-name normalization (idiomatic equivalents) ----
+
+const NUM_SRC = `---
+seo:
+  meta_title: "数字一致性测试"
+  meta_description: "测试翻译门禁对中文万、亿与年份月份的数字归一化是否准确，避免误报。"
+featured_image: "https://tengence.com/assets/images/hero.png"
+---
+
+# 数字一致性测试
+
+2026 年预计 8 亿用户，2300 万新增。
+
+该版本于 2022 年 9 月发布，2020 年 5 月修订。
+`;
+
+const NUM_EN = `---
+seo:
+  meta_title: "Number Consistency Test"
+  meta_description: "Generative engine optimization rewards evidence density over keywords; allow AI crawlers, publish llms.txt, cite data, and build off-site authority for it."
+featured_image: "https://tengence.com/assets/images/hero.png"
+---
+
+# Number Consistency Test
+
+In 2026 the platform reached 800 million users, with 23 million added.
+
+The release shipped in September 2022 and was revised in May 2020.
+`;
+
+test('T4: Chinese 万/亿 match English million wording (no drift)', () => {
+  const r = checkTranslation({ sourceMd: NUM_SRC, targetMd: NUM_EN, targetLang: 'en' });
+  assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
+  assert.ok(!r.errors.some((e) => e.id === 'T4'));
+});
+
+test('T4: English month name + year matches Chinese month (no drift)', () => {
+  const r = checkTranslation({ sourceMd: NUM_SRC, targetMd: NUM_EN, targetLang: 'en' });
+  assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
+  assert.ok(!r.errors.some((e) => e.id === 'T4'));
+});
+
+// A bare "may" (verb, no adjacent year) must NOT be read as the number 5.
+const MAY_SRC = `---
+seo:
+  meta_title: "May Safety Test"
+  meta_description: "验证门禁不会把英文 may 动词误判为数字。"
+featured_image: "https://tengence.com/assets/images/hero.png"
+---
+
+# May Safety Test
+
+我们计划 12 个案例。
+`;
+
+const MAY_EN = `---
+seo:
+  meta_title: "May Safety Test"
+  meta_description: "Generative engine optimization rewards evidence density over keywords; allow AI crawlers, publish llms.txt, cite data, and build off-site authority for it."
+featured_image: "https://tengence.com/assets/images/hero.png"
+---
+
+# May Safety Test
+
+You may want to review the 12 cases we planned.
+`;
+
+test('T4: bare "may" (verb) is not read as 5', () => {
+  const r = checkTranslation({ sourceMd: MAY_SRC, targetMd: MAY_EN, targetLang: 'en' });
+  assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
+  assert.ok(!r.errors.some((e) => e.id === 'T4' && /5/.test(e.message)));
+});
+
+// Chinese "千" (×1e3) must normalize like 万/亿, so "8 千美元" ↔ "$8,000"
+// and "5 万美元" ↔ "$50,000" without false drift.
+const QIAN_SRC = `---
+seo:
+  meta_title: "千量级测试"
+  meta_description: "验证中文千字头数字能与英文等值写法归一化，避免把 8 千美元误报为数字漂移。"
+featured_image: "https://tengence.com/assets/images/hero.png"
+---
+
+# 千量级测试
+
+月营收 8 千美元时花了 5 万美元建分析基础设施。
+`;
+
+const QIAN_EN = `---
+seo:
+  meta_title: "Thousand Magnitude Test"
+  meta_description: "Generative engine optimization rewards evidence density over keywords; allow AI crawlers, publish llms.txt, cite data, and build off-site authority for it."
+featured_image: "https://tengence.com/assets/images/hero.png"
+---
+
+# Thousand Magnitude Test
+
+It spent $50,000 building analytics infrastructure when monthly revenue was only $8,000.
+`;
+
+test('T4: Chinese 千 matches English thousand wording (no drift)', () => {
+  const r = checkTranslation({ sourceMd: QIAN_SRC, targetMd: QIAN_EN, targetLang: 'en' });
+  assert.equal(r.ok, true, JSON.stringify(r.errors, null, 2));
+  assert.ok(!r.errors.some((e) => e.id === 'T4'));
+});

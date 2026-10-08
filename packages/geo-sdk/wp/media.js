@@ -34,6 +34,25 @@ function resolveWpUploadTarget() {
 }
 
 /**
+ * READ an already-uploaded media item back from the WordPress media library.
+ *
+ * WordPress — not our local DB — is the source of truth for a post's featured image:
+ * drafts are prepared inside wp-admin (image included) long before anything is
+ * published, so translations must reuse THAT image instead of acquiring a new one.
+ *
+ * @param {number|string} mediaId WP media (attachment) id — a post's `featured_media`
+ * @param {{siteKey?:string}} [opts]
+ * @returns {Promise<{id:number, url:string|null, alt:string|null}|null>} null when WP has no such media
+ */
+async function getMedia(mediaId, opts = {}) {
+  if (!mediaId) return null;
+  const { api } = require('./request');
+  const m = await api(`/media/${mediaId}?_fields=id,source_url,alt_text`, { siteKey: opts.siteKey });
+  if (!m || !m.source_url) return null;
+  return { id: Number(m.id || mediaId), url: m.source_url, alt: m.alt_text || null };
+}
+
+/**
  * Upload a local image to the WordPress media library
  * @param {string} localPath absolute path of the local image
  * @param {{alt?:string, title?:string}} [opts]
@@ -87,4 +106,4 @@ async function uploadMedia(localPath, opts = {}) {
   });
 }
 
-module.exports = { uploadMedia, resolveWpUploadTarget };
+module.exports = { uploadMedia, getMedia, resolveWpUploadTarget };

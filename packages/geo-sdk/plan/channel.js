@@ -121,14 +121,32 @@ async function clearPlatform(platform) {
  * `deleted` are deliberately excluded so they get a fresh (re)publish attempt.
  * @returns {Promise<Set<string>>}
  */
-const DISPATCHED_STATUSES = new Set(['published', 'reviewing']);
+const DEFAULT_DISPATCHED = new Set(['published', 'reviewing']);
+/**
+ * Per-platform "already dispatched" statuses (2026-10-08).
+ *
+ * wechat is the exception: our operating rule is DRAFT-BOX ONLY — we never mass-send
+ * (no `mass_send`, ever), so a wechat row never reaches `published`. Its terminal
+ * state IS `draft`, and counting only `published` made every article already sitting
+ * in the WeChat drafts box look "not yet sent" → nextDue kept re-offering them
+ * (24 articles from 第2–9期 were queued for a second send).
+ *
+ * juejin/csdn keep the default on purpose: there a `draft` is only an intermediate
+ * step on the way to a live article, so it must stay eligible for a retry.
+ */
+const DISPATCHED_BY_PLATFORM = {
+  wechat: new Set(['published', 'reviewing', 'draft']),
+};
+const dispatchedStatuses = (platform) => DISPATCHED_BY_PLATFORM[platform] || DEFAULT_DISPATCHED;
+
 async function publishedSlugs(platform) {
   const appId = DEFAULT_APP_ID();
+  const dispatched = dispatchedStatuses(platform);
   const set = new Set();
   await withConn(async (conn) => {
     const rows = await repo.list(conn, appId, { platform });
     for (const row of rows) {
-      if (DISPATCHED_STATUSES.has(row.status)) {
+      if (dispatched.has(row.status)) {
         for (const s of row.article_slugs) set.add(s);
       }
     }
@@ -143,9 +161,10 @@ async function publishedSlugs(platform) {
  * through this exactly once, so the logic is never re-implemented per platform.
  *
  * Keyed STRICTLY by slug against the local channel_plan publish log — no external
- * API calls, no title matching. Only `published` rows count; `draft` rows are NOT
- * skipped (a draft may not have been mass-sent yet, and skipping it would produce
- * an incomplete message on a re-run).
+ * API calls, no title matching. Which statuses count as "dispatched" is per-platform
+ * (see dispatchedStatuses): for juejin/csdn only `published`/`reviewing` count, so a
+ * draft still gets retried; for wechat `draft` counts too (draft box is the terminal
+ * state there).
  *
  * @param {string} platform platform key
  * @param {string[]} slugs ordered input slugs
@@ -198,6 +217,48 @@ async function recordPublish(rec) {
     });
   });
   return { ok: true, platform: rec.platform, slug: rec.slug, status: rec.status || 'failed' };
+}
+
+/**
+ * Record ONE WeChat issue (one 群发 message) as ONE calendar row.
+ *
+ * This is the persistent home of "which articles go into one WeChat message".
+ * A wechat send merges several articles into a single 图文 message (one media_id),
+ * so the row keeps the WHOLE group: period=第N期, article_slugs=[the group],
+ * draft_ids=[mediaId]. Never log wechat per-slug (recordPublish) — that would shred
+ * the group and lose the issue↔message mapping.
+ *
+ * Issue numbering continues from whatever is already on the platform (第1期…第N期),
+ * so the calendar stays a single continuous history instead of restarting.
+ *
+ * @param {{slugs:string[], mediaId?:string, status?:string, topic?:string, notes?:string}} rec
+ * @returns {Promise<{platform:string, period:string, id:number, action:string, article_slugs:string[]}>}
+ */
+async function recordWechatIssue(rec) {
+  const slugs = Array.isArray(rec && rec.slugs) ? rec.slugs.filter(Boolean) : [];
+  if (!slugs.length) throw new Error('recordWechatIssue requires a non-empty slugs array');
+  const appId = DEFAULT_APP_ID();
+  let out;
+  await withConn(async (conn) => {
+    const rows = await repo.list(conn, appId, { platform: 'wechat' });
+    let maxIssue = 0;
+    for (const r of rows) {
+      const m = /第\s*(\d+)\s*期/.exec(String(r.period || ''));
+      if (m) maxIssue = Math.max(maxIssue, Number(m[1]));
+    }
+    const period = `第${maxIssue + 1}期`;
+    const res = await repo.upsert(conn, appId, {
+      platform: 'wechat',
+      period,
+      topic: rec.topic || null,
+      article_slugs: slugs,
+      status: rec.status || 'draft',
+      draft_ids: rec.mediaId ? [rec.mediaId] : [],
+      notes: rec.notes || null,
+    });
+    out = { platform: 'wechat', period, id: res.id, action: res.action, article_slugs: slugs };
+  });
+  return out;
 }
 
 /**
@@ -490,7 +551,17 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
 async function nextDue(platform, { count = 1 } = {}) {
   const published = await publishedSlugs(platform);
   const blog = (await t.plan.list({ limit: 5000 })).filter((r) => r.plan_status === 'published');
-  const sorted = blog.slice().sort((a, b) => (a.publish_order || 1e9) - (b.publish_order || 1e9));
+  // One blog article = up to THREE plan rows (zh-hans / en / zh-hant) sharing the same
+  // publish_order — they are the SAME article, not three queue entries. Collapse to one
+  // entry per slug, preferring the zh-hans row (the authoritative source of the order).
+  const byslug = new Map();
+  for (const r of blog) {
+    if (!r || !r.slug) continue;
+    const prev = byslug.get(r.slug);
+    if (!prev) byslug.set(r.slug, r);
+    else if (prev.lang !== 'zh-hans' && r.lang === 'zh-hans') byslug.set(r.slug, r);
+  }
+  const sorted = [...byslug.values()].sort((a, b) => (a.publish_order || 1e9) - (b.publish_order || 1e9));
   const picked = [];
   for (const r of sorted) {
     if (published.has(r.slug)) continue;
@@ -516,6 +587,7 @@ async function nextDue(platform, { count = 1 } = {}) {
 module.exports = {
   // (parseWechatPlanText / importWechatPlan removed 2026-10-07 — no document parsing)
   importWechatIssues,
+  recordWechatIssue,
   clearPlatform,
   publishedSlugs,
   filterUnpublished,

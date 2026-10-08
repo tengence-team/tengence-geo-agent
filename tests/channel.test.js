@@ -300,6 +300,80 @@ test('markStatus: records draft ids, preserves them when not passed', async () =
   }
 });
 
+// ==================== wechat: draft box is the TERMINAL state ====================
+
+test('dispatched statuses: wechat counts a draft as dispatched, juejin does not', async () => {
+  const dbSqlite = require('../packages/geo-sdk/db/sqlite');
+  const { withConn } = require('../packages/geo-sdk/db/connection');
+  dbSqlite.getDb();
+  const ids = [];
+  await withConn(async (conn) => {
+    for (const [platform, slug, status] of [
+      ['wechat', 'wc-draft', 'draft'],
+      ['wechat', 'wc-todo', 'todo'],
+      ['juejin', 'jj-draft', 'draft'],
+    ]) {
+      const [r] = await conn.query(
+        `INSERT INTO tengence_geo_channel_plan
+           (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
+         VALUES (1, ?, ?, ?, null, ?, ?, ?)`,
+        [platform, `T-${slug}`, slug, status, JSON.stringify([slug]), JSON.stringify(['MEDIA'])]
+      );
+      ids.push(r.insertId);
+    }
+  });
+  try {
+    const wechatSet = await t.plan.channel.publishedSlugs('wechat');
+    assert.ok(wechatSet.has('wc-draft'), 'wechat never mass-sends → a draft IS dispatched');
+    assert.ok(!wechatSet.has('wc-todo'), 'a todo row is not dispatched yet');
+    const juejinSet = await t.plan.channel.publishedSlugs('juejin');
+    assert.ok(!juejinSet.has('jj-draft'), 'juejin drafts are an intermediate step → stay eligible');
+  } finally {
+    await withConn(async (conn) => {
+      await conn.query('DELETE FROM tengence_geo_channel_plan WHERE id IN (?, ?, ?)', ids);
+    });
+  }
+});
+
+test('recordWechatIssue: one message = one 第N期 row holding the whole group', async () => {
+  const dbSqlite = require('../packages/geo-sdk/db/sqlite');
+  const { withConn } = require('../packages/geo-sdk/db/connection');
+  const { recordWechatIssue } = require('../packages/geo-sdk/plan/channel');
+  dbSqlite.getDb();
+  const ids = [];
+  await withConn(async (conn) => {
+    const [r] = await conn.query(
+      `INSERT INTO tengence_geo_channel_plan
+         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
+       VALUES (1, 'wechat', '第7期', '旧期', null, 'draft', ?, ?)`,
+      [JSON.stringify(['old-a']), JSON.stringify(['MEDIA_OLD'])]
+    );
+    ids.push(r.insertId);
+  });
+  try {
+    const rec = await recordWechatIssue({
+      slugs: ['g1', 'g2', 'g3'],
+      mediaId: 'MEDIA_NEW',
+      status: 'draft',
+    });
+    ids.push(rec.id);
+    assert.equal(rec.period, '第8期', 'issue numbering continues from the existing calendar');
+    assert.deepEqual(rec.article_slugs, ['g1', 'g2', 'g3'], 'the whole group stays in ONE row');
+    const row = await t.plan.channel.get(rec.id);
+    assert.deepEqual(row.article_slugs, ['g1', 'g2', 'g3']);
+    assert.deepEqual(row.draft_ids, ['MEDIA_NEW'], 'the message media_id is kept with the group');
+    assert.equal(row.status, 'draft');
+    // the group is now dispatched → none of its slugs come back from nextDue
+    const set = await t.plan.channel.publishedSlugs('wechat');
+    for (const s of ['g1', 'g2', 'g3']) assert.ok(set.has(s), `${s} must count as dispatched`);
+    await assert.rejects(() => recordWechatIssue({ slugs: [] }), /non-empty slugs/);
+  } finally {
+    await withConn(async (conn) => {
+      await conn.query('DELETE FROM tengence_geo_channel_plan WHERE id IN (?, ?)', ids);
+    });
+  }
+});
+
 test('nextDue: wechat no longer hijacked by calendar rows (derived like every platform)', async () => {
   const dbSqlite = require('../packages/geo-sdk/db/sqlite');
   const { withConn } = require('../packages/geo-sdk/db/connection');

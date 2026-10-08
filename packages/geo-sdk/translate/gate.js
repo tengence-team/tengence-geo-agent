@@ -12,6 +12,13 @@
  * article link in the target to carry the target language prefix; T11 requires
  * the CTA block to list each link on its own line (no `|` joins).
  *
+ * 2026-10-08 T4 hardening: extractNumbers now also folds Chinese 千/万/億/亿
+ * (×1e3/×1e4/×1e8) and English word magnitudes (thousand/million/billion, e.g.
+ * "800 million" ↔ 源 "8 亿", "8 thousand" ↔ 源 "8 千") and English month names
+ * adjacent to a 4-digit year (e.g. "September 2022" ↔ 源 "2022 年 9 月"), so a
+ * faithful idiomatic translation is no longer flagged as number drift. T4 error
+ * messages now carry the offending source/target sentence as context.
+ *
  * Merge order for forbidden terms: global standards/translation-glossary.yaml
  * (base) ← site config/translation-glossary.yaml (wins).
  * ============================================================================
@@ -150,22 +157,53 @@ function extractHrefs(mdText) {
 
 /** Chinese/English magnitude suffixes applied when a number token is followed by one. */
 const MAGNITUDE = {
-  万: 1e4, 萬: 1e4, 亿: 1e8, 億: 1e8,
+  千: 1e3, 万: 1e4, 萬: 1e4, 亿: 1e8, 億: 1e8,
   K: 1e3, k: 1e3, M: 1e6, m: 1e6, B: 1e9, b: 1e9,
 };
 
 /**
+ * English month names → ordinal (1–12). Only consumed by extractNumbers when the
+ * month is adjacent to a 4-digit year, so "September 2022" yields 9 (matching the
+ * Chinese source "2022 年 9 月") while a bare "may" used as a verb is never read as
+ * 5. Abbreviations (jan…dec) are included. The year-adjacency guard is what keeps
+ * common words like "may" / "march" from producing false number drift.
+ */
+const MONTHS = {
+  january: 1, february: 2, march: 3, april: 4, may: 5, june: 6,
+  july: 7, august: 8, september: 9, october: 10, november: 11, december: 12,
+  jan: 1, feb: 2, mar: 3, apr: 4, jun: 6, jul: 7, aug: 8,
+  sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+/** Flatten a line into a short single-line snippet for T4 error context. */
+function truncateContext(s, max = 70) {
+  const flat = String(s || '').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? flat.slice(0, max) + '…' : flat;
+}
+
+/**
  * Extract numeric tokens, skipping heading lines (H2 numbering must not count).
- * Chinese magnitude words (万/億/亿) and English suffixes (K/M/B) are normalized to
- * their scaled value so that "85万" == "850,000" == "850K" (only thousand-separator /
- * decimal / magnitude-wording differences are allowed per standards §3.1). A range
- * like "3-5万" scales both endpoints ("3" → 30000, "5万" → 50000). When a magnitude
- * is present the bare number is not added separately (otherwise the source's "85万"
- * would demand a literal "85" in the target).
+ * Chinese magnitude words (万/億/亿) and English suffixes/words (K/M/B and
+ * thousand/million/billion) are normalized to their scaled value so that
+ * "85万" == "850,000" == "850K" == "0.85 million" (only thousand-separator /
+ * decimal / magnitude-wording differences are allowed per standards §3.1). English
+ * month names adjacent to a 4-digit year are folded to their ordinal so
+ * "September 2022" matches the Chinese "2022 年 9 月". A range like "3-5万" scales
+ * both endpoints. When a magnitude is present the bare number is not added
+ * separately (otherwise the source's "85万" would demand a literal "85" in target).
+ *
+ * Returns { values: Set<string>, ctx: Map<string,string> } — ctx maps each number to
+ * a one-line source/target snippet so T4 can point the translator at the offending
+ * sentence instead of a bare integer.
  */
 function extractNumbers(mdText) {
   const lines = mdText.split('\n');
   const nums = new Set();
+  const ctx = new Map();
+  const addNum = (val, snippet) => {
+    nums.add(val);
+    if (!ctx.has(val)) ctx.set(val, truncateContext(snippet));
+  };
   for (const line of lines) {
     if (/^\s*#/.test(line)) continue;
     let m;
@@ -174,28 +212,46 @@ function extractNumbers(mdText) {
       const raw = m[0].replace(/,/g, '');
       // peek at the character right after the match for a magnitude suffix
       const rest = line.slice(m.index + m[0].length);
-      // Chinese magnitude words (万/億/亿) need no word boundary; English suffixes
-      // (K/M/B) do, so "12 months" is not read as 12M. A bare number directly
-      // followed by "-<digits><magnitude>" (range left endpoint, "3-5万") is skipped
+      // Chinese magnitude words (万/億/亿) need no word boundary; English compact
+      // suffixes (K/M/B) do, so "12 months" is not read as 12M. A bare number
+      // directly followed by "-<digits><magnitude>" (range left endpoint) is skipped
       // here and added in scaled form by the right endpoint's range handling below.
-      const magMatch = /^\s*(万|萬|亿|億)/.exec(rest) || /^\s*([KkMmBb])\b/.exec(rest);
+      const magMatch = /^\s*(千|万|萬|亿|億)/.exec(rest) || /^\s*([KkMmBb])\b/.exec(rest);
+      // English word magnitudes (space-separated): "800 million", "5 billion"…
+      const wordMag = /^\s*(thousand|million|billion)\b/i.exec(rest);
       if (magMatch) {
         const mult = MAGNITUDE[magMatch[1]];
-        const scaled = String(Math.round(parseFloat(raw) * mult));
-        nums.add(scaled);
+        addNum(String(Math.round(parseFloat(raw) * mult)), line.trim());
         // range left endpoint: "3-5万" — the token before the suffix also scales
         const before = line.slice(0, m.index).trimEnd();
         const rangeMatch = /[-\u2013\u2014]\s*$/.exec(before);
         if (rangeMatch) {
           const leftMatch = /(\d[\d,.]*\d|\d+)\s*$/.exec(before.slice(0, before.length - rangeMatch[0].length));
-          if (leftMatch) nums.add(String(Math.round(parseFloat(leftMatch[0].replace(/,/g, '')) * mult)));
+          if (leftMatch) addNum(String(Math.round(parseFloat(leftMatch[0].replace(/,/g, '')) * mult)), line.trim());
         }
+      } else if (wordMag) {
+        const mult = { thousand: 1e3, million: 1e6, billion: 1e9 }[wordMag[1].toLowerCase()];
+        addNum(String(Math.round(parseFloat(raw) * mult)), line.trim());
       } else if (!/^\s*[-–—]\s*\d[\d,.]*\d\s*(万|萬|亿|億|[KkMmBb])\b/.test(rest)) {
-        nums.add(raw);
+        // strip leading zeros so a date fragment like "2024-03" (→ 3) matches a
+        // target that spells the month as "March 2024" / "2024 年 3 月" (→ 3).
+        addNum(raw.replace(/^0+(?=\d)/, ''), line.trim());
       }
     }
+    // English month names only when adjacent to a 4-digit year (guards against "may"
+    // as a verb, "march" as a noun, etc.). "September 2022" → 9; "2020 年 5 月" ↔
+    // "May 2020" then both carry 5 and 2020 and pass T4.
+    const monthRe = /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)\b/gi;
+    let mm;
+    while ((mm = monthRe.exec(line)) !== null) {
+      const ord = MONTHS[mm[0].toLowerCase()];
+      const before = line.slice(0, mm.index).trimEnd();
+      const after = line.slice(mm.index + mm[0].length);
+      const nearYear = /(\d{4})\s*$/.test(before) || /^\s*,?\s*\d{4}/.test(after);
+      if (nearYear) addNum(String(ord), line.trim());
+    }
   }
-  return nums;
+  return { values: nums, ctx };
 }
 
 function extractImages(mdText, frontMatter) {
@@ -344,11 +400,23 @@ function checkTranslation({ sourceMd, targetMd, targetLang, sourceLang = 'zh-han
   if (t3.length) errors.push(...t3.map((message) => ({ id: 'T3', message })));
 
   // ---- T4 number fidelity --------------------------------------------------
-  const srcNums = extractNumbers(sourceClean);
-  const tgtNums = extractNumbers(targetClean);
+  const srcNum = extractNumbers(sourceClean);
+  const tgtNum = extractNumbers(targetClean);
+  const srcNums = srcNum.values;
+  const tgtNums = tgtNum.values;
   const t4 = [];
-  for (const n of srcNums) if (!tgtNums.has(n)) t4.push(`source number missing in target: ${n}`);
-  for (const n of tgtNums) if (!srcNums.has(n)) t4.push(`target number not in source: ${n}`);
+  for (const n of srcNums) {
+    if (!tgtNums.has(n)) {
+      const c = srcNum.ctx.get(n);
+      t4.push(`source number missing in target: ${n}` + (c ? ` — source: "…${c}…"` : ''));
+    }
+  }
+  for (const n of tgtNums) {
+    if (!srcNums.has(n)) {
+      const c = tgtNum.ctx.get(n);
+      t4.push(`target number not in source: ${n}` + (c ? ` — target: "…${c}…"` : ''));
+    }
+  }
   checks.T4 = { ok: t4.length === 0, sourceCount: srcNums.size, targetCount: tgtNums.size, issues: t4 };
   if (t4.length) errors.push(...t4.map((message) => ({ id: 'T4', message })));
 
