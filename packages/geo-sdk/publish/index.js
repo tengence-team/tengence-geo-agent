@@ -707,26 +707,65 @@ async function publishArticle(connection, articleId, options = {}) {
   const planRow = await s.t.plan.getByArticleId(articleId, { lang: article.lang });
   let category;
   let tagEntries; // [{slug, name, description}]
+
+  // Translations (lang !== 'zh-hans') inherit BOTH the source (zh-hans) article's
+  // category AND tags when their own plan/config values are empty. Without this,
+  // every translation silently lands in the default category with no tags
+  // (see 2026-10-09 site-wide translation tag/category incident).
+  let srcPlan = null;
+  let inheritedTags = false;
+  if (article.lang && article.lang !== 'zh-hans') {
+    try {
+      srcPlan = await s.t.plan.get(article.slug, { lang: 'zh-hans' });
+    } catch (e) {
+      s.logger(`  ⚠️ source plan lookup failed: ${e.message}`);
+    }
+  }
+
   if (planRow && planRow.category) {
     category = planRow.category;
-    tagEntries = (planRow.tags || []).map((slug) => s.WHITELIST.tagsBySlug[slug]).filter(Boolean);
+    let tagSlugs = planRow.tags || [];
+    if (tagSlugs.length === 0 && srcPlan && srcPlan.tags && srcPlan.tags.length) {
+      tagSlugs = srcPlan.tags;
+      inheritedTags = true;
+      s.logger('  ℹ️ tags inherited from zh-hans source (own plan tags empty)');
+    }
+    tagEntries = tagSlugs.map((slug) => s.WHITELIST.tagsBySlug[slug]).filter(Boolean);
     s.logger('  ℹ️ category/tag source: article plan table');
   } else {
-    category = config.category || 'product-solutions';
-    tagEntries = (config.tags || []).map((name) => s.WHITELIST.tagsByName[name]).filter(Boolean);
-    s.logger('  ℹ️ category/tag source: config (legacy fallback)');
+    let resolvedCategory = config.category || 'product-solutions';
+    if (srcPlan && srcPlan.category) {
+      resolvedCategory = srcPlan.category;
+      s.logger(`  ℹ️ category inherited from zh-hans source "${resolvedCategory}" (translation had no category)`);
+    } else {
+      s.logger('  ℹ️ category/tag source: config (legacy fallback)');
+    }
+    category = resolvedCategory;
+    let tagNames = config.tags || [];
+    if (tagNames.length === 0 && srcPlan && srcPlan.tags && srcPlan.tags.length) {
+      // source plan tags are slugs, not display names
+      tagEntries = srcPlan.tags.map((slug) => s.WHITELIST.tagsBySlug[slug]).filter(Boolean);
+      inheritedTags = true;
+      s.logger('  ℹ️ tags inherited from zh-hans source (config tags empty)');
+    } else {
+      tagEntries = tagNames.map((name) => s.WHITELIST.tagsByName[name]).filter(Boolean);
+    }
   }
+
   if (!s.CONFIG.categories[category]) {
     throw new Error(`Category "${category}" is not in the canonical category allow-list`);
   }
   if (tagEntries.length > MAX_TAGS_PER_ARTICLE) {
     throw new Error(`Each article allows at most ${MAX_TAGS_PER_ARTICLE} tags`);
   }
-  if (planRow && planRow.category && tagEntries.length !== (planRow.tags || []).length) {
-    throw new Error(`Non-canonical tags in the plan table: ${(planRow.tags || []).join(', ')}`);
-  }
-  if (!planRow && tagEntries.length !== (config.tags || []).length) {
-    throw new Error(`Non-canonical tags found: ${(config.tags || []).join(', ')}`);
+  // Canonical-tag check: when NOT inheriting, every requested tag must resolve to a
+  // known slug. (Inherited source tags are already canonical plan slugs, so we skip
+  // the count guard in that case.)
+  if (!inheritedTags) {
+    const requested = (planRow && planRow.category) ? (planRow.tags || []) : (config.tags || []);
+    if (requested.length > 0 && tagEntries.length !== requested.length) {
+      throw new Error(`Non-canonical tags found: ${requested.join(', ')}`);
+    }
   }
   s.logger(`  ✓ Category: ${category}`);
   s.logger(`  ✓ Tags: ${tagEntries.map((t) => t.name).join(', ')}`);
