@@ -284,6 +284,29 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     }
   } catch { missingTargets = []; }
 
+  // duplicate internal-link targets within the 相关阅读 block (2026-10-08):
+  // a link-replacement pass that swaps slugs can silently map two entries onto
+  // the same target (bi-tools-comparison incident: E03 + E07 both ended up
+  // pointing at funnel-analysis-methodology). The same slug listed twice in
+  // the block renders as a visible duplicate row on the page.
+  let relatedDups = [];
+  {
+    // ⚠️ lookahead must NOT use `$`: with the /m flag `$` matches *any* line end,
+    // so the lazy capture would stop empty right at the heading's own line end
+    // (found live 2026-10-08: rel[1] was '' and the check silently passed).
+    // `(?![\s\S])` = true end of string, the /m-flag-safe equivalent of \z.
+    const rel = md.match(/^##\s*(?:相关阅读|相關閱讀|相关文章|相關文章|Related Reading)[^\n]*\n([\s\S]*?)(?=\n##\s|\n---+|(?![\s\S]))/m);
+    if (rel) {
+      const slugs = [];
+      const re = /(?:https?:)?\/\/(?:www\.)?tengence\.com\/(?:[a-z-]+\/)?blog\/article\/([a-z0-9][a-z0-9-]*)\/?/gi;
+      let mm;
+      while ((mm = re.exec(rel[1])) !== null) slugs.push(mm[1]);
+      const counts = new Map();
+      for (const s of slugs) counts.set(s, (counts.get(s) || 0) + 1);
+      relatedDups = [...counts.entries()].filter(([, n]) => n > 1).map(([s, n]) => `${s}×${n}`);
+    }
+  }
+
   const rows = [
     // 4th element soft=true means the row is informational only and doesn't affect
     // the exit code (word count inferred from dir when --type is not explicit)
@@ -308,6 +331,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     // once the article is already on WP, like every other editorial row below)
     ['internal links carry own-language prefix (hard)', linkIssues.length ? linkIssues.length + ' violations' : 'ok', linkIssues.length === 0],
     ['internal-link targets exist in WP (hard)', missingTargets.length ? missingTargets.join(', ') : 'ok', missingTargets.length === 0],
+    ['related-reading duplicate internal links (hard)', relatedDups.length ? relatedDups.join(', ') : 'ok', relatedDups.length === 0],
     ['CTA block single link per line (hard)', ctaIssues.length ? ctaIssues.length + ' violations' : 'ok', ctaIssues.length === 0],
   ];
 
