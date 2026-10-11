@@ -21,11 +21,15 @@ const { probeSitemaps, languageDistribution } = require('./sitemap');
 const { probeRange } = require('./probeRange');
 const { aiReachability, probeLlms, probeLanguages, robotsAiBlocks, countWords } = require('./aiBots');
 const { alpnProbe } = require('./proto');
-const { buildChecks } = require('./checks');
+const { buildChecks, computeScore } = require('./checks');
 const { probeLangHomepages, check404Localization, i18nCoverage } = require('./i18n');
 const { probeCdnHits, probeCachePolicy, probeHttp3, parseCspPolicy, probeImageTypes } = require('./cdn');
-const { probeSubdomains, probeMobileRedirect, checkSanUsage, probeExternalResources } = require('./infra');
+const { probeSubdomains, probeMobileRedirect, checkSanUsage, probeExternalResources, probeLocalResources } = require('./infra');
 const { probeExposure } = require('./exposure');
+const {
+  dataPointDensity, dateSignals, authorByline, authoritativeCitations,
+  entityConsistency, llmsStructure, staticHtmlContent, aigcDisclosure, qaBlocks,
+} = require('./geo-extra');
 
 const SITEMAP_CANDIDATES = ['/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml'];
 const DEFAULT_LANG_PREFIXES = ['en', 'zh-hans', 'zh-hant'];
@@ -288,7 +292,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
   const runDeep = deep && budgetLeft() >= DEEP_NEEDED;
   let deepResults = null;
   if (runDeep) {
-    const [cdnHits, i18n, subdomains, mobile, exposure, cachePolicy, imgTypes, extHealth] =
+    const [cdnHits, i18n, subdomains, mobile, exposure, cachePolicy, imgTypes, extHealth, localRes] =
       await Promise.allSettled([
         probeCdnHits(baseUrl, {
           samples: 3,
@@ -301,6 +305,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
         probeCachePolicy(staticAssets),
         probeImageTypes(imgSample),
         probeExternalResources(extSample),
+        probeLocalResources(probeBase, evidence.rootParsed || {}),
       ]);
     deepResults = {
       cdnHits: cdnHits.status === 'fulfilled' ? cdnHits.value : { error: cdnHits.reason && cdnHits.reason.message },
@@ -311,6 +316,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
       cachePolicy: cachePolicy.status === 'fulfilled' ? cachePolicy.value : { error: cachePolicy.reason && cachePolicy.reason.message },
       imgTypes: imgTypes.status === 'fulfilled' ? imgTypes.value : { error: imgTypes.reason && imgTypes.reason.message },
       external: extHealth.status === 'fulfilled' ? extHealth.value : { error: extHealth.reason && extHealth.reason.message },
+      localResources: localRes.status === 'fulfilled' ? localRes.value : { error: localRes.reason && localRes.reason.message },
     };
   }
   const deepEv = deepResults || {};
@@ -348,6 +354,22 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
     deepRan: !!runDeep,
     deepSkipped: !runDeep && deep ? '预算不足（used=' + requestsUsed() + '）' : !deep ? 'deep=false' : null,
   };
+
+  // ---- GEO extended evidence (zero-request derivations from already-fetched data) ----
+  {
+    const rp = evidence.rootParsed || {};
+    evidence.geoExtra = {
+      dataDensity: dataPointDensity(rp.bodyText || ''),
+      dateSignals: dateSignals(rp),
+      authorByline: authorByline(rp),
+      authoritativeCitations: authoritativeCitations(rp.externalHosts || []),
+      entityConsistency: entityConsistency(rp),
+      llmsStructure: llmsStructure((llmsRes && llmsRes.content) || ''),
+      staticHtmlContent: staticHtmlContent(rp),
+      aigcDisclosure: aigcDisclosure(rp),
+      qaBlocks: qaBlocks(rp),
+    };
+  }
 
   // ---- TTFB samples across repeated homepage fetches (for the stability check) ----
   evidence.ttfbSamples = [rootPage.ttfbMs, ...((deepEv.cdnHits && deepEv.cdnHits.samples) || []).map((s) => s.ttfbMs)].filter((v) => typeof v === 'number' && v > 0);
@@ -484,6 +506,8 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
     exposure: deepEv.exposure,
     imgTypes: deepEv.imgTypes,
     externalHealth: deepEv.external,
+    localResources: deepEv.localResources,
+    geoExtra: evidence.geoExtra,
   });
 
   return {
@@ -540,6 +564,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
       lcpCandidate: evidence.lcpCandidate,
       requestStats: evidence.requestStats,
       budget: evidence.budget,
+      geoExtra: evidence.geoExtra,
       deep: deepResults ? {
         cdnHits: deepEv.cdnHits,
         cachePolicy: deepEv.cachePolicy,
@@ -549,9 +574,11 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
         exposure: deepEv.exposure,
         imgTypes: deepEv.imgTypes,
         external: deepEv.external,
+        localResources: deepEv.localResources,
       } : null,
     },
     checks,
+    score: computeScore(checks),
   };
 }
 

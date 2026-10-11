@@ -134,7 +134,7 @@ async function probeLlms(baseUrl, { timeoutMs = 8000 } = {}) {
       const looksLikeText = !/^\s*(<!DOCTYPE html|<html)/i.test(body.trim());
       if (res.status === 200 && looksLikeText && body.trim().length) {
         found = true;
-        content = body.slice(0, 500);
+        content = body.slice(0, 5000);
       }
     } catch (e) {
       probes.push({ url: u, status: 0 });

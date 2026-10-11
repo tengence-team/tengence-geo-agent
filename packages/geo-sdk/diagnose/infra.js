@@ -125,6 +125,38 @@ async function probeExternalResources(urls = [], { timeoutMs = 8000, maxUrls = 2
   return { probes, failed };
 }
 
+/**
+ * Probe a small sample of the homepage's own css/js resources (HEAD-first) to
+ * surface broken local assets (404 on a referenced stylesheet/script).
+ * @returns {Promise<{probes:Array<{url:string,path:string,status:number}>}>}
+ */
+async function probeLocalResources(baseUrl, parsed, { timeoutMs = 8000, maxUrls = 4 } = {}) {
+  const css = (parsed && parsed.stylesheets && parsed.stylesheets.srcs) || [];
+  const js = (parsed && parsed.scripts && parsed.scripts.srcs) || [];
+  const pool = [...css, ...js]
+    .map((u) => {
+      try {
+        return new URL(u, baseUrl).href;
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+  const unique = [...new Set(pool)].slice(0, Math.max(1, maxUrls));
+  const probes = [];
+  for (const url of unique) {
+    let path = url;
+    try {
+      path = new URL(url).pathname;
+    } catch {
+      /* noop */
+    }
+    const res = await fetchPage(url, { timeoutMs, method: 'HEAD' });
+    probes.push({ url, path, status: res.status || 0, error: res.error || null });
+  }
+  return { probes };
+}
+
 module.exports = {
-  probeSubdomains, probeMobileRedirect, checkSanUsage, probeExternalResources, SUBDOMAIN_CANDIDATES,
+  probeSubdomains, probeMobileRedirect, checkSanUsage, probeExternalResources, probeLocalResources, SUBDOMAIN_CANDIDATES,
 };

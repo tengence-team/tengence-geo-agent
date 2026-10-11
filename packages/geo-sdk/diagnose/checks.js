@@ -9,6 +9,10 @@
  */
 
 const { normLang } = require('./i18n');
+const {
+  dataPointDensity, dateSignals, authorByline, authoritativeCitations,
+  entityConsistency, llmsStructure, staticHtmlContent, aigcDisclosure, qaBlocks,
+} = require('./geo-extra');
 
 function check(dimension, name, status, detail, id) {
   const suffix = id || `${dimension}-${name}`.replace(/[\/\\]/g, '-');
@@ -63,6 +67,8 @@ function buildChecks(ev) {
   const ck = ev.cookieFlags || {};
   const pages = ev.pages || [];
   const h = rp.headers || {};
+  const geoX = ev.geoExtra || {};
+  const locRes = ev.localResources || {};
 
   const lower = {};
   for (const [k, v] of Object.entries(h)) lower[k.toLowerCase()] = String(v || '');
@@ -254,6 +260,16 @@ function buildChecks(ev) {
     C.push(check('security', 'apex HTTPS 可用性', 'info', '未探测'));
   }
 
+  // ---- Subresource Integrity (SRI) — script/link integrity attribute ----
+  const sriTotal = (rp.sri && (rp.sri.scripts + rp.sri.links)) || 0;
+  if (sriTotal > 0) {
+    C.push(check('security', '子资源完整性 (SRI)', rp.sri.scriptsWithIntegrity > 0 ? 'pass' : 'warn',
+      `带 integrity 的资源 ${sriTotal} 个（脚本 ${rp.sri.scriptsWithIntegrity}/${rp.sri.scripts} · 样式 ${rp.sri.linksWithIntegrity}/${rp.sri.links}）${rp.sri.scriptsWithIntegrity > 0 ? '' : '（外部脚本均未启用 SRI，供应链篡改风险）'}`));
+  } else {
+    C.push(check('security', '子资源完整性 (SRI)', rp.scripts && rp.scripts.count ? 'warn' : 'info',
+      rp.scripts && rp.scripts.count ? `${rp.scripts.count} 个脚本均无 integrity（子资源完整性缺失，建议对第三方脚本启用 SRI）` : '无外部脚本（SRI 不适用）'));
+  }
+
   // ============ 爬取可达性 ============
   C.push(check('crawl', 'robots.txt', rob.exists ? 'pass' : 'fail', rob.exists ? '已提供' : '缺失/空'));
   if (rob.exists) {
@@ -348,6 +364,12 @@ function buildChecks(ev) {
     rp.wafIntercepted
       ? `抓取被重定向到 ${rp.finalUrl}（离开目标域名）——无头客户端拿到 WAF 验证页而非真实内容，正文/Title/结构化等页面级检查以挑战页为准，须浏览器补充核实`
       : '普通抓取可直接获取内容（未被 WAF 挑战拦截）'));
+
+  // ---- pagination markup (rel prev/next) ----
+  const pn = (rp.relPrevNext || []).length;
+  C.push(check('crawl', '分页/翻页规范', pn > 0 ? 'pass' : 'info',
+    pn ? `已声明分页: ${rp.relPrevNext.map((x) => `${x.rel}→${(() => { try { return new URL(x.href).pathname; } catch { return x.href; } })()}`).slice(0, 4).join(' | ')}` : '未发现 rel=prev/next 分页标记（若存在列表分页，搜索引擎可能合并/漏收录）'));
+
 
   // ============ 内容 SEO ============
   const t = (rp.title || '').length;
@@ -455,6 +477,39 @@ function buildChecks(ev) {
   const ogImg = og.image;
   C.push(check('content', '社交分享图片', ogImg && twImg ? 'pass' : ogImg || twImg ? 'warn' : 'fail',
     `og:image=${!!ogImg} twitter:image=${!!twImg}${ogImg && !twImg ? '｜缺 twitter:image（Twitter/X 分享无图）' : !ogImg && twImg ? '｜缺 og:image（Facebook/微信等无图）' : !ogImg && !twImg ? '｜两者均缺失，社交分享卡片将无图' : ''}`));
+
+  // ---- OG vs Twitter metadata consistency ----
+  const ogM = rp.og || {};
+  const twM = rp.twitter || {};
+  const ogTwMismatch = [];
+  if (ogM.title && twM.title && String(ogM.title).trim() !== String(twM.title).trim()) ogTwMismatch.push('标题');
+  if (ogM.description && twM.description && String(ogM.description).trim() !== String(twM.description).trim()) ogTwMismatch.push('描述');
+  C.push(check('content', 'OG/Twitter 元数据一致性', !ogM.title && !twM.title ? 'info' : ogTwMismatch.length ? 'warn' : 'pass',
+    ogM.title || twM.title
+      ? ogTwMismatch.length
+        ? `og 与 twitter ${ogTwMismatch.join('、')}不一致（分享卡片两平台呈现不同内容）`
+        : `og 与 twitter 标题/描述一致（分享卡片统一）`
+      : '未配置分享元数据'));
+
+  // ---- article date visibility in rendered content ----
+  const pageDateRe = /\b(19|20)\d{2}[-/年]\d{1,2}(?:[-/月]\d{1,2})?日?\b|发布于|更新于|时间：/;
+  const dateVisible = pages.some((p) => p.parsed && p.parsed.bodyText && pageDateRe.test(p.parsed.bodyText.slice(0, 3000)));
+  const hasArticlePages = pages.some((p) => /blog|article|news|post|news/i.test(p.url));
+  C.push(check('content', '文章日期可见性', !hasArticlePages ? 'info' : dateVisible ? 'pass' : 'warn',
+    hasArticlePages
+      ? dateVisible ? '文章页正文可见日期（读者与 AI 均可判断时效）' : '文章页未在正文显示日期（时效信号弱）'
+      : '未发现文章类页面'));
+
+  // ---- local page resources: do the referenced css/js actually resolve? ----
+  const localRes = (locRes.probes || []).slice(0, 2);
+  if (localRes.length) {
+    const bad = localRes.filter((x) => x.status === 404);
+    C.push(check('content', '页面本地资源 404', bad.length === 0 ? 'pass' : 'warn',
+      `${localRes.map((x) => `${x.path} → ${x.status}`).join(' | ')}${bad.length ? `｜${bad.length} 个本地资源返回 404（页面功能/样式可能残缺）` : ''}`));
+  } else {
+    C.push(check('content', '页面本地资源 404', 'info', '未抽样本地 css/js 资源'));
+  }
+
 
   // ---- image real format: declared extension vs served Content-Type ----
   const imgTypes = ev.imgTypes || { mismatches: [], probes: [] };
@@ -580,14 +635,74 @@ function buildChecks(ev) {
   C.push(check('geo', 'Product/Offer 实体', hasProduct ? 'pass' : hasProductPage ? 'warn' : 'info',
     hasProduct ? '已声明 Product/Offer 级实体' : hasProductPage ? '有产品类页面但未声明 Product 结构化实体' : '未发现产品类页面/实体'));
 
+  // ---- GEO extended signals (best-practice additions, zero extra requests) ----
+  const dens = geoX.dataDensity || { points: 0, per500: 0, wordCount: 0 };
+  C.push(check('geo', '数据引用密度', dens.wordCount ? (dens.per500 >= 3 ? 'pass' : dens.per500 >= 1 ? 'warn' : 'fail') : 'info',
+    dens.wordCount
+      ? `正文 ${dens.wordCount} 词 · 具体数据点 ${dens.points} 个 · 每 500 词 ${dens.per500} 个${dens.per500 >= 3 ? '（≥3，符合 Princeton 可引用密度）' : dens.per500 >= 1 ? '（低于 3/500 词，AI 引用证据不足）' : '（几乎无具体数据，AI 难以引用）'}`
+      : '无正文可统计'));
+
+  const ds = geoX.dateSignals || {};
+  const dateSt = ds.published ? (ds.gapDays !== null && ds.gapDays <= 365 ? 'pass' : 'warn') : 'warn';
+  C.push(check('geo', '日期信号', dateSt,
+    ds.published
+      ? `published=${String(ds.published).slice(0, 10)}${ds.modified ? ` modified=${String(ds.modified).slice(0, 10)}` : ''}${ds.gapDays !== null ? ` · 更新间隔 ${ds.gapDays} 天${ds.gapDays > 365 ? '（超 12 个月，陈旧）' : ''}` : ''}（来源: ${ds.source}）`
+      : '未发现 datePublished/dateModified（AI 无法判断内容时效）'));
+
+  const ab = geoX.authorByline || {};
+  C.push(check('geo', '作者署名 (E-E-A-T)', ab.author ? 'pass' : 'info',
+    ab.author ? `作者: ${ab.author}（来源: ${ab.source}）` : '未发现作者署名（AI 引用缺少 E-E-A-T 锚点）'));
+
+  const cites = geoX.authoritativeCitations || { total: 0, authoritative: 0, hosts: [], authoritativeHosts: [] };
+  C.push(check('geo', '权威来源引用', cites.total ? (cites.authoritative > 0 ? 'pass' : 'warn') : 'info',
+    cites.total
+      ? `外链 ${cites.total} 个 · 权威域 ${cites.authoritative} 个${cites.authoritative ? `: ${cites.authoritativeHosts.join(', ')}` : '（无政府/学术/标准机构来源，可信度信号弱）'}`
+      : '页面无外部引用链接'));
+
+  const ec = geoX.entityConsistency || { declared: false };
+  const ecSt = !ec.declared ? 'info' : ec.nameConsistent === null ? 'info' : ec.nameConsistent ? 'pass' : 'warn';
+  C.push(check('geo', '实体一致性', ecSt,
+    ec.declared
+      ? `Organization schema name=${ec.name || '?'} vs 页面标题「${(ec.title || '').slice(0, 30)}」${ec.nameConsistent === null ? '（无法比对，标题过短/不同）' : ec.nameConsistent ? '（一致）' : '（不一致，AI 实体识别可能错乱）'}${ec.logo ? ` · logo ${ec.logoOnPage ? '页面可见' : '页面未见'}` : ''}`
+      : '未声明 Organization 实体（无一致性可核）'));
+
+  const ls = geoX.llmsStructure || { specCompliant: false };
+  C.push(check('geo', 'llms.txt 结构规范', ls.specCompliant ? 'pass' : (llms.found ? 'warn' : 'info'),
+    llms.found
+      ? `H1${ls.h1 ? ' ✓' : ' ✗'} · blockquote${ls.blockquote ? ' ✓' : ' ✗'} · H2 分区 ${ls.sections} · 链接 ${ls.links} 个${ls.described ? `（${ls.described} 带描述）` : ''}${ls.specCompliant ? '（符合 llms.txt 规范）' : '（未完全符合规范：需 H1 品牌名 + blockquote 描述 + H2 分类 + 链接带描述）'}`
+      : '未发现 /llms.txt'));
+
+  const sh = geoX.staticHtmlContent || { textLength: 0, h1s: 0, staticOk: false };
+  C.push(check('geo', '关键内容静态 HTML', sh.staticOk ? 'pass' : sh.textLength > 0 ? 'warn' : 'fail',
+    sh.staticOk
+      ? `正文 ${sh.textLength} 字符 + H1 ${sh.h1s} 个，均以静态 HTML 呈现（AI 爬虫无需执行 JS 即可读）`
+      : `正文 ${sh.textLength} 字符 · H1 ${sh.h1s} 个${sh.textLength < 800 ? '（核心内容疑似依赖 JS 渲染，AI 爬虫可能读不到）' : ''}`));
+
+  const aigc = geoX.aigcDisclosure || { declared: false };
+  C.push(check('geo', 'AI 生成内容标识', aigc.declared ? 'info' : 'warn',
+    aigc.declared ? `已声明 AI 生成内容: 「${aigc.match}」（GB 45438 标识方向）` : '未发现 AI 生成内容声明（若含 AI 生成内容，建议按 GB 45438 做标识）'));
+
+  const qa = geoX.qaBlocks || { count: 0 };
+  C.push(check('geo', '问答块 (答案块)', qa.count > 0 ? 'pass' : 'info',
+    qa.count
+      ? `问答信号 ${qa.count} 处${qa.questionHeadings ? `（问句标题 ${qa.questionHeadings}）` : ''}${qa.details ? `（details/summary ${qa.details}）` : ''}${qa.faqText ? '（FAQ 文本）' : ''}${qa.samples && qa.samples.length ? `｜示例: ${qa.samples.slice(0, 2).join('; ')}` : ''}`
+      : '未发现问答/答案块结构（AI 直接回答时缺少可引用的 Q&A 片段）'));
+
+
   // ============ 性能 ============
-  const resCount = (rp.scripts ? rp.scripts.count : 0) + (rp.stylesheets || 0) + (rp.images ? rp.images.count : 0);
+  const cssCount = (rp.stylesheets && rp.stylesheets.count) || 0;
+  const resCount = (rp.scripts ? rp.scripts.count : 0) + cssCount + (rp.images ? rp.images.count : 0);
   C.push(check('perf', '首屏资源量', resCount < 50 ? 'pass' : resCount < 100 ? 'warn' : 'fail',
-    `script×${rp.scripts ? rp.scripts.count : 0} + css×${rp.stylesheets || 0} + img×${rp.images ? rp.images.count : 0} = ${resCount}`));
+    `script×${rp.scripts ? rp.scripts.count : 0} + css×${cssCount} + img×${rp.images ? rp.images.count : 0} = ${resCount}`));
   C.push(check('perf', '渲染阻塞脚本', (rp.scripts && rp.scripts.blocking) || 0 <= 3 ? 'pass' : 'warn',
     `${rp.scripts ? rp.scripts.blocking : 0} 个无 defer/async 的外部脚本`));
   C.push(check('perf', '图片懒加载', rp.images && rp.images.lazy > 0 ? 'pass' : 'info',
     `${rp.images ? rp.images.lazy : 0}/${rp.images ? rp.images.count : 0} 张图启用懒加载`));
+
+  // ---- resource hints (preconnect/preload/dns-prefetch) ----
+  const hints = (rp.resourceHints || []).length;
+  C.push(check('perf', '资源预连接提示', hints > 0 ? 'pass' : 'info',
+    hints ? `${rp.resourceHints.map((x) => `${x.rel}→${(() => { try { return new URL(x.href).hostname || x.href; } catch { return x.href; } })()}`).slice(0, 5).join(' | ')}（共 ${hints} 条）` : '未发现 preconnect/preload/dns-prefetch（第三方资源握手未预热）'));
 
   // ---- LCP candidate: biggest first-viewport element as a rough Web-Vitals proxy ----
   const lcp = ev.lcpCandidate || null;
@@ -696,4 +811,36 @@ function buildChecks(ev) {
   return C;
 }
 
-module.exports = { buildChecks };
+/** Weighted overall score (0–100) + per-group breakdown + letter grade.
+ *  Groups follow the GEO-first positioning of this engine:
+ *    GEO 30% · SEO 25% · 技术 20% · 性能 15% · 暴露面/子域 10%
+ *  Per-item weight: pass=1 · info=0.5 · warn=0.3 · fail=0. */
+function computeScore(checks) {
+  const GROUPS = [
+    { key: 'geo', name: 'GEO', weight: 0.3, dims: ['geo', 'i18n'] },
+    { key: 'seo', name: 'SEO', weight: 0.25, dims: ['content', 'crawl'] },
+    { key: 'tech', name: '技术', weight: 0.2, dims: ['domain', 'tech', 'security', 'platform'] },
+    { key: 'perf', name: '性能', weight: 0.15, dims: ['perf', 'cdn'] },
+    { key: 'edge', name: '暴露面/子域', weight: 0.1, dims: ['subdomains', 'exposure'] },
+  ];
+  const w = { pass: 1, info: 0.5, warn: 0.3, fail: 0 };
+  const groups = GROUPS.map((g) => {
+    const items = (checks || []).filter((c) => g.dims.includes(c.dimension));
+    const total = items.length;
+    const sum = items.reduce((a, c) => a + (w[c.status] !== undefined ? w[c.status] : 0.5), 0);
+    return {
+      key: g.key, name: g.name, weight: g.weight, total,
+      score: total ? Math.round((sum / total) * 1000) / 10 : null,
+      pass: items.filter((c) => c.status === 'pass').length,
+      info: items.filter((c) => c.status === 'info').length,
+      warn: items.filter((c) => c.status === 'warn').length,
+      fail: items.filter((c) => c.status === 'fail').length,
+    };
+  });
+  const weighted = groups.filter((g) => g.score !== null);
+  const total = Math.round(weighted.reduce((a, g) => a + g.score * g.weight, 0) * 10) / 10;
+  const grade = total >= 90 ? 'A' : total >= 75 ? 'B' : total >= 60 ? 'C' : 'D';
+  return { total, grade, groups, covered: weighted.reduce((a, g) => a + g.total, 0) };
+}
+
+module.exports = { buildChecks, computeScore };

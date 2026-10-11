@@ -151,7 +151,43 @@ function parsePage(html, baseUrl) {
       if (scripts.srcs.length < 20) scripts.srcs.push(src);
     }
   });
-  const stylesheets = $('link[rel="stylesheet"]').length;
+  const stylesheets = { count: 0, srcs: [] };
+  $('link[rel="stylesheet"]').each((i, el) => {
+    stylesheets.count++;
+    const href = $(el).attr('href');
+    if (href && stylesheets.srcs.length < 12) stylesheets.srcs.push(href);
+  });
+
+  // ---- Subresource Integrity (SRI) presence on external script/link tags ----
+  const sri = { scripts: 0, scriptsWithIntegrity: 0, links: 0, linksWithIntegrity: 0 };
+  $('script[src]').each((i, el) => {
+    sri.scripts++;
+    if ($(el).attr('integrity')) sri.scriptsWithIntegrity++;
+  });
+  $('link[rel="stylesheet"][href]').each((i, el) => {
+    sri.links++;
+    if ($(el).attr('integrity')) sri.linksWithIntegrity++;
+  });
+
+  // ---- resource hints & pagination (SEO/performance signals) ----
+  const resourceHints = [];
+  $('link[rel="preconnect"], link[rel="preload"], link[rel="dns-prefetch"]').each((i, el) => {
+    const href = $(el).attr('href');
+    if (href) resourceHints.push({ rel: $(el).attr('rel'), href });
+  });
+  const relPrevNext = [];
+  $('link[rel="prev"], link[rel="next"]').each((i, el) => {
+    relPrevNext.push({ rel: $(el).attr('rel'), href: $(el).attr('href') });
+  });
+
+  // ---- author byline (E-E-A-T signal) ----
+  const authorMeta = meta.author || null;
+  let bylineText = null;
+  $('[class*="author"], [class*="byline"], [rel="author"]').each((i, el) => {
+    const t = $(el).text().replace(/\s+/g, ' ').trim();
+    if (t && t.length > 1 && t.length < 80 && !bylineText) bylineText = t;
+  });
+  const byline = authorMeta || bylineText || null;
 
   // ---- JSON-LD ----
   const jsonld = [];
@@ -176,6 +212,22 @@ function parsePage(html, baseUrl) {
   const bodyText = $('body').text().replace(/\s+/g, ' ').trim();
   const blockquotes = $('blockquote').length;
   const lists = $('ul').length + $('ol').length;
+
+  // ---- Q&A / answer-block signals (quoteable structure for AI engines) ----
+  const qaSignals = {
+    faqText: /faq|常见问题|questions?\s*(and|&)\s*answers/i.test(bodyText.slice(0, 3000)),
+    details: $('details, summary').length,
+    questionHeadings: 0,
+    samples: [],
+  };
+  for (const h of ['h2', 'h3']) {
+    for (const t of (headings[h] && headings[h].samples) || []) {
+      if (/[?？]/.test(t)) {
+        qaSignals.questionHeadings++;
+        if (qaSignals.samples.length < 4) qaSignals.samples.push(t.slice(0, 60));
+      }
+    }
+  }
 
   // ---- forms / iframes / video / audio ----
   const forms = $('form').length;
@@ -218,6 +270,7 @@ function parsePage(html, baseUrl) {
 
   // ---- third-party resource hosts (analytics/CDN/embeds — privacy & risk audit) ----
   const thirdPartyHosts = [];
+  const externalHosts = [];
   {
     const seen = new Set();
     const push = (h) => {
@@ -236,7 +289,11 @@ function parsePage(html, baseUrl) {
     for (const s of (links.samples || [])) {
       if (s.nofollow || !s.href) continue;
       try {
-        if (new URL(s.href, baseUrl).hostname !== host) push(new URL(s.href, baseUrl).hostname);
+        const h2 = new URL(s.href, baseUrl).hostname;
+        if (h2 !== host) {
+          push(h2);
+          if (externalHosts.length < 30 && !externalHosts.includes(h2)) externalHosts.push(h2);
+        }
       } catch { /* noop */ }
     }
   }
@@ -275,6 +332,12 @@ function parsePage(html, baseUrl) {
     },
     scripts: { count: scripts.count, blocking: scripts.blocking, srcs: scripts.srcs },
     stylesheets,
+    sri,
+    resourceHints,
+    relPrevNext,
+    byline,
+    qaSignals,
+    externalHosts,
     jsonld: { count: jsonld.length, types: jsonldTypes, samples: jsonld.slice(0, 3) },
     og: {
       title: meta['og:title'] || null,
@@ -292,6 +355,7 @@ function parsePage(html, baseUrl) {
       image: meta['twitter:image'] || null,
     },
     textLength: bodyText.length,
+    bodyText: bodyText.slice(0, 10000),
     wordCount,
     cjkChars,
     latinWords,

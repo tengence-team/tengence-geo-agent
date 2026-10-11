@@ -214,6 +214,43 @@ after(() => {
 
 // ---------------- pure-function unit tests ----------------
 
+test('computeScore: weighted groups, bounded total, letter grade', () => {
+  const { computeScore } = require('../packages/geo-sdk/diagnose/checks');
+  const mk = (dimension, status) => ({ dimension, status });
+  const checks = [
+    // GEO 组 (geo + i18n): 10 项 — 5 pass / 2 info / 2 warn / 1 fail
+    mk('geo', 'pass'), mk('geo', 'pass'), mk('geo', 'pass'), mk('geo', 'pass'), mk('geo', 'pass'),
+    mk('geo', 'info'), mk('geo', 'info'), mk('geo', 'warn'), mk('geo', 'warn'), mk('geo', 'fail'),
+    mk('i18n', 'pass'),
+    // SEO 组 (content + crawl): 10 项 — 6 pass / 1 info / 2 warn / 1 fail
+    mk('content', 'pass'), mk('content', 'pass'), mk('content', 'pass'), mk('content', 'pass'),
+    mk('content', 'pass'), mk('content', 'pass'), mk('content', 'info'), mk('content', 'warn'),
+    mk('crawl', 'warn'), mk('crawl', 'fail'),
+    // 技术 组: 10 项 — 7 pass / 2 warn / 1 fail
+    mk('domain', 'pass'), mk('tech', 'pass'), mk('tech', 'pass'), mk('tech', 'pass'),
+    mk('security', 'pass'), mk('security', 'pass'), mk('security', 'pass'), mk('platform', 'pass'),
+    mk('tech', 'warn'), mk('tech', 'warn'), mk('domain', 'fail'),
+    // 性能 组 (perf + cdn): 6 项 — 4 pass / 1 warn / 1 fail
+    mk('perf', 'pass'), mk('perf', 'pass'), mk('perf', 'pass'), mk('perf', 'pass'),
+    mk('cdn', 'warn'), mk('cdn', 'fail'),
+    // 暴露 组 (subdomains + exposure): 5 项 — 3 pass / 1 warn / 1 fail
+    mk('subdomains', 'pass'), mk('subdomains', 'pass'), mk('subdomains', 'pass'),
+    mk('exposure', 'warn'), mk('exposure', 'fail'),
+    // 未分组项 (应被排除但占比微小)
+    mk('whois', 'fail'),
+  ];
+  const sc = computeScore(checks);
+  assert.equal(sc.groups.length, 5);
+  // GEO: (6×1 + 2×0.5 + 2×0.3 + 1×0) / 11 = 7.6/11 → 69.1
+  assert.equal(sc.groups.find((g) => g.key === 'geo').score, 69.1);
+  // SEO: (6×1 + 1×0.5 + 2×0.3 + 1×0) / 10 = 7.1 → 71
+  assert.equal(sc.groups.find((g) => g.key === 'seo').score, 71);
+  // tech: (8×1 + 2×0.3 + 1×0) / 11 = 8.6/11 → 78.2
+  assert.equal(sc.groups.find((g) => g.key === 'tech').score, 78.2);
+  assert.ok(sc.total > 60 && sc.total < 80, `total ${sc.total} should sit in C/B range`);
+  assert.equal(sc.groups.reduce((a, g) => a + g.weight, 0), 1);
+});
+
 test('languageDistribution: counts prefixes and reports missing declared languages', () => {
   const urls = [
     'https://x.com/zh-hans/a', 'https://x.com/zh-hans/b', 'https://x.com/zh-hant/a',
@@ -275,7 +312,7 @@ test('classifyCacheValue + classifyCname: vendor tagging', () => {
 
 // ---------------- integration: full run against the trilingual mock ----------------
 
-test('diagnose_site (deep): 100 checks, four new dimensions, budget respected', async () => {
+test('diagnose_site (deep): 111 checks, four new dimensions + GEO pack + score, budget respected', async () => {
   const res = await diagnose.runDiagnosis({ url: `${BASE}/`, deep: true, maxRequests: 700 });
   assert.equal(res.ok, true);
   const checks = res.checks;
@@ -310,7 +347,27 @@ test('diagnose_site (deep): 100 checks, four new dimensions, budget respected', 
   for (const n of NEW_NAMES) {
     assert.ok(byName[n], `missing new check: ${n}`);
   }
-  assert.equal(checks.length, 96, `expected 96 checks on the mock site, got ${checks.length}`);
+  // ---- v3 GEO/SEO extended pack (15 additional checks) ----
+  const GEO_NAMES = [
+    '数据引用密度', '日期信号', '作者署名 (E-E-A-T)', '权威来源引用', '实体一致性',
+    'llms.txt 结构规范', '关键内容静态 HTML', 'AI 生成内容标识', '问答块 (答案块)',
+    '子资源完整性 (SRI)', '资源预连接提示', '文章日期可见性', '页面本地资源 404',
+    '分页/翻页规范', 'OG/Twitter 元数据一致性',
+  ];
+  for (const n of GEO_NAMES) {
+    assert.ok(byName[n], `missing GEO/SEO check: ${n}`);
+  }
+  assert.equal(checks.length, 111, `expected 111 checks on the mock site, got ${checks.length}`);
+  // ---- overall score: present, bounded, graded, grouped ----
+  const sc = res.score;
+  assert.ok(sc && typeof sc.total === 'number', 'score.total missing');
+  assert.ok(sc.total >= 0 && sc.total <= 100, `score out of range: ${sc.total}`);
+  assert.ok(['A', 'B', 'C', 'D'].includes(sc.grade), `bad grade ${sc.grade}`);
+  assert.equal(sc.groups.length, 5, 'score must have 5 weighted groups');
+  assert.equal(sc.groups.reduce((a, g) => a + g.weight, 0), 1, 'group weights must sum to 1');
+  assert.ok(sc.groups.every((g) => g.total > 0), 'every group must cover checks');
+  assert.ok(sc.covered >= checks.length - 15, 'covered groups must account for nearly all checks');
+  assert.ok(res.evidence.geoExtra && res.evidence.geoExtra.dataDensity, 'geoExtra evidence missing');
   // budget accounting
   assert.ok(res.evidence.budget, 'budget evidence missing');
   assert.ok(res.evidence.budget.used <= 700, `budget blown: ${res.evidence.budget.used}`);
