@@ -37,7 +37,7 @@ description: 对目标站点执行一次性、只读、全面的 GEO/SEO 技术�
 | content | 29 | Title/Meta/跨页唯一性、正文重复、Canonical、H1/标题层级、图片 alt/格式/尺寸/格式一致性、正文量/词数、内链、viewport/lang/charset、统计代码、OG/Twitter、分享图片、OG/Twitter 一致性、文章日期可见性、本地资源 404、第三方域名 |
 | geo | 24 | JSON-LD 站点/文章/FAQPage/Breadcrumb/Product 实体、可引用内容、robots meta/指令一致性、llms.txt、SEO/GEO 爬虫可达性×2、多语言独立版本、数据引用密度、日期信号、作者署名、权威来源引用、实体一致性、llms.txt 结构规范、静态 HTML 内容、AI 生成内容标识、问答块 |
 | i18n | 5 | 首页 hreflang 对称性、404 本地化、语言切换器、hreflang 大小写统一、多语言文章覆盖度 |
-| perf | 6 | 首屏资源量、渲染阻塞脚本、图片懒加载、资源预连接、LCP 候选、静态资源缓存策略 |
+| perf | 6 | 首屏资源量（按唯一 URL 去重：script/css/img 的 srcs 合集 Set 计数，复用资源合并）、渲染阻塞脚本、图片懒加载、资源预连接、LCP 候选、静态资源缓存策略 |
 | cdn | 1 | CDN 缓存命中率抽样 |
 | subdomains | 1 | 子域健康巡检（www/m/static/api 等） |
 | exposure | 1 | 后台/隐藏路径暴露面 |
