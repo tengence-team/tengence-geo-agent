@@ -99,20 +99,46 @@ function parseFaqFromBody(content) {
     const faqText = faqLines.join('\n');
     const pairs = [];
 
-    // notation ①: bold questions
-    const toPlainAnswer = (raw) =>
-      '<p>' + String(raw)
-        .split('\n')
-        .map((l) => l.replace(/^\s*>+\s?/, '').replace(/^(?:答|A)\s*[:：]\s*/, '').trim())
-        .filter(Boolean)
-        .join(' ')
+    // notation ①: bold questions — plain (问：/問：/Q:), traditional (問：) and the
+    // numbered form used by translated bodies (**Q1: …** / **問1：…**)
+    const toPlainAnswer = (raw) => {
+      // md tables inside an answer → plain rows: drop header + separator line,
+      // join cells with a space and rows with '；' (matches the meta plain-text SSOT)
+      const lines = String(raw).split('\n');
+      const out = [];
+      let tbl = [];
+      const flushTable = () => {
+        if (!tbl.length) return;
+        const rows = tbl
+          .map((l) => l.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => c
+            .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+            .replace(/\*\*|`/g, '').trim()))
+          .filter((cells) => cells.some(Boolean))
+          .filter((cells) => !cells.every((c) => /^:?-{2,}:?$/.test(c))); // separator row
+        if (rows.length > 2) rows.shift(); // header row dropped (column names repeat in every row)
+        for (const cells of rows) {
+          const r = cells.filter(Boolean).join(' ').trim();
+          if (r) out.push(r);
+        }
+        tbl = [];
+      };
+      for (const line of lines) {
+        if (/^\s*\|.*\|\s*$/.test(line)) { tbl.push(line); continue; }
+        flushTable();
+        const t = line.replace(/^\s*>+\s?/, '').replace(/^(?:答|A)\s*[:：]\s*/, '').trim();
+        if (t) out.push(t);
+      }
+      flushTable();
+      return out.join(' ')
         .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // [text](url) → text
         .replace(/\*\*|`/g, '')
-        .trim() + '</p>';
-    for (const b of faqText.split(/\*\*问：|\*\*問：|\*\*Q:/).slice(1)) {
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+    for (const b of faqText.split(/\*\*(?:问|問|Q)\d*\s*[：:]/).slice(1)) {
       const m = b.match(/^\s*([^*]+?)\*\*\s*([\s\S]*)$/);
       if (!m) continue;
-      const question = m[1].trim().replace(/^(?:问|問)[:：]\s*/, '').replace(/[:：]\s*$/, '').trim();
+      const question = m[1].trim().replace(/^(?:问|問|Q)\d*\s*[:：]\s*/, '').replace(/[:：]\s*$/, '').trim();
       const answerRaw = m[2].trim();
       if (!question || !answerRaw) continue;
       pairs.push({ question, answer: toPlainAnswer(answerRaw) });

@@ -122,7 +122,7 @@ test('parseFaqFromBody: traditional heading (常見問題) and H3 question rows 
   const json2 = parseFaqFromBody('## 常見問題\n\n> **問：測試要多久？**\n>\n> 答：十四天。');
   const parsed2 = JSON.parse(json2);
   assert.equal(parsed2[0].question, '測試要多久？');
-  assert.equal(parsed2[0].answer, '<p>十四天。</p>', 'blockquote markers and the 答： prefix are stripped from the answer');
+  assert.equal(parsed2[0].answer, '十四天。', 'blockquote markers and the 答： prefix are stripped; answers stay plain text (SSOT)');
 });
 
 test('langToOgLocale maps language codes to Open Graph locales', () => {
@@ -159,4 +159,39 @@ test('seo_og_locale is always emitted (overrides the WP plugin zh_CN default)', 
   const existing = { seo_og_locale: 'zh_CN' };
   const meta = buildSeoGeoMeta(ARTICLE, CONFIG, existing, 'en');
   assert.equal(meta.seo_og_locale, 'en_US');
+});
+
+test('parseFaqFromBody: numbered bold questions (**Q1:/問1：) and md tables in answers', () => {
+  const { parseFaqFromBody } = require('../packages/geo-sdk/content/meta.js');
+  const json = parseFaqFromBody([
+    '## FAQ',
+    '',
+    '**Q1: Should they be merged?**',
+    'A: Not necessarily.',
+    '',
+    '**Q2: Does a small site need it?**',
+    'A: It depends on scale.',
+  ].join('\n'));
+  const parsed = JSON.parse(json);
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].question, 'Should they be merged?');
+  assert.equal(parsed[1].answer, 'It depends on scale.');
+
+  const json2 = parseFaqFromBody([
+    '## 常見問題',
+    '',
+    '**問1：團隊要多少人？**',
+    'A：參考配置：',
+    '',
+    '| 規模 | 最低 | 推薦 |',
+    '|---|---|---|',
+    '| 小型 | 1 | 2 |',
+    '| 中型 | 2 | 3 |',
+    '',
+    '視複雜度而定。',
+  ].join('\n'));
+  const parsed2 = JSON.parse(json2);
+  assert.equal(parsed2.length, 1);
+  assert.equal(parsed2[0].question, '團隊要多少人？');
+  assert.equal(parsed2[0].answer, '參考配置： 小型 1 2 中型 2 3 視複雜度而定。');
 });
