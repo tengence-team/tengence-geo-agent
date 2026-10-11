@@ -152,11 +152,29 @@ function aigcDisclosure(parsed) {
   return { declared: !!m, match: m ? m[0].slice(0, 40) : null };
 }
 
-/** Question/answer answer-block presence (LLM-quoteable structure). */
-function qaBlocks(parsed) {
-  const q = (parsed && parsed.qaSignals) || {};
-  const total = (q.questionHeadings || 0) + (q.details || 0) + (q.faqText ? 1 : 0);
-  return { count: total, questionHeadings: q.questionHeadings || 0, details: q.details || 0, faqText: !!q.faqText, samples: (q.samples || []).slice(0, 4) };
+/** Question/answer answer-block presence (LLM-quoteable structure).
+ *  聚合全部抓取页：页面结构信号（问句标题/details/summary/FAQ 文本）
+ *  + JSON-LD FAQPage 的 Question 条目（产品页常以结构化数据呈现，纯页面扫描会漏）。 */
+function qaBlocks(parseds) {
+  const list = Array.isArray(parseds) ? parseds.filter(Boolean) : [parseds].filter(Boolean);
+  let questionHeadings = 0;
+  let details = 0;
+  let faqText = 0;
+  let faqQuestions = 0;
+  const samples = [];
+  for (const p of list) {
+    const q = (p && p.qaSignals) || {};
+    questionHeadings += q.questionHeadings || 0;
+    details += q.details || 0;
+    if (q.faqText) faqText = 1;
+    for (const s of (q.samples || [])) {
+      if (samples.length < 4) samples.push(s);
+    }
+    const fj = (p && p.jsonld && p.jsonld.faqQuestions) || 0;
+    faqQuestions += fj;
+  }
+  const total = questionHeadings + details + (faqText ? 1 : 0) + faqQuestions;
+  return { count: total, questionHeadings, details, faqText: !!faqText, faqQuestions, samples: samples.slice(0, 4) };
 }
 
 module.exports = {

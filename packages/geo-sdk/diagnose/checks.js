@@ -583,8 +583,21 @@ function buildChecks(ev) {
     types.includes('Organization') ? 'Organization 已声明' : types.includes('WebSite') ? 'WebSite 已声明' : '未声明站点级实体'));
   C.push(check('geo', '文章实体 (Article/BlogPosting)', types.includes('Article') || types.includes('BlogPosting') || types.includes('NewsArticle') ? 'pass' : 'info',
     types.includes('Article') || types.includes('BlogPosting') || types.includes('NewsArticle') ? '文章级实体已声明' : '首页未见文章级实体（文章页单独评估）'));
-  C.push(check('geo', 'FAQPage (直接回答信号)', types.includes('FAQPage') ? 'pass' : 'info',
-    types.includes('FAQPage') ? 'FAQ 结构化已声明' : '未发现 FAQPage'));
+  // FAQPage 检查覆盖全部抓取页（首页 + 代表页）：FAQ 结构化常位于产品/帮助页，
+  // 仅看首页会漏抓（此前误报「未发现 FAQPage」）。
+  const faqPages = pages
+    .filter((p) => p.parsed && (p.parsed.jsonld && p.parsed.jsonld.types || []).includes('FAQPage'))
+    .map((p) => {
+      try {
+        return new URL(p.url).pathname;
+      } catch {
+        return p.url;
+      }
+    });
+  C.push(check('geo', 'FAQPage (直接回答信号)', faqPages.length > 0 ? 'pass' : 'info',
+    faqPages.length
+      ? `FAQ 结构化已声明${types.includes('FAQPage') ? '（首页 + ' : '（'}${faqPages.slice(0, 3).join(', ')}${types.includes('FAQPage') ? '）' : '）'}`
+      : '未发现 FAQPage'));
   C.push(check('geo', 'BreadcrumbList', types.includes('BreadcrumbList') ? 'pass' : 'info',
     types.includes('BreadcrumbList') ? '面包屑结构化已声明' : '未发现'));
   C.push(check('geo', '可引用内容信号', rp.blockquotes > 0 || rp.lists > 0 ? 'info' : 'info',
@@ -726,7 +739,7 @@ function buildChecks(ev) {
   const qa = geoX.qaBlocks || { count: 0 };
   C.push(check('geo', '问答块 (答案块)', qa.count > 0 ? 'pass' : 'info',
     qa.count
-      ? `问答信号 ${qa.count} 处${qa.questionHeadings ? `（问句标题 ${qa.questionHeadings}）` : ''}${qa.details ? `（details/summary ${qa.details}）` : ''}${qa.faqText ? '（FAQ 文本）' : ''}${qa.samples && qa.samples.length ? `｜示例: ${qa.samples.slice(0, 2).join('; ')}` : ''}`
+      ? `问答信号 ${qa.count} 处${qa.questionHeadings ? `（问句标题 ${qa.questionHeadings}）` : ''}${qa.details ? `（details/summary ${qa.details}）` : ''}${qa.faqText ? '（FAQ 文本）' : ''}${qa.faqQuestions ? `（JSON-LD FAQ 条目 ${qa.faqQuestions}）` : ''}${qa.samples && qa.samples.length ? `｜示例: ${qa.samples.slice(0, 2).join('; ')}` : ''}`
       : '未发现问答/答案块结构（AI 直接回答时缺少可引用的 Q&A 片段）'));
 
 
@@ -790,8 +803,13 @@ function buildChecks(ev) {
     l404.note || '未探测 404 页语言一致性'));
 
   const switcher = rp.langSwitcher || {};
-  C.push(check('i18n', '语言切换器', switcher.found ? 'pass' : 'info',
-    switcher.found ? `页面内提供 ${switcher.links.length} 个语言切换链接（与 hreflang 互证）` : '页面内未见语言切换链接（用户只能靠 URL 猜语言版）'));
+  C.push(check('i18n', '语言切换器',
+    switcher.found ? 'pass' : switcher.clientRendered ? 'info' : 'info',
+    switcher.found
+      ? `页面内提供 ${switcher.links.length} 个语言切换链接（${switcher.hreflangMatched ? `其中 ${switcher.hreflangMatched} 个与 hreflang 互证` : '未与 hreflang 互证'}）`
+      : switcher.clientRendered
+        ? `静态 HTML 未见切换 <a>（疑客户端 JS 渲染，浏览器可见）；hreflang 三语互链${switcher.hreflangComplete ? '完整' : '不完整'}`
+        : '页面内未见语言切换链接（用户只能靠 URL 猜语言版）'));
 
   // ---- hreflang casing consistency across pages (zh-hans vs zh-Hans) ----
   {

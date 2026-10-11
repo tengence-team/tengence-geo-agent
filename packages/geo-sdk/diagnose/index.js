@@ -78,8 +78,28 @@ function cleanUrls(urls, baseUrl) {
 function clusterSample(urls, baseUrl, max) {
   const cands = cleanUrls(urls, baseUrl);
   const articleRe = /\/(\d{4})\/(\d{2})\/(\d{2})\//;
-  const ordered = [...cands.filter((u) => articleRe.test(u)), ...cands.filter((u) => !articleRe.test(u))];
+  // 排序：语言首页/根路径 → 其他静态页（产品/功能/帮助）→ 文章（时间轴内容）。
+  // 让代表页覆盖「首页 + 产品/FAQ 类页面 + 文章」，而不是整批落在一类内容上。
+  const pathSeg = (u) => {
+    try {
+      return new URL(u).pathname;
+    } catch {
+      return '/';
+    }
+  };
+  const ordered = [
+    ...cands.filter((u) => {
+      const p = pathSeg(u);
+      return p === '/' || /^\/(en|zh-hans|zh-hant)\/?$/.test(p);
+    }),
+    ...cands.filter((u) => {
+      const p = pathSeg(u);
+      return p !== '/' && !/^\/(en|zh-hans|zh-hant)\/?$/.test(p) && !articleRe.test(p);
+    }),
+    ...cands.filter((u) => articleRe.test(pathSeg(u))),
+  ];
   const seen = new Set();
+  const seenSeg = new Set();
   const out = [];
   for (const u of ordered) {
     let seg = '';
@@ -89,8 +109,11 @@ function clusterSample(urls, baseUrl, max) {
       /* keep seg = '' */
     }
     const key = seg || u;
+    // 每语言段最多 2 个代表页（首页 + 一个其他页），保证语言多样性同时覆盖产品/FAQ 页
+    if (seenSeg.has(key) && seen.has(seg)) continue;
     if (seen.has(key)) continue;
     seen.add(key);
+    seenSeg.add(seg);
     out.push(u);
     if (out.length >= max) break;
   }
@@ -138,7 +161,13 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
   const evidence = {};
 
   // ---- homepage (determines the canonical final base) ----
-  const rootPage = await fetchPage(url);
+  // 首页抓取失败时重试一次（偶发网络抖动即可导致 rootParsed=null，
+  // 连带 GEO 单页检查全数误报「未发现」）；仍失败则交由 pages 兜底。
+  let rootPage = await fetchPage(url);
+  if (rootPage.error) {
+    const retry = await fetchPage(url);
+    if (!retry.error) rootPage = retry;
+  }
   evidence.rootPage = rootPage;
   const baseUrl = rootPage.finalUrl || url;
 
@@ -181,7 +210,10 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
   evidence.sitemap = await probeSitemaps(sitemapCandidates, probeBase);
 
   // ---- homepage parse + fingerprint (needed early for link fallback) ----
+  // 首页抓取失败时此处先置空，待代表页抓取完成后兜底（见 pages 段之后），
+  // 避免 GEO 单页检查全盘基于空数据误报。
   evidence.rootParsed = rootPage.error ? null : parsePage(rootPage.body, baseUrl);
+  evidence.rootPageFallback = !!rootPage.error;
   evidence.fingerprint = fingerprint(rootPage.headers || {}, rootPage.body || '');
 
   // ---- representative pages: sample, never crawl the whole site ----
@@ -213,6 +245,16 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
     });
   }
   evidence.pages = pages;
+
+  // 首页抓取失败时用任一成功抓取页兜底 rootParsed，避免 GEO 单页检查全盘误报。
+  if (!evidence.rootParsed) {
+    for (const p of pages) {
+      if (p.parsed) {
+        evidence.rootParsed = p.parsed;
+        break;
+      }
+    }
+  }
 
   // ---- GEO/scale evidence pack (parallel, all soft-fail) ----
   const hostForAlpn = (() => {
@@ -358,6 +400,8 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
   // ---- GEO extended evidence (zero-request derivations from already-fetched data) ----
   {
     const rp = evidence.rootParsed || {};
+    // 问答块聚合全部抓取页（首页 + 代表页）：FAQ 常位于产品/帮助页，单看首页会漏。
+    const parsedPages = [evidence.rootParsed, ...pages.map((p) => p.parsed)].filter(Boolean);
     evidence.geoExtra = {
       dataDensity: dataPointDensity(rp.bodyText || ''),
       dateSignals: dateSignals(rp),
@@ -367,7 +411,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
       llmsStructure: llmsStructure((llmsRes && llmsRes.content) || '', (llmsRes && llmsRes.contents) || {}),
       staticHtmlContent: staticHtmlContent(rp),
       aigcDisclosure: aigcDisclosure(rp),
-      qaBlocks: qaBlocks(rp),
+      qaBlocks: qaBlocks(parsedPages),
     };
   }
 

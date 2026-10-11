@@ -202,6 +202,29 @@ function parsePage(html, baseUrl) {
   });
   const jsonldTypes = collectTypes(jsonld);
 
+  // FAQPage JSON-LD 内的问答条目数（GEO 直接回答信号；产品页 FAQ 常以结构化数据
+  // 而非 details/summary 呈现，需计入问答块检查，避免漏抓）。
+  // 无条件递归展开（FAQPage 可能包在 @graph/mainEntityOfPage 等容器内），
+  // 用 WeakSet 去重防止 DAG 引用重复计数。
+  const jsonldFaqQuestions = (() => {
+    let n = 0;
+    const seen = new WeakSet();
+    const walk = (node) => {
+      if (Array.isArray(node)) {
+        node.forEach(walk);
+        return;
+      }
+      if (!node || typeof node !== 'object' || seen.has(node)) return;
+      seen.add(node);
+      const t = node['@type'];
+      const types = Array.isArray(t) ? t : [t];
+      if (types.includes('Question') && node.name) n++;
+      for (const v of Object.values(node)) walk(v);
+    };
+    walk(jsonld);
+    return n;
+  })();
+
   // ---- mixed content & resource counts ----
   const httpResources = [];
   const resourceRe = /(?:src|href)\s*=\s*["'](http:\/\/[^"'#]+)/gi;
@@ -261,14 +284,58 @@ function parsePage(html, baseUrl) {
   const userScalableNo = /user-scalable\s*=\s*(no|0)/i.test(viewport || '');
 
   // ---- language switcher: in-page links pointing at other language versions ----
-  // A "real" i18n site offers humans an in-page switch, complementing hreflang.
-  const langLinks = [];
-  const langRefs = new Set(hreflang.map((x) => String(x.href || '').replace(/\/+$/, '')));
-  for (const s of (links.samples || [])) {
-    const clean = String(s.href || '').replace(/\/+$/, '');
-    if (langRefs.has(clean) && langLinks.length < 10) langLinks.push(clean);
+  // 遍历全部站内链接（不受 links.samples 20 条截断影响）：绝对化后 pathname 首段
+  // 属于其他语言版本（en/zh-hans/zh-hant，且 != 当前页语言段）即视为切换链接。
+  // 注：Next.js 站点切换器常为客户端渲染（静态 HTML 无 <a>，仅 hreflang <link>），
+  // 此时不误报缺陷，由 hreflang 完整性 + JS 渲染迹象给出中性说明。
+  const LANG_SEGMENTS = ['en', 'zh-hans', 'zh-hant'];
+  const curSeg = (() => {
+    try {
+      return new URL(baseUrl).pathname.split('/').filter(Boolean)[0] || '';
+    } catch {
+      return '';
+    }
+  })();
+  // hreflang 里已声明的其他语言 pathname（用于互证计数，不做强约束）
+  const langRefs = new Set();
+  for (const x of hreflang) {
+    try {
+      langRefs.add(new URL(x.href, baseUrl).pathname.replace(/\/+$/, ''));
+    } catch {
+      /* non-URL href ignored */
+    }
   }
-  const langSwitcher = { found: langLinks.length > 0, links: langLinks };
+  const langLinks = [];
+  const langLinksHreflang = []; // 与 hreflang 互证的切换链接
+  const seenLang = new Set();
+  $('a[href]').each((i, el) => {
+    const href = $(el).attr('href');
+    if (!href) return;
+    let path = '';
+    try {
+      path = new URL(href, baseUrl).pathname.replace(/\/+$/, '');
+    } catch {
+      return;
+    }
+    const seg = path.split('/').filter(Boolean)[0] || '';
+    if (!LANG_SEGMENTS.includes(seg) || seg === curSeg) return; // 非语言段或同语言导航
+    if (seenLang.has(seg)) return; // 每语言只留首个代表链接（页头/页脚多重复）
+    seenLang.add(seg);
+    const clean = String(href).replace(/\/+$/, '');
+    if (langLinks.length < 10) langLinks.push(clean);
+    if (langRefs.has(path) && langLinksHreflang.length < 10) langLinksHreflang.push(clean);
+  });
+  // 无静态切换链接时的中性兜底：hreflang 三语互链是否完整 + 是否有客户端渲染迹象
+  const hreflangLangs = new Set(hreflang.map((h) => String(h.hreflang || '').toLowerCase()));
+  const hreflangComplete =
+    ['zh-hans', 'zh-hant', 'en'].every((l) => hreflangLangs.has(l)) || hreflangLangs.size >= 3;
+  const langSwitcher = {
+    found: langLinks.length > 0,
+    links: langLinks,
+    hreflangMatched: langLinksHreflang.length,
+    hreflangComplete,
+    clientRendered: !langLinks.length && hreflangComplete && scripts.count > 0,
+  };
 
   // ---- third-party resource hosts (analytics/CDN/embeds — privacy & risk audit) ----
   const thirdPartyHosts = [];
@@ -344,7 +411,7 @@ function parsePage(html, baseUrl) {
     byline,
     qaSignals,
     externalHosts,
-    jsonld: { count: jsonld.length, types: jsonldTypes, samples: jsonld.slice(0, 3) },
+    jsonld: { count: jsonld.length, types: jsonldTypes, samples: jsonld.slice(0, 3), faqQuestions: jsonldFaqQuestions },
     og: {
       title: meta['og:title'] || null,
       description: meta['og:description'] || null,
