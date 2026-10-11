@@ -44,14 +44,30 @@ async function probeRange(urls, { concurrency = 8, timeoutMs = 8000, maxUrls = 5
 
   /** One status probe. HEAD first; if the server rejects HEAD (405/501) or the
    *  HEAD response has no useful status semantics, retry once with GET and
-   *  discard the body. Redirects are followed by fetchPage internally. */
+   *  discard the body. Redirects are followed by fetchPage internally.
+   *  单次网络瞬时失败（error / status 0）重试一次（与 probeLlms 同模式），
+   *  避免偶发超时把正常 URL 误报为 status 0。 */
   async function probeOne(url) {
-    const head = await fetchPage(url, { timeoutMs, method: 'HEAD' });
-    if (head.error || (head.status !== 405 && head.status !== 501)) {
-      return { status: head.status || 0, finalUrl: head.finalUrl || url, error: head.error };
+    const attempt = async (method) => {
+      const r = await fetchPage(url, { timeoutMs, method });
+      return { status: r.status || 0, finalUrl: r.finalUrl || url, error: r.error };
+    };
+
+    let r = await attempt('HEAD');
+    if (r.status === 405 || r.status === 501) {
+      r = await attempt('GET');
     }
-    const get = await fetchPage(url, { timeoutMs });
-    return { status: get.status || 0, finalUrl: get.finalUrl || url, error: get.error };
+
+    if (r.error || r.status === 0) {
+      const retry = await attempt('HEAD');
+      if (retry.status === 405 || retry.status === 501) {
+        r = await attempt('GET');
+      } else {
+        r = retry;
+      }
+    }
+
+    return r;
   }
 
   let i = 0;
