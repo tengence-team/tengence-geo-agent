@@ -33,11 +33,15 @@ const t = require('@tengence/geo-sdk');
  * (platform='juejin' / platform='csdn' / …), which is what gives each of them an
  * INDEPENDENT publishing calendar and drives the shared slug-based dedup.
  * wechat is excluded: it keeps a real per-issue calendar imported from its plan doc.
+ *
+ * devto IS included (2026-10-11): publishDevto has no draft concept and always goes
+ * live, so without logging its outcome nextDue would keep re-offering the same
+ * already-published devto article.
  */
 // 'aliyun' is included even though its publish is human-gated: the log is what the
 // slug-based dedup reads, so a draft-only run must still be recorded as "draft"
 // (never "published") — otherwise every run would create another draft.
-const PUBLISH_LOG_PLATFORMS = ['juejin', 'csdn', 'aliyun', 'tencent'];
+const PUBLISH_LOG_PLATFORMS = ['juejin', 'csdn', 'aliyun', 'tencent', 'devto'];
 
 // ---- language-code gate (2026-10-07) --------------------------------------
 // Language identifiers are unified to zh-hans | en | zh-hant — the LANG_MAP was
