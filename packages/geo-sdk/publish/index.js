@@ -938,7 +938,7 @@ async function publishArticle(connection, articleId, options = {}) {
       s.logger(`  ⚠️ Failed to read live meta (via the plugin API); treated as no existing values: ${e.message}`);
     }
   }
-  const geoMeta = s.t.content.meta.buildSeoGeoMeta(article, Object.assign({}, config, { geo }), existingMeta);
+  const geoMeta = s.t.content.meta.buildSeoGeoMeta(article, Object.assign({}, config, { geo }), existingMeta, article.lang);
 
   const postData = {
     title: article.title,

@@ -115,8 +115,22 @@ function parseFaqFromBody(content) {
  * @param {{title:string, content:string}} article
  * @param {{seo?:object, geo?:object, tags?:string[]}} config
  * @param {object} existingMeta live meta (plugin API format, used for empty-never-overwrites)
+ * @param {string} [lang] article language (zh-hans|en|zh-hant); when set, og:locale is
+ *   derived from it so the publish chain sets the correct Open Graph locale per language.
  */
-function buildSeoGeoMeta(article, config, existingMeta = {}) {
+function langToOgLocale(lang) {
+  const map = {
+    'zh-hans': 'zh_CN',
+    'zh-cn': 'zh_CN',
+    'zh-hant': 'zh_HK',
+    'zh-hk': 'zh_HK',
+    'en': 'en_US',
+    'en-us': 'en_US',
+  };
+  return map[String(lang || '').toLowerCase()] || 'zh_CN';
+}
+
+function buildSeoGeoMeta(article, config, existingMeta = {}, lang = null) {
   const seo = config && config.seo && Object.keys(config.seo).length ? config.seo : null;
   const geo = config && config.geo && Object.keys(config.geo).length ? config.geo : null;
   const tags = config && Array.isArray(config.tags) ? config.tags : [];
@@ -144,8 +158,12 @@ function buildSeoGeoMeta(article, config, existingMeta = {}) {
   const citations = (geo && Array.isArray(geo.citations) && geo.citations.length)
     ? geo.citations : [];
 
+  const ogLocale = langToOgLocale(lang || (article && article.lang) || (config && config.lang));
   const meta = {
-    'seo_meta_title': baseTitle
+    'seo_meta_title': baseTitle,
+    // og:locale is a deterministic function of language — always emitted so the
+    // publish chain sets it per language and defeats the WP plugin's zh_CN default.
+    'seo_og_locale': ogLocale,
   };
 
   const guarded = {
@@ -189,6 +207,7 @@ module.exports = {
   normalizeStringArray,
   pickMeta,
   parseFaqFromBody,
+  langToOgLocale,
   buildSeoGeoMeta,
   deriveExcerpt,
 };

@@ -48,6 +48,7 @@ after(() => {
 beforeEach(async () => {
   await withConn(async (conn) => {
     await conn.query('DELETE FROM tengence_geo_channel_schedule');
+    await conn.query('DELETE FROM tengence_geo_channel_plan'); // publishDue registers todo rows
   });
 });
 
@@ -140,6 +141,24 @@ test('publishDue fires slots within ±FIRE_WINDOW_MIN of now', async () => {
   assert.equal(res.due.length, 2);
   assert.deepEqual(res.due.map((d) => d.platform).sort(), ['csdn', 'juejin']);
   assert.equal(FIRE_WINDOW_MIN, 30, 'hourly Doubao ticker ⇒ ±30 min covers every HH:MM');
+  // merged audit step ①: dryRun must NOT call the platforms and reports the skip
+  assert.deepEqual(res.audit, { skipped: 'dry_run' });
+});
+
+test('publishDue audit step ①: real run reports per-platform audit sync (network-free path)', async () => {
+  // With no site env injected, syncStatuses fails fast per platform and publishDue
+  // must surface it as audit.<platform>.error instead of blocking the publish loop.
+  const cs = t.plan.channelSchedule;
+  await cs.set({ platform: 'csdn', publish_time: '10:35' });
+  const res = await cs.publishDue({ now: at(10, 30), dryRun: false });
+  assert.equal(typeof res.audit, 'object');
+  assert.ok('juejin' in res.audit && 'csdn' in res.audit, 'audit report must include both platforms');
+  for (const p of ['juejin', 'csdn']) {
+    assert.equal(res.audit[p].ok, false, `${p} audit must fail fast without site env`);
+    assert.ok(res.audit[p].error, `${p} audit error message present`);
+  }
+  assert.equal(res.results.length, 1, 'publish loop still runs after audit failure');
+  assert.equal(res.results[0].status, 'no_due_articles', 'queue empty ⇒ publish loop completes normally');
 });
 
 test('publishDue boundary: exactly ±FIRE_WINDOW_MIN fires, 1 min past does not', async () => {
@@ -202,3 +221,28 @@ test('publishDue dry-run full pipeline: wechat stays draft-box mode (asDraft)', 
   assert.equal(res.results[0].asDraft, true, 'wechat must never auto-send');
   assert.equal(res.results[0].status, 'dry_run');
 });
+
+// ==================== audit 审核检查（plan A 合流） ====================
+
+test('repo.appendNotes preserves existing notes (audit reason / stale flags)', async () => {
+  const planRepo = require('../packages/geo-sdk/db/channel-plan');
+  await t.plan.channel.recordPublish({
+    platform: 'csdn', slug: 'append-notes-test', title: 'Append Notes Test', status: 'draft',
+  });
+  let row;
+  await withConn(async (conn) => {
+    const rows = await planRepo.list(conn, 1, { platform: 'csdn' });
+    row = rows.find((r) => r.slug === 'append-notes-test');
+    assert.ok(row, 'row exists');
+    await planRepo.appendNotes(conn, 1, row.id, '审核未通过（CSDN），原因请查看后台');
+    await planRepo.appendNotes(conn, 1, row.id, '审核超时 >24h 未定论');
+  });
+  await withConn(async (conn) => {
+    const rows = await planRepo.list(conn, 1, { platform: 'csdn' });
+    const final = rows.find((r) => r.slug === 'append-notes-test');
+    assert.ok(final.notes.includes('审核未通过'), 'first note preserved');
+    assert.ok(final.notes.includes('审核超时 >24h'), 'second note appended');
+    assert.ok(final.notes.indexOf('审核未通过') < final.notes.indexOf('审核超时'), 'notes keep order');
+  });
+});
+

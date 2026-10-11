@@ -132,10 +132,10 @@ test('parseGeoBlocks (ZH regression): Chinese headings still parse', () => {
 
 // ==================== MCP registry ====================
 
-test('MCP registry: exposes 77 tools including the 3 standards tools, 11 channel tools, 7 wechat tools, 2 GSC read tools, 2 translation tools, 10 term/author-name tools', () => {
+test('MCP registry: exposes 78 tools including the 3 standards tools, 11 channel tools, 7 wechat tools, 2 GSC read tools, 2 translation tools, 10 term/author-name tools', () => {
   // The count grows with every new domain tool; if it changes, update this number and
   // add the corresponding per-domain assertion below (do not just bump blindly).
-  assert.equal(tools.length, 77, 'expected 77 tools (standards + channel + wechat + csdn/aliyun + gsc read + taxonomy + translation + term/author names + site_geo_plan_skill)');
+  assert.equal(tools.length, 78, 'expected 78 tools (standards + channel + wechat + csdn/aliyun + gsc read + taxonomy + translation + term/author names + site_geo_plan_skill + audit)');
   for (const n of ['site_geo_plan_skill']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
@@ -145,7 +145,7 @@ test('MCP registry: exposes 77 tools including the 3 standards tools, 11 channel
   for (const n of ['channel_list', 'channel_publish', 'channel_plan_next', 'channel_plan_mark', 'channel_style_get', 'channel_check']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
-  for (const n of ['channel_schedule_list', 'channel_schedule_get', 'channel_schedule_set', 'channel_schedule_del', 'channel_publish_due']) {
+  for (const n of ['channel_schedule_list', 'channel_schedule_get', 'channel_schedule_set', 'channel_schedule_del', 'channel_publish_due', 'channel_audit_check']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
   for (const n of ['wechat_status', 'wechat_sync_progress']) {

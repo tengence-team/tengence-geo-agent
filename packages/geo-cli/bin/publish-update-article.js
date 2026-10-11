@@ -500,7 +500,8 @@ async function main() {
     geoMeta = t.content.meta.buildSeoGeoMeta(
       { title, content: markdownContent },
       { geo, seo: seoConfig },
-      existingMeta
+      existingMeta,
+      options.lang
     );
   } catch (e) {
     console.log(`  ⚠️ Failed to read live meta, skipping GEO field sync: ${e.message}`);

@@ -156,11 +156,17 @@ const DEFAULT_DISPATCHED = new Set(['published', 'reviewing']);
  * in the WeChat drafts box look "not yet sent" → nextDue kept re-offering them
  * (24 articles from 第2–9期 were queued for a second send).
  *
+ * devto is the SAME case (2026-10-11, verified live): publishDevto creates a DRAFT
+ * (`published:false`, dashboard publish is manual — dev.to has NO review pipeline,
+ * so draft-first is the human-gated step). Its terminal state is also `draft`;
+ * without it nextDue would re-create a duplicate draft every run.
+ *
  * juejin/csdn keep the default on purpose: there a `draft` is only an intermediate
  * step on the way to a live article, so it must stay eligible for a retry.
  */
 const DISPATCHED_BY_PLATFORM = {
   wechat: new Set(['published', 'reviewing', 'draft']),
+  devto: new Set(['published', 'reviewing', 'draft']),
 };
 const dispatchedStatuses = (platform) => DISPATCHED_BY_PLATFORM[platform] || DEFAULT_DISPATCHED;
 
@@ -409,21 +415,36 @@ async function reconcileFromJuejin({ map } = {}) {
  * list looks complete (did not unexpectedly shrink below the count of already-dispatched
  * rows). Otherwise a genuinely-present-but-unreadable-this-run article keeps its status.
  *
- * @param {string} platform platform key (currently 'juejin' only)
+ * @param {string} platform platform key ('juejin' | 'csdn')
  * @param {{dryRun?:boolean, retries?:number}} [opts]
  * @returns {Promise<{platform:string, total:number, changed:number, recorded:number, liveCount:number,
  *           attempts:number, byStatus:object, changes:Array<object>, dryRun:boolean}>}
  */
+const AUDIT_STALE_HOURS = 24;
 async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 } = {}) {
   if (!platform) throw new Error('syncStatuses requires a platform key');
   const appId = DEFAULT_APP_ID();
   const norm = (s) => (s || '').trim().toLowerCase();
 
   // 1) live fetch with retries → most-complete set (status) + union (existence)
+  //    juejin: article/list_by_user → article_info.audit_status
+  //    csdn: published ∪ audit lists (audit = 审核中/未通过 SHARE one list; the API
+  //          does not tell them apart and exposes no reject reason)
+  const listAllForCsdn = async () => {
+    const [pub, audit] = await Promise.all([
+      t.syndicate.csdn.listArticles(1, 100, 'published'),
+      t.syndicate.csdn.listArticles(1, 100, 'audit'),
+    ]);
+    const items = [];
+    for (const it of pub.items || []) items.push({ draft_id: String(it.id), article_id: String(it.id), title: it.title, _list: 'published' });
+    for (const it of audit.items || []) items.push({ draft_id: String(it.id), article_id: String(it.id), title: it.title, _list: 'audit' });
+    return items;
+  };
   const fetchOnce = async () => {
     if (platform === 'juejin') return t.syndicate.juejin.listAllArticles();
+    if (platform === 'csdn') return listAllForCsdn();
     throw new Error(
-      `syncStatuses: not implemented for platform "${platform}" — currently juejin only`
+      `syncStatuses: not implemented for platform "${platform}" — supported: juejin, csdn (devto/wechat have no automated review)`
     );
   };
   let best = null; // { items } with the largest length
@@ -468,15 +489,33 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
 
   // canonical blog title per slug — some channel_plan rows carry a truncated/older
   // topic, so fall back to the blog's current title when matching by title.
+  // Skip empty titles and let zh-hans win (platform lists are Chinese): a slug has
+  // en/zh-hant rows whose title is often empty, and a naive last-write Map would
+  // overwrite the real zh-hans title with '' → title fallback silently dies.
   const blog = (await t.plan.list({ limit: 5000 })).filter((r) => r.plan_status === 'published');
-  const blogTitleBySlug = new Map(blog.map((r) => [r.slug, r.title]));
+  const blogTitleBySlug = new Map();
+  for (const r of blog) {
+    if (!r.title) continue;
+    const prev = blogTitleBySlug.get(r.slug);
+    if (!prev || r.lang === 'zh-hans') blogTitleBySlug.set(r.slug, r.title);
+  }
 
+  // Platform verdict: juejin audits via audit_status; csdn via which list the
+  // article sits in (published = 通过 / audit = 审核中或未通过).
   const auditToStatus = (ai) => {
+    if (platform === 'csdn') return ai._list === 'published' ? 'published' : 'review_failed';
     const a = ai.audit_status;
     if (a === 2) return 'published'; // 审核通过
     if (a === 1) return 'reviewing'; // 审核中
     return 'review_failed'; // 0 / 3 / other → treat as rejected (retryable)
   };
+  // The platform APIs expose NO reject reason text — the human-flag tells the user
+  // where to look (Juejin/CSDN backend) while keeping the machine state truthful.
+  const reviewFailedReason = (ai) =>
+    platform === 'juejin'
+      ? `审核未通过（juejin audit_status=${ai && ai.audit_status}），原因请查看掘金后台`
+      : 'CSDN 审核中/未通过列表，原因请查看 CSDN 后台';
+  const AUDIT_STALE_MS = AUDIT_STALE_HOURS * 3600 * 1000;
 
   const changes = [];
   const byStatus = {};
@@ -488,7 +527,7 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
     const rows = await repo.list(conn, appId, { platform });
     total = rows.length;
     // guard: only declare deletions when the live list did not unexpectedly shrink
-    const dispatchedBefore = rows.filter((r) => DISPATCHED_STATUSES.has(r.status)).length;
+    const dispatchedBefore = rows.filter((r) => dispatchedStatuses(platform).has(r.status)).length;
     const listLooksComplete = liveItems.length >= dispatchedBefore;
 
     for (const row of rows) {
@@ -533,10 +572,32 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
           articleId,
           articleIdRecorded: idRecorded,
           title: row.topic || '',
+          reason: newStatus === 'review_failed' ? reviewFailedReason(ai) : null,
         });
         if (!dryRun) {
           if (idChanged) await repo.markStatus(conn, appId, row.id, newStatus);
           if (idRecorded) await repo.setArticleId(conn, appId, row.id, articleId);
+          if (newStatus === 'review_failed' && row.status !== 'review_failed') {
+            await repo.appendNotes(conn, appId, row.id, reviewFailedReason(ai));
+          }
+        }
+      }
+
+      // stale-review watchdog: still reviewing after AUDIT_STALE_HOURS → human check
+      if (newStatus === 'reviewing' && row.status === 'reviewing' && row.updated_at) {
+        const at = Date.parse(String(row.updated_at).replace(' ', 'T') + 'Z');
+        if (!Number.isNaN(at) && Date.now() - at > AUDIT_STALE_MS && !/(审核超时|需人工查看平台后台)/.test(row.notes || '')) {
+          changes.push({
+            id: row.id,
+            slug,
+            from: 'reviewing',
+            to: 'reviewing',
+            stale: true,
+            hours: AUDIT_STALE_HOURS,
+            title: row.topic || '',
+            reason: `审核超时 >${AUDIT_STALE_HOURS}h 未定论，需人工查看平台后台`,
+          });
+          if (!dryRun) await repo.appendNotes(conn, appId, row.id, `审核超时 >${AUDIT_STALE_HOURS}h 未定论，需人工查看平台后台`);
         }
       }
     }

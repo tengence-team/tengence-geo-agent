@@ -21,8 +21,17 @@
  * asDraft policy (2026-10-11): wechat keeps the DRAFT-BOX mode (recordWechatIssue
  * terminal state = draft) — the 原创声明/赞赏 flags cannot be set via any WeChat
  * API and must be toggled manually before sending, so the scheduler must never
- * auto-send wechat. juejin / csdn / devto publish for real (asDraft=false);
- * devto has no draft concept (publishDevto always goes live).
+ * auto-send wechat. juejin / csdn publish for real (asDraft=false). devto is ALSO
+ * draft-first (publishDevto creates a draft; dev.to has no review pipeline, the
+ * dashboard publish is manual — verified live 2026-10-11), so devto outcomes are
+ * logged as "draft", never "published".
+ *
+ * Audit (审核) integration (2026-10-11, plan A — merged into the unified executor):
+ * publishDue runs the review-check loop FIRST (step ①) via channel.syncStatuses
+ * for juejin + csdn — reviewing → published / review_failed (+ human-flag notes,
+ * 24h stale-review watchdog), so every publish cycle also advances the audit state
+ * before picking the next articles. A failed audit check never blocks publishing;
+ * it surfaces in the report as audit.<platform>.error.
  * ============================================================================
  */
 
@@ -133,6 +142,20 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
     due.push(s);
   }
 
+  // step ① — audit (审核) check BEFORE any publishing (plan A: merged into the
+  // unified executor). Real runs advance review states for juejin + csdn;
+  // a platform failure is recorded and does NOT block the publish loop.
+  const audit = dryRun ? { skipped: 'dry_run' } : {};
+  if (!dryRun) {
+    for (const p of ['juejin', 'csdn']) {
+      try {
+        audit[p] = await channel.syncStatuses(p);
+      } catch (e) {
+        audit[p] = { ok: false, error: e.message };
+      }
+    }
+  }
+
   const results = [];
   for (const s of due) {
     const asDraft = AS_DRAFT_BY_PLATFORM[s.platform] === true;
@@ -200,7 +223,9 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
             : Array.isArray(r.tags) && r.tags.length
               ? `tags: ${r.tags.join(', ')}`
               : null;
-          const status = !r.ok ? 'failed' : wentLive && !r.publishGated ? 'published' : 'draft';
+          // r.published is the platform's own answer (juejin/csdn = !asDraft,
+          // devto always false = draft-first) — it wins over wentLive.
+          const status = !r.ok ? 'failed' : r.published === false ? 'draft' : wentLive && !r.publishGated ? 'published' : 'draft';
           try {
             await channel.recordPublish({
               platform: s.platform,
@@ -232,7 +257,15 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
     }
   }
 
-  return { ok: true, now: now.toISOString(), checked: schedule.length, due, results, skipped_today: skippedToday };
+  return {
+    ok: true,
+    now: now.toISOString(),
+    checked: schedule.length,
+    due,
+    audit,
+    results,
+    skipped_today: skippedToday,
+  };
 }
 
 module.exports = {

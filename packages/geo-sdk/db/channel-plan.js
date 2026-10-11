@@ -201,6 +201,22 @@ async function removeAll(conn, appId, platform) {
   return result.affectedRows || 0;
 }
 
+/**
+ * Append a timestamped note to a row's `notes` column (audit verdicts, human-action
+ * flags, retry hints). Preserves existing notes; no-op on a missing row.
+ */
+async function appendNotes(conn, appId, id, note) {
+  const existing = await getById(conn, appId, id);
+  if (!existing) return { id: Number(id), appended: false };
+  const prev = existing.notes || '';
+  const merged = prev ? `${prev}\n${note}` : note;
+  await conn.query(
+    `UPDATE ${CHANNEL_PLAN} SET notes = ?, updated_at = NOW() WHERE app_id = ? AND id = ?`,
+    [merged, appId, id]
+  );
+  return { id: Number(id), appended: true, note };
+}
+
 module.exports = {
   STATUSES,
   normalizeLang,
@@ -211,4 +227,5 @@ module.exports = {
   markStatus,
   setArticleId,
   removeAll,
+  appendNotes,
 };

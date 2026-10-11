@@ -15,7 +15,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { buildSeoGeoMeta, parseFaqFromBody } = require('../packages/geo-sdk/content/meta');
+const { buildSeoGeoMeta, langToOgLocale, parseFaqFromBody } = require('../packages/geo-sdk/content/meta');
 
 const ARTICLE = { title: 'AI 搜索优化指南 | Tengence', content: '正文内容。' };
 const CONFIG = {
@@ -46,6 +46,7 @@ test('keys have no prefix and no _yoast dead keys', () => {
     'seo_meta_description',
     'seo_meta_keywords',
     'seo_meta_title',
+    'seo_og_locale',
   ]);
   assert.ok(!keys.some((k) => k.includes('_yoast_') || k.startsWith('tengence_')));
 });
@@ -103,4 +104,40 @@ test('parseFaqFromBody returns a valid JSON array (consumable by the plugin API 
   const parsed = JSON.parse(json);
   assert.ok(Array.isArray(parsed));
   assert.equal(parsed[0].question, 'Q？');
+});
+
+test('langToOgLocale maps language codes to Open Graph locales', () => {
+  assert.equal(langToOgLocale('zh-hans'), 'zh_CN');
+  assert.equal(langToOgLocale('zh-cn'), 'zh_CN');
+  assert.equal(langToOgLocale('en'), 'en_US');
+  assert.equal(langToOgLocale('en-us'), 'en_US');
+  assert.equal(langToOgLocale('zh-hant'), 'zh_HK');
+  assert.equal(langToOgLocale('zh-hk'), 'zh_HK');
+  // unknown / empty falls back to the site default zh_CN
+  assert.equal(langToOgLocale('unknown'), 'zh_CN');
+  assert.equal(langToOgLocale(null), 'zh_CN');
+  assert.equal(langToOgLocale(undefined), 'zh_CN');
+});
+
+test('seo_og_locale is derived from the language argument (zh-hans/en/zh-hant)', () => {
+  assert.equal(buildSeoGeoMeta(ARTICLE, CONFIG, {}, 'zh-hans').seo_og_locale, 'zh_CN');
+  assert.equal(buildSeoGeoMeta(ARTICLE, CONFIG, {}, 'en').seo_og_locale, 'en_US');
+  assert.equal(buildSeoGeoMeta(ARTICLE, CONFIG, {}, 'zh-hant').seo_og_locale, 'zh_HK');
+});
+
+test('seo_og_locale defaults to zh_CN when no language is supplied', () => {
+  const meta = buildSeoGeoMeta(ARTICLE, CONFIG);
+  assert.equal(meta.seo_og_locale, 'zh_CN');
+});
+
+test('seo_og_locale falls back to article.lang when the lang arg is omitted', () => {
+  const meta = buildSeoGeoMeta({ ...ARTICLE, lang: 'en' }, CONFIG, {});
+  assert.equal(meta.seo_og_locale, 'en_US');
+});
+
+test('seo_og_locale is always emitted (overrides the WP plugin zh_CN default)', () => {
+  // even when existingMeta already has a wrong locale, the language-derived value wins
+  const existing = { seo_og_locale: 'zh_CN' };
+  const meta = buildSeoGeoMeta(ARTICLE, CONFIG, existing, 'en');
+  assert.equal(meta.seo_og_locale, 'en_US');
 });

@@ -34,9 +34,11 @@ const t = require('@tengence/geo-sdk');
  * INDEPENDENT publishing calendar and drives the shared slug-based dedup.
  * wechat is excluded: it keeps a real per-issue calendar imported from its plan doc.
  *
- * devto IS included (2026-10-11): publishDevto has no draft concept and always goes
- * live, so without logging its outcome nextDue would keep re-offering the same
- * already-published devto article.
+ * devto IS included (2026-10-11): publishDevto is DRAFT-FIRST (dashboard publish is
+ * manual; dev.to has no review pipeline), so the log must record the draft —
+ * otherwise nextDue would re-create a duplicate draft every run. The channel_publish
+ * status rule uses r.published (devto always false) so devto rows are logged as
+ * "draft", never "published" — verified live 2026-10-11 (drafts 404 publicly).
  */
 // 'aliyun' is included even though its publish is human-gated: the log is what the
 // slug-based dedup reads, so a draft-only run must still be recorded as "draft"
@@ -1906,7 +1908,9 @@ const tools = [
                   : null;
               // publishGated (aliyun): the platform refused/never attempted a live
               // publish, so even with asDraft=false the truthful status is "draft".
-              const status = !r.ok ? 'failed' : wentLive && !r.publishGated ? 'published' : 'draft';
+              // r.published is the platform's own answer (juejin/csdn = !asDraft,
+              // devto always false = draft-first) — it wins over wentLive.
+              const status = !r.ok ? 'failed' : r.published === false ? 'draft' : wentLive && !r.publishGated ? 'published' : 'draft';
               // devto returns the live post url in detail.url — keep it as publish evidence
               // (devto has no taxonomy, so taxNote alone would drop the trace).
               const devtoUrl = r.detail && r.detail.url ? `url: ${r.detail.url}` : null;
@@ -2009,7 +2013,11 @@ const tools = [
         const mapItems = (resp) => {
           const data = resp && resp.data;
           const items = Array.isArray(data) ? data : data && Array.isArray(data.data) ? data.data : [];
-          return items.map((it) => ({ id: it.id || it.article_id, title: it.title || (it.article_info && it.article_info.title) || '' }));
+          return items.map((it) => ({
+            id: it.id || it.article_id,
+            title: it.title || (it.article_info && it.article_info.title) || '',
+            audit_status: it.article_info && it.article_info.audit_status != null ? it.article_info.audit_status : null,
+          }));
         };
         return ok({
           ok: true,
@@ -2162,6 +2170,42 @@ const tools = [
     },
   },
   // ---------- auto-publish scheduling rules (channel_schedule) ----------
+  {
+    name: 'channel_audit_check',
+    description:
+      'Sync channel_plan statuses against the LIVE platform audit (审核) state — the review-check loop. ' +
+      'For juejin: article/list_by_user audit_status (2=通过→published, 1=审核中→reviewing, 0/3=未通过→review_failed). ' +
+      'For csdn: published list (→published) vs the audit list (审核中/未通过 share one list →review_failed). ' +
+      'The platform APIs expose NO reject-reason text: review_failed rows get a notes flag telling you where to look ' +
+      '(Juejin/CSDN backend); rows still reviewing for >24h get a stale-flag note (human check). ' +
+      'Runs automatically as step ① of channel_publish_due; use this tool standalone to inspect or force a check. ' +
+      'devto/wechat have no automated review and are not supported here. Read-only when dryRun=true (no DB writes).',
+    inputSchema: z.object({
+      platform: z.string().optional().describe('juejin | csdn (default: both)'),
+      dryRun: z.boolean().optional().describe('preview verdicts without writing (default false)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        withSite(args);
+        const platforms = (args.platform ? [args.platform] : ['juejin', 'csdn']).filter(
+          (p) => p === 'juejin' || p === 'csdn'
+        );
+        if (!platforms.length) return fail(new Error('channel_audit_check: platform must be juejin or csdn'));
+        const out = {};
+        for (const p of platforms) {
+          try {
+            out[p] = await t.plan.channel.syncStatuses(p, { dryRun: !!args.dryRun });
+          } catch (e) {
+            out[p] = { ok: false, error: e.message };
+          }
+        }
+        return ok({ ok: true, dryRun: !!args.dryRun, results: out });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
   {
     name: 'channel_schedule_list',
     description:
