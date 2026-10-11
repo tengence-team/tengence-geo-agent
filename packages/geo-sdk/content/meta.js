@@ -75,8 +75,15 @@ function pickMeta(next, existing) {
 /**
  * Fallback: parse Q&A pairs from the body's "## 常见问题" section.
  * Enabled when config_keywords.geo.qa_pairs is missing, so articles never miss the
- * FAQ-styled block. Only the "**问：...**" notation is parsed; on failure returns an
- * empty string (the caller omits the field).
+ * FAQ-styled block. Two notations are parsed (a body uses one, never both — when
+ * both would match the bold parse runs first and H3 rows are skipped because bold
+ * bodies carry no `###` lines inside the FAQ section):
+ *   ① `**问：…**` / `**Q: …**` bold questions (canonical zh-hans bodies)
+ *   ② `### 问题` H3 rows (translated bodies; 2026-10-11: 56 translation pages lost
+ *     geo_qa_pairs because both this fallback and parseGeoBlocks missed the H3
+ *     notation — parseGeoBlocks is fixed too; this stays in sync)
+ * Headings recognized: 常见问题 / 常見問題 / FAQ / Frequently Asked Questions.
+ * On failure returns an empty string (the caller omits the field).
  */
 function parseFaqFromBody(content) {
   try {
@@ -84,23 +91,64 @@ function parseFaqFromBody(content) {
     let inFaq = false;
     const faqLines = [];
     for (const line of lines) {
-      if (/^##\s.*(常见问题|FAQ|Frequently Asked Questions)/.test(line)) { inFaq = true; continue; }
+      if (/^##\s.*(常见问题|常見問題|FAQ|Frequently Asked Questions)/.test(line)) { inFaq = true; continue; }
       if (inFaq && /^##\s/.test(line)) break; // the next H2 ends the FAQ section
       if (inFaq) faqLines.push(line);
     }
     if (!faqLines.length) return '';
     const faqText = faqLines.join('\n');
-    const blocks = faqText.split(/\*\*问：|\*\*Q:/).slice(1);
     const pairs = [];
-    for (const b of blocks) {
+
+    // notation ①: bold questions
+    const toPlainAnswer = (raw) =>
+      '<p>' + String(raw)
+        .split('\n')
+        .map((l) => l.replace(/^\s*>+\s?/, '').replace(/^(?:答|A)\s*[:：]\s*/, '').trim())
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1') // [text](url) → text
+        .replace(/\*\*|`/g, '')
+        .trim() + '</p>';
+    for (const b of faqText.split(/\*\*问：|\*\*問：|\*\*Q:/).slice(1)) {
       const m = b.match(/^\s*([^*]+?)\*\*\s*([\s\S]*)$/);
       if (!m) continue;
-      const question = m[1].trim().replace(/^问：/, '').replace(/[:：]\s*$/, '').trim();
+      const question = m[1].trim().replace(/^(?:问|問)[:：]\s*/, '').replace(/[:：]\s*$/, '').trim();
       const answerRaw = m[2].trim();
       if (!question || !answerRaw) continue;
-      const answer = '<p>' + answerRaw.replace(/\n+/g, ' ').trim() + '</p>';
-      pairs.push({ question, answer });
+      pairs.push({ question, answer: toPlainAnswer(answerRaw) });
     }
+
+    // notation ②: `### …` H3 question rows (only when ① found nothing — the two
+    // notations never coexist in real bodies, and bold questions win when they do)
+    if (!pairs.length) {
+      let current = null;
+      const flush = () => {
+        if (current && current.q && current.a.trim()) {
+          pairs.push({ question: current.q, answer: toPlainAnswer(current.a) });
+        }
+        current = null;
+      };
+      for (const line of faqLines) {
+        const h3 = /^#{3,6}\s+(.+?)\s*$/.exec(line);
+        if (h3) {
+          flush();
+          const q = h3[1]
+            .replace(/\*\*/g, '')
+            .replace(/^(?:问|問|Q)\s*[：:]\s*/i, '')
+            .replace(/[：:]\s*$/, '')
+            .trim();
+          if (q) current = { q, a: '' };
+          continue;
+        }
+        if (!current) continue;
+        const text = line.replace(/^\s*>+\s?/, '').replace(/\*+/g, '').trim();
+        if (!text) continue;
+        const am = /^(?:答|A)\s*[:：]\s*/.exec(text);
+        current.a += (current.a ? ' ' : '') + (am ? text.slice(am[0].length) : text);
+      }
+      flush();
+    }
+
     return pairs.length ? JSON.stringify(pairs) : '';
   } catch (e) {
     return '';

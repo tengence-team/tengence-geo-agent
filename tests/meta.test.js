@@ -106,6 +106,25 @@ test('parseFaqFromBody returns a valid JSON array (consumable by the plugin API 
   assert.equal(parsed[0].question, 'Q？');
 });
 
+test('parseFaqFromBody: traditional heading (常見問題) and H3 question rows both parse', () => {
+  // 2026-10-11: the fallback missed the traditional heading and the `### Q：` H3
+  // notation used by translated bodies — 56 translation pages lost geo_qa_pairs.
+  const json = parseFaqFromBody(
+    '## 常見問題\n\n### 為什麼要這麼久？\n\n通常 **14 天**。\n\n### MDE 怎麼定？\n\n由業務收益倒推。\n'
+  );
+  const parsed = JSON.parse(json);
+  assert.ok(Array.isArray(parsed));
+  assert.equal(parsed.length, 2);
+  assert.equal(parsed[0].question, '為什麼要這麼久？');
+  assert.match(parsed[0].answer, /14 天/);
+  assert.equal(parsed[0].answer.includes('**'), false, 'answer is plain text');
+  // traditional heading with the bold 问： notation
+  const json2 = parseFaqFromBody('## 常見問題\n\n> **問：測試要多久？**\n>\n> 答：十四天。');
+  const parsed2 = JSON.parse(json2);
+  assert.equal(parsed2[0].question, '測試要多久？');
+  assert.equal(parsed2[0].answer, '<p>十四天。</p>', 'blockquote markers and the 答： prefix are stripped from the answer');
+});
+
 test('langToOgLocale maps language codes to Open Graph locales', () => {
   assert.equal(langToOgLocale('zh-hans'), 'zh_CN');
   assert.equal(langToOgLocale('zh-cn'), 'zh_CN');

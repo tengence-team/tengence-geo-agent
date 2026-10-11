@@ -535,6 +535,44 @@ test('parseGeoBlocks: compatible with legacy numbered headings (八、常见问�
   assert.equal(r.faq[0].question, '问题？');
 });
 
+test('parseGeoBlocks: H3 question rows under the FAQ heading parse as Q&A pairs (translated-body notation)', () => {
+  // 2026-10-11 defect: translated bodies write the FAQ as `## 常見問題` + `### Q：…`
+  // H3 rows; treating the H3 as a section terminator dropped every pair, so 56
+  // translation pages never got their geo_qa_pairs meta (→ no FAQPage schema).
+  const md = [
+    '## 常見問題',
+    '',
+    '### 為什麼 A/B 測試需要這麼久？',
+    '',
+    '因為需要覆蓋完整的業務週期，通常 **14 天**。',
+    '',
+    '### MDE 應該怎麼定？',
+    '',
+    '由業務收益與實施成本倒推。',
+    '',
+    '## 關於通智雲',
+    '',
+    '結尾段落。',
+  ].join('\n');
+  const r = parseGeoBlocks(md);
+  assert.equal(r.faq.length, 2, 'both H3 questions are captured, the next H2 still ends the section');
+  assert.equal(r.faq[0].question, '為什麼 A/B 測試需要這麼久？');
+  assert.equal(r.faq[0].answer, '因為需要覆蓋完整的業務週期，通常 14 天。', 'answer is plain text (bold stripped)');
+  assert.equal(r.faq[1].question, 'MDE 應該怎麼定？');
+  // Q：/問： prefixed H3 rows also work
+  const r2 = parseGeoBlocks('## 常见问题\n\n### Q：How long does it take?\n\nTypically 8–12 weeks.\n');
+  assert.equal(r2.faq.length, 1);
+  assert.equal(r2.faq[0].question, 'How long does it take?');
+  assert.equal(r2.faq[0].answer, 'Typically 8–12 weeks.');
+});
+
+test('syncGeoFromMarkdown: an H3-FAQ body overrides geo.qa_pairs (md is authoritative)', () => {
+  const md = '## 常見問題\n\n### 問題一？\n\n答案一。\n';
+  const { geo, changed } = syncGeoFromMarkdown(md, { qa_pairs: [] });
+  assert.deepEqual(geo.qa_pairs, [{ question: '問題一？', answer: '答案一。' }]);
+  assert.ok(changed.some((c) => c.startsWith('qa_pairs(')));
+});
+
 test('parseGeoBlocks: no GEO blocks in the body → empty result (never invents)', () => {
   const r = parseGeoBlocks('# 标题\n\n## 一、正文\n\n正文内容。\n');
   assert.deepEqual(r, { summary: '', takeaways: [], faq: [], citations: [] });

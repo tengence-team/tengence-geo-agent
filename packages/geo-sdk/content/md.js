@@ -841,6 +841,12 @@ function headingText(line) {
   return m ? m[2].trim() : null;
 }
 
+/** Heading line → its level (2–6 for `##`–`######`), null for non-headings */
+function headingLevel(line) {
+  const m = /^(#{2,6})\s+/.exec(String(line || ''));
+  return m ? m[1].length : null;
+}
+
 /** Strip decorations like "八、" / "（FAQ）" to get the canonical block name */
 function normalizeHeading(text) {
   return String(text)
@@ -976,6 +982,23 @@ function parseGeoBlocks(md) {
     const heading = headingText(line);
 
     if (heading !== null) {
+      // H3–H6 inside the FAQ section starts a new Q&A (question = heading text):
+      // translated bodies write the FAQ as `## 常見問題` + `### Q：…` H3 rows, and
+      // treating an H3 as a section terminator closed the block at the first
+      // question, silently dropping every pair (2026-10-11: 56 translation pages
+      // lost their FAQPage schema for exactly this reason). Only an H2 ends the
+      // section. Non-question H3 subheadings (rare) yield a pair whose question is
+      // the subheading text — closeFaq still drops it when no answer text follows.
+      const level = headingLevel(line);
+      if (section === 'faq' && level !== null && level > 2) {
+        closeFaq();
+        const q = stripInlineMarkdown(heading)
+          .replace(/^(?:问|問|Q)\s*[：:]\s*/i, '')
+          .replace(/[：:]\s*$/, '')
+          .trim();
+        if (q) current = { q: [q], a: [] };
+        continue;
+      }
       closeFaq();
       section = isTakeawaysHeading(heading)
         ? 'takeaways'
