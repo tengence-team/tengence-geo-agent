@@ -643,4 +643,7 @@ module.exports = {
   //  structured rows go through upsert / importPlan, never through a file)
   // per-platform publishing calendar (workspace-local channel_plan table)
   channel: require('./channel'),
+  // auto-publish scheduling rules (workspace-local channel_schedule table) +
+  // the unified executor publishDue()
+  channelSchedule: require('./channel-schedule'),
 };

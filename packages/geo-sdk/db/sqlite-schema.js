@@ -36,6 +36,17 @@ const CHANNEL_PLAN = 'tengence_geo_channel_plan';
  */
 const CHANNEL_TAXONOMY = 'tengence_geo_channel_taxonomy';
 
+/**
+ * Workspace-local SCHEDULING-RULE table (channel_schedule): when each platform
+ * should auto-publish and how many articles per slot. ONE ROW = ONE
+ * (platform, publish_time) slot — it is a TEMPLATE, not a task instance, so it
+ * deliberately carries NO slug (the unified executor picks nextDue's N articles
+ * at fire time). Distinct from channel_plan (one row = one (platform, slug, lang)
+ * publish TASK): channel_plan's unique key requires a slug and cannot host
+ * schedule rules.
+ */
+const CHANNEL_SCHEDULE = 'tengence_geo_channel_schedule';
+
 // NOTE: v4 (not v3) — some local DBs were already stamped 3 by a transient earlier
 // bump that was rolled back while the committed value stayed 2. The version stamp is
 // only used as a monotonic "DDL already applied" marker (the DDL itself is idempotent,
@@ -50,7 +61,12 @@ const CHANNEL_TAXONOMY = 'tengence_geo_channel_taxonomy';
 // (app_id, platform, slug, lang). Existing v5 databases are migrated by the
 // one-off script scripts/migrate-channel-plan-v7.js (NOT by ensureSchema —
 // ensureSchema only stamps the version and applies IF NOT EXISTS DDL for new DBs).
-const SCHEMA_VERSION = 7;
+//
+// v8 (2026-10-11): new table tengence_geo_channel_schedule — pure ADDITIVE DDL
+// (no data migration needed; ensureSchema applies the IF NOT EXISTS table).
+// The scheduling rules table for the unified auto-publish executor
+// (channel_publish_due): one row = one (platform, publish_time) slot.
+const SCHEMA_VERSION = 8;
 
 /**
  * channel_plan v7 DDL template (workspace-local publishing TASK table).
@@ -85,6 +101,34 @@ CREATE TABLE IF NOT EXISTS ${tableName} (
   created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
   updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
   UNIQUE (app_id, platform, slug, lang)
+);`;
+}
+
+/**
+ * channel_schedule DDL template (workspace-local SCHEDULING-RULE table).
+ *
+ * One row = one (platform, publish_time) auto-publish slot:
+ *   - count    how many articles one fire takes (wechat: one issue = N rows of
+ *              channel_plan sharing one period; count=2 → next 2 un-dispatched)
+ *   - enabled  0 = paused slot (kept in config, not fired)
+ *   - last_run_at  local "YYYY-MM-DD HH:MM:SS" of the last fire — the executor
+ *              never fires the same slot twice on the same day (defense #1; the
+ *              channel_plan unique key is defense #2, a process lock #3).
+ * Unique key = (app_id, platform, publish_time) — one slot per channel per time.
+ */
+function channelScheduleDDL(tableName) {
+  return `
+CREATE TABLE IF NOT EXISTS ${tableName} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id INTEGER NOT NULL DEFAULT 1,
+  platform TEXT NOT NULL,
+  publish_time TEXT NOT NULL,
+  count INTEGER NOT NULL DEFAULT 1,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_run_at TEXT,
+  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  UNIQUE (app_id, platform, publish_time)
 );`;
 }
 
@@ -471,6 +515,11 @@ CREATE TABLE IF NOT EXISTS ${CHANNEL_TAXONOMY} (
 CREATE INDEX IF NOT EXISTS idx_channel_taxonomy_name ON ${CHANNEL_TAXONOMY} (app_id, platform, kind, name COLLATE NOCASE);
 -- NOTE: no separate (app_id, platform, kind) index — it is a redundant prefix of
 -- idx_channel_taxonomy_name (extra write cost, zero read benefit).
+
+-- ========== 19. channel publish scheduling rules (workspace-local, not in MySQL) ==========
+${channelScheduleDDL(CHANNEL_SCHEDULE)}
+CREATE INDEX IF NOT EXISTS idx_channel_schedule_app ON ${CHANNEL_SCHEDULE} (app_id);
+CREATE INDEX IF NOT EXISTS idx_channel_schedule_platform ON ${CHANNEL_SCHEDULE} (app_id, platform, enabled);
 `;
 
-module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN, CHANNEL_TAXONOMY, channelPlanDDL };
+module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN, CHANNEL_TAXONOMY, CHANNEL_SCHEDULE, channelPlanDDL, channelScheduleDDL };

@@ -2154,6 +2154,119 @@ const tools = [
       }
     },
   },
+  // ---------- auto-publish scheduling rules (channel_schedule) ----------
+  {
+    name: 'channel_schedule_list',
+    description:
+      'List the auto-publish scheduling rules (table tengence_geo_channel_schedule): one row = one (platform, publish_time) ' +
+      'slot, with count (articles per fire), enabled and last_run_at (day-level re-fire guard). ' +
+      'The schedule is the config the unified executor channel_publish_due reads — it does NOT contain articles, ' +
+      'the executor picks the next due article(s) from the channel_plan queue at fire time.',
+    inputSchema: z.object({
+      platform: z.string().optional().describe('filter to one platform key (juejin | csdn | devto | wechat | ...)'),
+    }),
+    async run(args) {
+      try {
+        const rows = await t.plan.channelSchedule.list({ platform: args.platform });
+        return ok({ ok: true, count: rows.length, rows });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_schedule_get',
+    description:
+      'Get one channel_schedule slot by id (see channel_schedule_list rows). Returns the slot or null when it does not exist.',
+    inputSchema: z.object({
+      id: z.number().describe('channel_schedule row id'),
+    }),
+    async run(args) {
+      try {
+        const row = await t.plan.channelSchedule.get(args.id);
+        return ok({ ok: true, row });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_schedule_set',
+    description:
+      'Create or update one auto-publish scheduling slot (upsert by platform + publish_time). ' +
+      'publish_time is "HH:MM" (zero-padded, local time, non-整点 recommended to avoid platform top-of-hour congestion). ' +
+      'count = how many articles one fire takes (default 1; wechat: one issue = N rows of channel_plan, e.g. count=2 for ' +
+      'a 2-article 合辑). enabled=0 pauses the slot without deleting it. Returns the resulting row.',
+    inputSchema: z.object({
+      platform: z.string().describe('platform key (juejin | csdn | devto | wechat | ...)'),
+      publish_time: z.string().describe('"HH:MM" local time, e.g. "10:35"'),
+      count: z.number().optional().describe('articles per fire, positive integer (default 1)'),
+      enabled: z.number().optional().describe('1 = active (default), 0 = paused'),
+    }),
+    async run(args) {
+      try {
+        const res = await t.plan.channelSchedule.set({
+          platform: args.platform,
+          publish_time: args.publish_time,
+          count: args.count,
+          enabled: args.enabled,
+        });
+        return ok({ ok: true, action: res.action, id: res.id, row: res.row });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_schedule_del',
+    description:
+      'Delete a channel_schedule slot — by id, or by the unique key (platform + publish_time). ' +
+      'Returns the number of deleted rows. Use enabled=0 on channel_schedule_set instead if you want to pause, not delete.',
+    inputSchema: z.object({
+      id: z.number().optional().describe('channel_schedule row id (preferred)'),
+      platform: z.string().optional().describe('platform key (with publish_time to target the unique key)'),
+      publish_time: z.string().optional().describe('"HH:MM" (with platform)'),
+    }),
+    async run(args) {
+      try {
+        if (args.id != null) {
+          const res = await t.plan.channelSchedule.del({ id: args.id });
+          return ok({ ok: true, deleted: res.deleted });
+        }
+        if (args.platform && args.publish_time) {
+          const res = await t.plan.channelSchedule.del({ platform: args.platform, publish_time: args.publish_time });
+          return ok({ ok: true, deleted: res.deleted });
+        }
+        return fail(new Error('channel_schedule_del requires id, or platform + publish_time'));
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_publish_due',
+    description:
+      'UNIFIED auto-publish executor: scan the channel_schedule slots and publish on every platform whose slot is due NOW ' +
+      '(publish_time within ±15 minutes — a 30-minute external tick always lands in the window) and has NOT run today ' +
+      '(last_run_at). Per slot: picks the next N un-dispatched articles (nextDue, N = slot count), publishes through the same ' +
+      'pipeline as channel_publish (juejin/csdn/devto publish for real; wechat stays DRAFT-BOX — 原创声明/赞赏 cannot be set via ' +
+      'any WeChat API and need a manual toggle before sending), writes the outcome back to channel_plan and stamps last_run_at. ' +
+      'dryRun=true prints the due plan with NO external calls and NO writes. Call this from ONE external ticker (cron/launchd ' +
+      'every 30 min) — do NOT create one scheduled task per channel.',
+    inputSchema: z.object({
+      dryRun: z.boolean().optional().describe('print the due plan only, no external calls, no writes'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        withSite(args);
+        const res = await t.plan.channelSchedule.publishDue({ dryRun: !!args.dryRun, siteKey: args.site });
+        return ok(res);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
   // ---------- external-platform taxonomy dictionary (channel_taxonomy) ----------
   {
     name: 'channel_taxonomy_sync',

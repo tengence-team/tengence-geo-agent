@@ -572,10 +572,12 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
  * period when recordWechatIssue is called afterwards).
  *
  * @param {string} platform
- * @param {{count?:number}} [opts] how many articles to return (default 1)
+ * @param {{count?:number, register?:boolean}} [opts] how many articles to return
+ *   (default 1). register=false (dry-run previews) looks up existing todo rows but
+ *   does NOT insert — a pure read with zero side effects.
  * @returns {Promise<object|null>}
  */
-async function nextDue(platform, { count = 1 } = {}) {
+async function nextDue(platform, { count = 1, register = true } = {}) {
   const appId = DEFAULT_APP_ID();
   const langs = PLATFORM_LANGS[platform] || ['zh-hans'];
   const published = await publishedSlugs(platform); // Set<`slug::lang`>
@@ -590,14 +592,19 @@ async function nextDue(platform, { count = 1 } = {}) {
       if (published.has(key)) continue; // 已发送 → 下一篇
       let task = await repo.getByKey(conn, appId, platform, r.slug, r.lang);
       if (!task) {
-        // 未记录 → 先登记 todo（这就是"发布计划"的登记动作）
-        const res = await repo.upsert(conn, appId, {
-          platform,
-          slug: r.slug,
-          lang: r.lang,
-          status: 'todo',
-        });
-        task = { id: res.id };
+        if (!register) {
+          // dry-run preview: never write; the row will be registered at real fire time
+          task = { id: null };
+        } else {
+          // 未记录 → 先登记 todo（这就是"发布计划"的登记动作）
+          const res = await repo.upsert(conn, appId, {
+            platform,
+            slug: r.slug,
+            lang: r.lang,
+            status: 'todo',
+          });
+          task = { id: res.id };
+        }
       }
       picked.push({
         id: task.id,

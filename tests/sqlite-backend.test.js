@@ -4,7 +4,7 @@
  * `better-sqlite3` was moved to optionalDependencies so a plain
  * `npx -y @tengence/geo-mcp` install stays pure JS (Node's built-in node:sqlite is the
  * default). These tests guard that the two backends behave identically:
- *   - both create the same schema (18 tables, user_version=7)
+ *   - both create the * same schema (19 tables, user_version=8)
  *   - both support the registered NOW() function
  *   - GEO_SQLITE_DRIVER=builtin|native is honoured
  * Each backend runs in its own child process because the driver is chosen (and the
@@ -71,8 +71,8 @@ test('builtin backend (node:sqlite): schema + NOW() behave like the native one',
   const r = runChild({ GEO_SQLITE_DRIVER: 'builtin' });
   assert.equal(r.kind, 'builtin');
   assert.equal(r.detect, 'builtin');
-  assert.equal(r.tables, 18);
-  assert.equal(r.schema, 7);
+  assert.equal(r.tables, 19);
+  assert.equal(r.schema, 8);
   assert.match(r.now, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 });
 
@@ -80,13 +80,13 @@ test('native backend (better-sqlite3): same schema + NOW() when installed', () =
   if (!driver.nativeAvailable()) return; // optional dependency not installed: skip
   const r = runChild({ GEO_SQLITE_DRIVER: 'native' });
   assert.equal(r.kind, 'better-sqlite3');
-  assert.equal(r.tables, 18);
-  assert.equal(r.schema, 7);
+  assert.equal(r.tables, 19);
+  assert.equal(r.schema, 8);
   assert.match(r.now, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 });
 
 test('default selection prefers the built-in backend when it is available', () => {
   const r = runChild({});
   assert.equal(r.kind, driver.builtinAvailable() ? 'builtin' : 'better-sqlite3');
-  assert.equal(r.tables, 18);
+  assert.equal(r.tables, 19);
 });
