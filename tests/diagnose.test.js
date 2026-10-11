@@ -306,3 +306,34 @@ test('linksFallback: uses links.samples array, never the numeric internal counte
   const numericOnly = { links: { internal: 5, samples: undefined } };
   assert.deepEqual(linksFallback(numericOnly, 'http://127.0.0.1:1/', 1), []);
 });
+
+test('detectRobotsConflicts: WordPress official template pairs are exempt (not defects)', () => {
+  const { detectRobotsConflicts } = require('../packages/geo-sdk/diagnose/robots');
+  // WP core default template: Allow admin-ajax.php + Allow themes assets images
+  const wp = {
+    groups: [{
+      userAgents: ['*'],
+      disallow: ['/wp-admin/', '/wp-includes/', '/wp-content/plugins/', '/wp-content/themes/'],
+      allow: ['/wp-admin/admin-ajax.php', '/wp-content/themes/*/assets/images/'],
+    }],
+  };
+  assert.deepEqual(detectRobotsConflicts(wp), [], 'WP official template must not be flagged');
+
+  // genuine conflicts (non-WP) still detected
+  const real = {
+    groups: [{
+      userAgents: ['*'],
+      disallow: ['/private/'],
+      allow: ['/private/panel/'],
+    }],
+  };
+  const rc = detectRobotsConflicts(real);
+  assert.equal(rc.length, 1, 'non-WP Allow>Disallow on same path must be flagged');
+  assert.equal(rc[0].allow, '/private/panel/');
+
+  // equal-length genuine conflict still detected
+  const eq = {
+    groups: [{ userAgents: ['*'], disallow: ['/x/'], allow: ['/x/'] }],
+  };
+  assert.equal(detectRobotsConflicts(eq).length, 1, 'equal-length Allow/Disallow is a genuine conflict');
+});

@@ -56,11 +56,12 @@ description: 对目标站点执行一次性、只读、全面的 GEO/SEO 技术�
 - **不直接运行诊断代码**：诊断必须通过 MCP `diagnose_site` 工具（API）执行；SDK 本地运行仅限开发排障，不作为交付路径。
 - **报告要给出整体评分**：总分、等级、分维度必须齐全，评分口径与上述模型一致。
 - 状态区分：fail=明确缺陷（阻断/失真）、warn=需优化、info=中性事实、pass=达标。
-- **判定口径（v2 修正，2026-10-11）**：
+- **判定口径（v3 修正，2026-10-11）**：
   - 图片 alt：仅「无 alt 属性」计缺失；`alt=""` 是装饰/图标图的合法语义（WCAG 1.1.1），不计缺失。
   - 重定向类型：302 + `Vary: Accept-Language` 的**语言协商重定向**（多语言首页按 Accept-Language/Cookie 302 到语言前缀）为设计内正确实践，豁免 warn；非协商 302 仍 warn。
   - 移动端子域：首跳 302 指向 www 或语言前缀、且全链均为 302 的 m 站协商/引导链（如 m→www→/zh-hans），判 info；出现非 302 跳或异常语义才 warn。
   - 日期信号：无 datePublished/dateModified 的纯营销/静态官网判 info（无"文章"语义属正常）；内容型站点的日期可见性由「文章日期可见性」检查覆盖。
+  - robots Allow/Disallow 冲突：**WordPress 官方默认模板组合豁免**（`Allow /wp-admin/admin-ajax.php` vs `Disallow /wp-admin/` 属 admin-ajax 前端接口放行的刻意设计；`Allow /wp-content/themes/*/assets/images/` vs `Disallow /wp-content/themes/` 属文章图片可收录的刻意设计），不判 warn；其余真实冲突（如 Allow 长于 Disallow 覆盖管理路径）仍 warn。
 - 软失败：单探测失败不中断整个诊断；异常在 evidence/check 中标注。
 - 多语言站点须分别核对各语言首页与 sitemap 语言分布；hreflang 对称性单独成检。
 
