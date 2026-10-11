@@ -35,10 +35,15 @@ const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
 
 /**
  * Fire-window in minutes: a slot whose publish_time is within ±FIRE_WINDOW_MIN of
- * `now` is due. External tick every 30 min ⇒ any HH:MM is at most 15 min from a
- * tick, so FIRE_WINDOW_MIN = 15 covers every slot exactly once per day.
+ * `now` is due. The external ticker granularity drives this:
+ *   - Doubao cron jobs have a hard MINIMUM interval of 1 hour (minExecInterval
+ *     3600s), so the practical external tick is hourly ⇒ FIRE_WINDOW_MIN = 30
+ *     covers every HH:MM exactly once per day (any time is ≤30 min from an
+ *     hourly tick).
+ *   - A local launchd/cron ticker could be finer (e.g. every 30 min ⇒ ±15),
+ *     but the scheduler must stay correct for the hourly Doubao ticker.
  */
-const FIRE_WINDOW_MIN = 15;
+const FIRE_WINDOW_MIN = 30;
 
 /**
  * Platforms whose outcomes are logged into channel_plan by publishDue.

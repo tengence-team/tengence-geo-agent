@@ -139,15 +139,15 @@ test('publishDue fires slots within ±FIRE_WINDOW_MIN of now', async () => {
   assert.equal(res.checked, 3);
   assert.equal(res.due.length, 2);
   assert.deepEqual(res.due.map((d) => d.platform).sort(), ['csdn', 'juejin']);
-  assert.equal(FIRE_WINDOW_MIN, 15, '30-minute tick ⇒ ±15 min covers every HH:MM');
+  assert.equal(FIRE_WINDOW_MIN, 30, 'hourly Doubao ticker ⇒ ±30 min covers every HH:MM');
 });
 
-test('publishDue boundary: exactly ±15 min fires, 16 min does not', async () => {
+test('publishDue boundary: exactly ±FIRE_WINDOW_MIN fires, 1 min past does not', async () => {
   const cs = t.plan.channelSchedule;
   await cs.set({ platform: 'csdn', publish_time: '10:35' });
-  const edge = await cs.publishDue({ now: at(10, 50), dryRun: true }); // diff = 15 → due
+  const edge = await cs.publishDue({ now: at(11, 5), dryRun: true }); // diff = 30 → due
   assert.equal(edge.due.length, 1);
-  const over = await cs.publishDue({ now: at(10, 52), dryRun: true }); // diff = 17 → not due
+  const over = await cs.publishDue({ now: at(11, 6), dryRun: true }); // diff = 31 → not due
   assert.equal(over.due.length, 0);
 });
 
