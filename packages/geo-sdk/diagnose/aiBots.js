@@ -123,25 +123,36 @@ async function probeLlms(baseUrl, { timeoutMs = 8000 } = {}) {
   let content = '';
   for (const p of LLMS_PATHS) {
     const u = new URL(p, baseUrl).href;
-    try {
-      const res = await fetch(u, {
-        redirect: 'follow',
-        signal: AbortSignal.timeout(timeoutMs),
-        headers: { 'user-agent': UA, accept: 'text/plain,*/*;q=0.8' },
-      });
-      const body = await res.text().catch(() => '');
-      probes.push({ url: u, status: res.status });
-      // a WAF challenge page is HTML even when HTTP says 200 — never count it as llms.txt
-      const looksLikeText = !/^\s*(<!DOCTYPE html|<html)/i.test(body.trim());
-      if (res.status === 200 && looksLikeText && body.trim().length) {
-        found = true;
-        contents[u] = body.slice(0, 5000);
-        if (!content) {
-          content = body.slice(0, 5000);
+    let res = null;
+    let body = '';
+    for (let attempt = 0; attempt < 2 && !res; attempt += 1) {
+      try {
+        const r = await fetch(u, {
+          redirect: 'follow',
+          signal: AbortSignal.timeout(timeoutMs),
+          headers: { 'user-agent': UA, accept: 'text/plain,*/*;q=0.8' },
+        });
+        body = await r.text().catch(() => '');
+        res = r;
+      } catch (e) {
+        // 偶发网络/超时失败：单次重试后仍失败则记录 status 0，不中断诊断。
+        if (attempt === 1) {
+          probes.push({ url: u, status: 0 });
         }
       }
-    } catch (e) {
-      probes.push({ url: u, status: 0 });
+    }
+    if (!res) {
+      continue;
+    }
+    probes.push({ url: u, status: res.status });
+    // a WAF challenge page is HTML even when HTTP says 200 — never count it as llms.txt
+    const looksLikeText = !/^\s*(<!DOCTYPE html|<html)/i.test(body.trim());
+    if (res.status === 200 && looksLikeText && body.trim().length) {
+      found = true;
+      contents[u] = body.slice(0, 5000);
+      if (!content) {
+        content = body.slice(0, 5000);
+      }
     }
   }
   return { found, probes, content, contents };
