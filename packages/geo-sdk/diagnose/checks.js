@@ -182,16 +182,38 @@ function buildChecks(ev) {
   }
 
   // ---- redirect type audit: 302 is temporary and uncacheable for crawlers ----
+  // 语言协商重定向（302 + Vary: Accept-Language，多语言首页按 Accept-Language/Cookie
+  // 302 到语言前缀）是设计内正确实践（RFC 协商 + Google 支持），不视为缺陷。
+  const langNeg = (x) => (x.vary || '').includes('accept-language');
   const tempRedirs = redirs.filter((x) => x.status === 302 || x.status === 303 || x.status === 307);
-  C.push(check('tech', '重定向类型', redirs.length === 0 ? 'pass' : tempRedirs.length === 0 ? 'pass' : 'warn',
-    redirs.length ? `${redirs.map((x) => x.status).join(' → ')}${tempRedirs.length ? `｜${tempRedirs.length} 个临时重定向（302/303/307，建议改 301，利于缓存与权重传递）` : '（全 301/308 永久重定向）'}` : '无重定向'));
+  const hardTemp = tempRedirs.filter((x) => !langNeg(x));
+  let redirTypeEv = '无重定向';
+  if (redirs.length) {
+    const chain = redirs.map((x) => x.status).join(' → ');
+    if (!tempRedirs.length) {
+      redirTypeEv = `${chain}（全 301/308 永久重定向）`;
+    } else {
+      const hard = hardTemp.length ? hardTemp.map((x) => `${x.status} ${x.location}`).join(', ') : '';
+      const neg = tempRedirs.length - hardTemp.length;
+      redirTypeEv = `${chain}｜${tempRedirs.length} 个临时重定向${hard ? `：${hard}` : ''}${neg ? `；${neg} 个为语言协商 302（Vary: Accept-Language，设计内）` : ''}`;
+    }
+  }
+  C.push(check('tech', '重定向类型', redirs.length === 0 ? 'pass' : hardTemp.length === 0 ? 'pass' : 'warn', redirTypeEv));
 
   // ---- mobile (m.) subdomain redirect semantics ----
+  // m 子域的 302 多为设计内行为：语言协商（302 /zh-hans|/zh-hant）或桌面 UA 302 回主站；
+  // 回主站后主站自身再做语言协商 302，构成全 302 链（m→www→/zh-hans）。只要首跳语义正确
+  // （to www 或语言前缀）且全链均为 302，判 info；出现非 302 跳或语义异常才 warn。
   const mob = ev.mobileRedirect;
   const mRedir = mob && mob.redirects && mob.redirects.length ? mob.redirects[0].status : null;
-  C.push(check('tech', '移动端子域 (m.)', mob === null ? 'info' : mRedir === 301 ? 'pass' : mRedir === 302 ? 'warn' : mob && mob.error ? 'warn' : 'info',
+  const mFirst = mob && mob.redirects && mob.redirects[0] || null;
+  const mRedirToWww = !!mFirst && /^https:\/\/www\./i.test(mFirst.location);
+  const mRedirLang = !!mFirst && /^\/(?:zh-hans|zh-hant|en)(?:[/?]|$)/.test(mFirst.location);
+  const mAll302 = mRedir === 302 && (mob.redirects || []).every((x) => x.status === 302);
+  C.push(check('tech', '移动端子域 (m.)',
+    mob === null ? 'info' : mRedir === 301 ? 'pass' : mAll302 && (mRedirToWww || mRedirLang) ? 'info' : mRedir === 302 ? 'warn' : mob && mob.error ? 'warn' : 'info',
     mob === null ? '无 m. 子域（未部署独立移动端域名）' : mob && mob.status
-      ? `${mob.host || 'm. 子域'} 返回 ${mob.status}${mRedir ? `，首跳 ${mRedir} → ${mob.redirects[0].location}` : ''}${mRedir === 302 ? '（临时重定向，建议 301）' : ''}`
+      ? `${mob.host || 'm. 子域'} 返回 ${mob.status}${mRedir ? `，首跳 ${mRedir} → ${mFirst ? mFirst.location : ''}（链长 ${(mob.redirects || []).length}）` : ''}${mRedir === 302 ? (mAll302 && (mRedirToWww || mRedirLang) ? '（全 302 链，m 站协商/引导设计内）' : '（临时重定向，建议评估 301）') : ''}`
       : (mob && mob.error) || '探测失败'));
 
   // ============ 安全 ============
@@ -643,11 +665,13 @@ function buildChecks(ev) {
       : '无正文可统计'));
 
   const ds = geoX.dateSignals || {};
-  const dateSt = ds.published ? (ds.gapDays !== null && ds.gapDays <= 365 ? 'pass' : 'warn') : 'warn';
+  // 无 datePublished 在纯营销/静态官网属正常（无"文章"语义），判 info 而非 warn；
+  // 内容型站点（有文章页）的日期可见性由「文章日期可见性」检查单独覆盖。
+  const dateSt = ds.published ? (ds.gapDays !== null && ds.gapDays <= 365 ? 'pass' : 'warn') : 'info';
   C.push(check('geo', '日期信号', dateSt,
     ds.published
       ? `published=${String(ds.published).slice(0, 10)}${ds.modified ? ` modified=${String(ds.modified).slice(0, 10)}` : ''}${ds.gapDays !== null ? ` · 更新间隔 ${ds.gapDays} 天${ds.gapDays > 365 ? '（超 12 个月，陈旧）' : ''}` : ''}（来源: ${ds.source}）`
-      : '未发现 datePublished/dateModified（AI 无法判断内容时效）'));
+      : '未发现 datePublished/dateModified（静态营销页可接受；文章页应有日期，由「文章日期可见性」覆盖）'));
 
   const ab = geoX.authorByline || {};
   C.push(check('geo', '作者署名 (E-E-A-T)', ab.author ? 'pass' : 'info',

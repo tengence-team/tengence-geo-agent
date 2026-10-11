@@ -69,7 +69,12 @@ async function fetchPage(url, { timeoutMs = 15000, maxRedirects = 6, headers = {
   while ([301, 302, 303, 307, 308].includes(res.status) && hops < maxRedirects) {
     const loc = res.headers.get('location');
     if (!loc) break;
-    redirects.push({ from: current, status: res.status, location: loc });
+    redirects.push({
+      from: current,
+      status: res.status,
+      location: loc,
+      vary: (res.headers.get('vary') || '').toLowerCase(),
+    });
     current = new URL(loc, current).href;
     try {
       countRequest(wantHead ? 'HEAD' : 'GET');

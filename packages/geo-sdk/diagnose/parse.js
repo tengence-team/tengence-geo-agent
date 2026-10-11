@@ -105,7 +105,9 @@ function parsePage(html, baseUrl) {
     images.count++;
     const src = $(el).attr('src') || $(el).attr('data-src') || '';
     const alt = $(el).attr('alt');
-    if (alt === undefined || alt === null || alt === '') images.missingAlt++;
+    // 仅「无 alt 属性」计缺失；alt="" 是装饰/图标图的合法语义（WCAG 1.1.1），不计缺失。
+    // 此前把 alt="" 也计为缺失，会误伤大量合规的装饰图（如 Next/SEO 站点图标）。
+    if (alt === undefined || alt === null) images.missingAlt++;
     if ($(el).attr('loading') === 'lazy' || $(el).attr('data-src')) images.lazy++;
     const ext = (src.split('?')[0].split('.').pop() || '').toLowerCase();
     if (ext === 'webp') images.webp++;
