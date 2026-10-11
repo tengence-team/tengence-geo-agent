@@ -364,7 +364,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
       authorByline: authorByline(rp),
       authoritativeCitations: authoritativeCitations(rp.externalHosts || []),
       entityConsistency: entityConsistency(rp),
-      llmsStructure: llmsStructure((llmsRes && llmsRes.content) || ''),
+      llmsStructure: llmsStructure((llmsRes && llmsRes.content) || '', (llmsRes && llmsRes.contents) || {}),
       staticHtmlContent: staticHtmlContent(rp),
       aigcDisclosure: aigcDisclosure(rp),
       qaBlocks: qaBlocks(rp),

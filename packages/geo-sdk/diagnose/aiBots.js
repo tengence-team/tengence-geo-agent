@@ -108,16 +108,17 @@ async function aiReachability(baseUrl, { timeoutMs = 10000, baselineWords = 0 } 
   return out;
 }
 
-const LLMS_PATHS = ['/llms.txt', '/llms-full.txt', '/.well-known/llms.txt'];
+const LLMS_PATHS = ['/llms.txt', '/zh-hans/llms.txt', '/zh-hant/llms.txt', '/en/llms.txt', '/llms-full.txt', '/.well-known/llms.txt'];
 
 /**
- * Probe standard llms.txt locations.
+ * Probe standard llms.txt locations (root + per-locale variants).
  * @param {string} baseUrl
  * @param {{timeoutMs?:number}} [opts]
- * @returns {Promise<{found:boolean, probes:Array<{url:string,status:number}>, content:string}>}
+ * @returns {Promise<{found:boolean, probes:Array<{url:string,status:number}>, content:string, contents:Record<string,string>}>}
  */
 async function probeLlms(baseUrl, { timeoutMs = 8000 } = {}) {
   const probes = [];
+  const contents = {};
   let found = false;
   let content = '';
   for (const p of LLMS_PATHS) {
@@ -134,13 +135,16 @@ async function probeLlms(baseUrl, { timeoutMs = 8000 } = {}) {
       const looksLikeText = !/^\s*(<!DOCTYPE html|<html)/i.test(body.trim());
       if (res.status === 200 && looksLikeText && body.trim().length) {
         found = true;
-        content = body.slice(0, 5000);
+        contents[u] = body.slice(0, 5000);
+        if (!content) {
+          content = body.slice(0, 5000);
+        }
       }
     } catch (e) {
       probes.push({ url: u, status: 0 });
     }
   }
-  return { found, probes, content };
+  return { found, probes, content, contents };
 }
 
 const LANG_PATHS = ['/en/', '/en', '/fr/', '/fr', '/es/', '/es', '/de/', '/de', '/ja/', '/ja'];

@@ -690,10 +690,14 @@ function buildChecks(ev) {
       ? `Organization schema name=${ec.name || '?'} vs 页面标题「${(ec.title || '').slice(0, 30)}」${ec.nameConsistent === null ? '（无法比对，标题过短/不同）' : ec.nameConsistent ? '（一致）' : '（不一致，AI 实体识别可能错乱）'}${ec.logo ? ` · logo ${ec.logoOnPage ? '页面可见' : '页面未见'}` : ''}`
       : '未声明 Organization 实体（无一致性可核）'));
 
-  const ls = geoX.llmsStructure || { specCompliant: false };
-  C.push(check('geo', 'llms.txt 结构规范', ls.specCompliant ? 'pass' : (llms.found ? 'warn' : 'info'),
+  const ls = geoX.llmsStructure || { specCompliant: false, langVersions: 0, langIndex: false };
+  // 多语言站点口径：站点有独立语言路径时要求「根合规 + 三语索引 + ≥2 语言版」→ pass；
+  // 根合规但语言版/索引不完整 → warn；单语站点根合规即 pass（不误伤）。
+  const isMultilingual = lang200.length > 0 || (rp.hreflang || []).length > 1;
+  const multilingualOk = ls.specCompliant && (!isMultilingual || (ls.langIndex && (ls.langVersions || 0) >= 2));
+  C.push(check('geo', 'llms.txt 结构规范', multilingualOk ? 'pass' : ls.specCompliant ? 'warn' : (llms.found ? 'warn' : 'info'),
     llms.found
-      ? `H1${ls.h1 ? ' ✓' : ' ✗'} · blockquote${ls.blockquote ? ' ✓' : ' ✗'} · H2 分区 ${ls.sections} · 链接 ${ls.links} 个${ls.described ? `（${ls.described} 带描述）` : ''}${ls.specCompliant ? '（符合 llms.txt 规范）' : '（未完全符合规范：需 H1 品牌名 + blockquote 描述 + H2 分类 + 链接带描述）'}`
+      ? `H1${ls.h1 ? ' ✓' : ' ✗'} · blockquote${ls.blockquote ? ' ✓' : ' ✗'} · H2 分区 ${ls.sections} · 链接 ${ls.links} 个${ls.described ? `（${ls.described} 带描述）` : ''} · 语言版 ${ls.langVersions || 0} 个${isMultilingual ? (ls.langIndex ? ' · 根含三语索引 ✓' : ' · 根无三语索引 ✗') : ''}${multilingualOk ? (isMultilingual ? '（三语 llms.txt 体系符合规范）' : '（符合 llms.txt 规范）') : ls.specCompliant ? '（根文件合规，但多语言版本/索引不完整）' : '（未完全符合规范：需 H1 品牌名 + blockquote 描述 + H2 分类 + 链接带描述）'}`
       : '未发现 /llms.txt'));
 
   const sh = geoX.staticHtmlContent || { textLength: 0, h1s: 0, staticOk: false };

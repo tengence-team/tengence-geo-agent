@@ -110,8 +110,11 @@ function entityConsistency(parsed) {
   return { declared: true, name, logo, title, logoOnPage, nameConsistent };
 }
 
-/** llms.txt structural compliance per the llms.txt spec. */
-function llmsStructure(content) {
+/** llms.txt structural compliance per the llms.txt spec.
+ *  `extraContents` maps absolute llms.txt URLs to their (truncated) bodies,
+ *  so per-locale variants (/zh-hans/llms.txt etc.) are checked too.
+ */
+function llmsStructure(content, extraContents) {
   const text = String(content || '');
   const lines = text.split('\n');
   const h1 = lines.find((l) => /^#\s+\S/.test(l.trim())) || null;
@@ -121,7 +124,17 @@ function llmsStructure(content) {
   const links = linkLines.length;
   const described = linkLines.filter((l) => /:\s*\S+/.test(l.split(')')[1] || '') || /\S+\s*—\s*\S+/.test(l)).length;
   const specCompliant = !!(h1 && blockquote && h2s.length >= 1 && links >= 3 && (described / Math.max(1, links)) >= 0.5);
-  return { specCompliant, h1: h1 ? h1.trim() : null, blockquote: blockquote ? blockquote.trim().slice(0, 120) : null, sections: h2s.length, links, described, textLen: text.length };
+  // Per-locale llms.txt variants: any 200 text bodies besides the root file.
+  const variantBodies = Object.entries(extraContents || {})
+    .filter(([u]) => !/\/llms\.txt$/.test(new URL(u).pathname) || new URL(u).pathname !== '/llms.txt')
+    .map(([, b]) => b);
+  const langVersions = variantBodies.filter((b) => {
+    const t = String(b || '');
+    return /^#\s+\S/m.test(t) && /^##\s+\S/m.test(t) && /-\s*\[[^\]]+\]\(https?:\/\//.test(t);
+  }).length;
+  // Multilingual root index: root file links to per-locale files (llms.txt best practice).
+  const langIndex = !!['zh-hans/llms.txt', 'zh-hant/llms.txt', 'en/llms.txt'].some((p) => text.includes(p));
+  return { specCompliant, h1: h1 ? h1.trim() : null, blockquote: blockquote ? blockquote.trim().slice(0, 120) : null, sections: h2s.length, links, described, textLen: text.length, langVersions, langIndex };
 }
 
 /** Key content served as static HTML (AI crawler readability without JS). */

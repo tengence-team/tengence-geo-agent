@@ -390,3 +390,95 @@ test('diagnose_site (deep=false): no deep probes, zero-request checks still pres
   assert.ok(byName['CDN 缓存命中率']);
   assert.equal(byName['CDN 缓存命中率'].status, 'info');
 });
+
+// ---- llms.txt multilingual structure (v2 spec: root index + per-locale variants) ----
+const { llmsStructure } = require('../packages/geo-sdk/diagnose/geo-extra');
+const { probeLlms } = require('../packages/geo-sdk/diagnose/aiBots');
+
+const ROOT_LLMS = `# Acme SaaS
+
+> Acme SaaS automates billing workflows for enterprises.
+
+- [English content map](https://example.com/en/llms.txt): English pages and articles
+- [简体中文内容地图](https://example.com/zh-hans/llms.txt): 简体中文页面与文章
+- [繁體中文內容地圖](https://example.com/zh-hant/llms.txt): 繁體中文頁面與文章
+
+## Product
+
+- [Overview](https://example.com/en/overview): Core capabilities and use cases.
+- [Pricing](https://example.com/en/pricing): Plans, limits, and enterprise options.
+
+## Blog: Guides
+
+- [Guide A](https://example.com/en/blog/article/guide-a/): A walkthrough.
+- [Guide B](https://example.com/en/blog/article/guide-b/): Another walkthrough.
+`;
+
+const LOCALE_LLMS = `# Acme SaaS – 简体中文
+
+> Acme SaaS 帮助企业管理计费工作流。
+
+## Product
+
+- [产品总览](https://example.com/zh-hans/overview): 核心能力与用例。
+- [定价](https://example.com/zh-hans/pricing): 套餐与限额。
+
+## Blog: 指南
+
+- [指南 A](https://example.com/zh-hans/blog/article/guide-a/): 使用说明。
+`;
+
+test('llmsStructure: root-only compliant file passes for a monolingual site', () => {
+  const out = llmsStructure(ROOT_LLMS, {});
+  assert.equal(out.specCompliant, true);
+  assert.equal(out.langIndex, true);
+  assert.equal(out.langVersions, 0);
+});
+
+test('llmsStructure: per-locale variants are counted from extraContents', () => {
+  const contents = {
+    'https://example.com/llms.txt': ROOT_LLMS,
+    'https://example.com/en/llms.txt': LOCALE_LLMS,
+    'https://example.com/zh-hans/llms.txt': LOCALE_LLMS,
+    'https://example.com/zh-hant/llms.txt': LOCALE_LLMS,
+  };
+  const out = llmsStructure(ROOT_LLMS, contents);
+  assert.equal(out.specCompliant, true);
+  assert.equal(out.langIndex, true);
+  assert.equal(out.langVersions, 3);
+});
+
+test('llmsStructure: root file without locale links is flagged (langIndex=false)', () => {
+  const noIndex = ROOT_LLMS
+    .replace(/^- \[English content map\].*\n/m, '')
+    .replace(/^- \[简体中文内容地图\].*\n/m, '')
+    .replace(/^- \[繁體中文內容地圖\].*\n/m, '');
+  const out = llmsStructure(noIndex, {});
+  assert.equal(out.specCompliant, true);
+  assert.equal(out.langIndex, false);
+});
+
+test('probeLlms: probes root plus per-locale variants and returns contents map', async () => {
+  const server = http.createServer((req, res) => {
+    if (['/llms.txt', '/zh-hans/llms.txt', '/en/llms.txt'].includes(req.url)) {
+      res.writeHead(200, { 'content-type': 'text/plain' });
+      res.end(req.url.includes('/zh-hans/') ? LOCALE_LLMS : ROOT_LLMS);
+      return;
+    }
+    res.writeHead(404, { 'content-type': 'text/html' });
+    res.end('<html>404</html>');
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const port = server.address().port;
+  try {
+    const out = await probeLlms(`http://127.0.0.1:${port}/`);
+    assert.equal(out.found, true);
+    const llmsPaths = out.probes.filter((p) => p.status === 200).map((p) => new URL(p.url).pathname);
+    assert.ok(llmsPaths.includes('/llms.txt'));
+    assert.ok(llmsPaths.includes('/zh-hans/llms.txt'));
+    assert.ok(llmsPaths.includes('/en/llms.txt'));
+    assert.equal(Object.keys(out.contents).length, 3, 'contents map must hold root + 2 locale bodies');
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
+});
