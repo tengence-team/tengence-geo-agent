@@ -202,26 +202,31 @@ async function dnsProbe(host) {
     whois: null,
     errors: [],
   };
-  const grab = async (fn, key) => {
-    try {
-      out[key] = await Promise.race([
-        fn,
-        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
-      ]);
-    } catch (e) {
-      out.errors.push(`${key}: ${e.code || e.message}`);
+  const grab = async (thunk, key) => {
+    // 单次 DNS 查询失败（瞬时超时/网络抖动）重试一次，避免把正常解析误报为"无记录"
+    // （与 probeRange 的 HTTP 重试同模式）。
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        out[key] = await Promise.race([
+          thunk(),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
+        ]);
+        return;
+      } catch (e) {
+        if (attempt === 1) out.errors.push(`${key}: ${e.code || e.message}`);
+      }
     }
   };
 
   // A/AAAA/CNAME are host-specific; NS/MX/TXT and WHOIS live on the apex (registrable) domain
   const apex = host.replace(/^www\./i, '');
-  await grab(dns.resolve4(host), 'a');
-  await grab(dns.resolve6(host), 'aaaa');
-  await grab(dns.resolveCname(host), 'cname');
+  await grab(() => dns.resolve4(host), 'a');
+  await grab(() => dns.resolve6(host), 'aaaa');
+  await grab(() => dns.resolveCname(host), 'cname');
   out.cnameChain = await resolveCnameChain(host).catch((e) => ({ error: e.message }));
-  await grab(dns.resolveNs(apex), 'ns');
-  await grab(dns.resolveMx(apex), 'mx');
-  await grab(dns.resolveTxt(apex), 'txt');
+  await grab(() => dns.resolveNs(apex), 'ns');
+  await grab(() => dns.resolveMx(apex), 'mx');
+  await grab(() => dns.resolveTxt(apex), 'txt');
 
   if (!IP_RE.test(host) && host !== LOCALHOST) {
     out.certificate = await certProbe(host).catch((e) => ({ error: e.message }));
