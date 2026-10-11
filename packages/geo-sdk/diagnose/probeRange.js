@@ -1,16 +1,20 @@
 /**
  * diagnose/probeRange.js — bounded batch status probing for site-scale inventory
  * ============================================================================
- * Lightweight HTTP status probes (GET, body discarded) over a URL list, used to
- * answer the questions a single-page diagnosis cannot:
+ * Lightweight HTTP status probes (HEAD, no body download) over a URL list, used
+ * to answer the questions a single-page diagnosis cannot:
  *   - how many sitemap URLs actually resolve (200) vs fail (500 / 404 / other)
  *   - where the stable soft-500 / dead-page clusters are
  *   - what share of the *discoverable* site the sitemap really covers
  * Always bounded: concurrency + maxUrls caps keep this cheap even on huge
  * sitemaps (a site is sampled, never fully crawled).
+ *
+ * Politeness: HEAD only — a 200-URL sitemap probe must not drag tens of
+ * megabytes of HTML across the network. Servers that answer HEAD with 405/501
+ * fall back to GET (body still discarded) so the inventory stays accurate.
  */
 
-const { UA } = require('./fetch');
+const { UA, fetchPage } = require('./fetch');
 
 const ABNORMAL = new Set([500, 502, 503, 504, 429, 403, 410]);
 
@@ -38,42 +42,36 @@ async function probeRange(urls, { concurrency = 8, timeoutMs = 8000, maxUrls = 5
   };
   if (!list.length) return out;
 
+  /** One status probe. HEAD first; if the server rejects HEAD (405/501) or the
+   *  HEAD response has no useful status semantics, retry once with GET and
+   *  discard the body. Redirects are followed by fetchPage internally. */
+  async function probeOne(url) {
+    const head = await fetchPage(url, { timeoutMs, method: 'HEAD' });
+    if (head.error || (head.status !== 405 && head.status !== 501)) {
+      return { status: head.status || 0, finalUrl: head.finalUrl || url, error: head.error };
+    }
+    const get = await fetchPage(url, { timeoutMs });
+    return { status: get.status || 0, finalUrl: get.finalUrl || url, error: get.error };
+  }
+
   let i = 0;
   const workers = Array.from(
     { length: Math.min(concurrency, list.length) },
     async () => {
       while (i < list.length) {
         const url = list[i++];
-        let status = 0;
-        let finalUrl = url;
-        let error = null;
-        try {
-          const res = await fetch(url, {
-            redirect: 'follow',
-            signal: AbortSignal.timeout(timeoutMs),
-            headers: {
-              'user-agent': UA,
-              accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            },
-          });
-          status = res.status;
-          finalUrl = res.url || url;
-          // body intentionally discarded — status-only inventory probe
-          await res.arrayBuffer().catch(() => {});
-        } catch (e) {
-          error = e.message;
-        }
-        out.statusDist[status] = (out.statusDist[status] || 0) + 1;
-        if (status === 200) {
+        const r = await probeOne(url);
+        out.statusDist[r.status] = (out.statusDist[r.status] || 0) + 1;
+        if (r.status === 200) {
           out.ok200++;
-          out.okUrls.push(finalUrl);
+          out.okUrls.push(r.finalUrl);
         } else {
           out.errorCount++;
-          const rec = { url, status, finalUrl };
+          const rec = { url, status: r.status, finalUrl: r.finalUrl };
           out.failures.push(rec);
-          if (ABNORMAL.has(status)) out.abnormal.push(rec);
+          if (ABNORMAL.has(r.status)) out.abnormal.push(rec);
         }
-        if (error) out.failures[out.failures.length - 1].error = error;
+        if (r.error) out.failures[out.failures.length - 1].error = r.error;
       }
     },
   );

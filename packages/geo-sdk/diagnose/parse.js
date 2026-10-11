@@ -206,6 +206,41 @@ function parsePage(html, baseUrl) {
   // ---- viewport details (user-scalable=no hurts mobile usability signal) ----
   const userScalableNo = /user-scalable\s*=\s*(no|0)/i.test(viewport || '');
 
+  // ---- language switcher: in-page links pointing at other language versions ----
+  // A "real" i18n site offers humans an in-page switch, complementing hreflang.
+  const langLinks = [];
+  const langRefs = new Set(hreflang.map((x) => String(x.href || '').replace(/\/+$/, '')));
+  for (const s of (links.samples || [])) {
+    const clean = String(s.href || '').replace(/\/+$/, '');
+    if (langRefs.has(clean) && langLinks.length < 10) langLinks.push(clean);
+  }
+  const langSwitcher = { found: langLinks.length > 0, links: langLinks };
+
+  // ---- third-party resource hosts (analytics/CDN/embeds — privacy & risk audit) ----
+  const thirdPartyHosts = [];
+  {
+    const seen = new Set();
+    const push = (h) => {
+      if (!h) return;
+      const hh = String(h).toLowerCase();
+      if (!seen.has(hh)) {
+        seen.add(hh);
+        thirdPartyHosts.push(hh);
+      }
+    };
+    for (const s of (scripts.srcs || [])) {
+      try {
+        if (new URL(s, baseUrl).hostname !== host) push(new URL(s, baseUrl).hostname);
+      } catch { /* relative/void — same host by construction */ }
+    }
+    for (const s of (links.samples || [])) {
+      if (s.nofollow || !s.href) continue;
+      try {
+        if (new URL(s.href, baseUrl).hostname !== host) push(new URL(s.href, baseUrl).hostname);
+      } catch { /* noop */ }
+    }
+  }
+
   return {
     title: $('title').first().text().replace(/\s+/g, ' ').trim() || null,
     meta,
@@ -267,6 +302,8 @@ function parsePage(html, baseUrl) {
     iframes,
     analytics,
     userScalableNo,
+    langSwitcher,
+    thirdPartyHosts,
     httpResources: httpResources.slice(0, 20),
     mixedContent: httpResources.length,
   };

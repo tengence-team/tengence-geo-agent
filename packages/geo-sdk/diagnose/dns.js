@@ -79,6 +79,10 @@ function certProbe(host, { timeoutMs = 8000 } = {}) {
         issuer: cert.issuer || null,
         subject: cert.subject || null,
         subjectaltname: cert.subjectaltname || null,
+        sans: (cert.subjectaltname || '')
+          .split(',')
+          .map((s) => s.trim().replace(/^DNS:/i, ''))
+          .filter(Boolean),
         valid_from: cert.valid_from || null,
         valid_to: cert.valid_to || null,
         daysLeft,
@@ -116,6 +120,70 @@ async function whoisLookup(domain) {
   };
 }
 
+/** Resolve a CNAME chain recursively (bounded) down to the terminal A/AAAA record.
+ *  Marks CDN/GSLB-style intermediate targets so a report can name the CDN vendor
+ *  from the chain itself, not just from response headers. Every DNS step is
+ *  time-bounded (c-ares can hang on GSLB chains in some environments). */
+function resolveCnameChain(host, { maxHops = 5, hopTimeoutMs = 3000 } = {}) {
+  return new Promise((resolve) => {
+    const chain = [];
+    let current = host;
+    (async () => {
+      for (let i = 0; i < maxHops; i++) {
+        let cname = null;
+        try {
+          const ans = await Promise.race([
+            dns.resolveCname(current),
+            new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), hopTimeoutMs)),
+          ]);
+          cname = ans && ans[0] ? ans[0] : null;
+        } catch {
+          cname = null; // not a CNAME target — terminal record expected next
+        }
+        if (!cname) break;
+        chain.push({ from: current, to: cname, kind: classifyCname(cname) });
+        current = cname;
+      }
+      // terminal A/AAAA for the last hop (time-bounded too)
+      let a = [];
+      let aaaa = [];
+      try {
+        a = await Promise.race([
+          dns.resolve4(current),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), hopTimeoutMs)),
+        ]);
+      } catch {
+        a = [];
+      }
+      try {
+        aaaa = await Promise.race([
+          dns.resolve6(current),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), hopTimeoutMs)),
+        ]);
+      } catch {
+        aaaa = [];
+      }
+      resolve({ host, chain, terminal: current, a, aaaa });
+    })().catch(() => resolve({ host, chain, terminal: host, a: [], aaaa: [] }));
+  });
+}
+
+/** Tag well-known CDN/GSLB/LB CNAME suffixes (used for the chain-kind column). */
+function classifyCname(name) {
+  const n = String(name || '').toLowerCase();
+  if (n.endsWith('.cdngslb.com')) return 'aliyun-cdn-gslb';
+  if (n.endsWith('.alicdn.com')) return 'aliyun-cdn';
+  if (n.endsWith('.cdn.cloudflare.net')) return 'cloudflare';
+  if (n.endsWith('.cloudfront.net')) return 'aws-cloudfront';
+  if (n.endsWith('.fastly.net')) return 'fastly';
+  if (n.endsWith('.edgekey.net') || n.endsWith('.edgesuite.net')) return 'akamai';
+  if (n.endsWith('.qtlcdn.com')) return 'tencent-cdn';
+  if (n.endsWith('.kunlun.com')) return 'tencent-cdn';
+  if (n.endsWith('.dnspod.net')) return 'dnspod';
+  if (n.endsWith('.aliyuncs.com')) return 'aliyun';
+  return 'cname';
+}
+
 /**
  * Full domain probe: DNS records + TLS certificate + WHOIS.
  */
@@ -125,6 +193,7 @@ async function dnsProbe(host) {
     a: [],
     aaaa: [],
     cname: [],
+    cnameChain: null,
     ns: [],
     mx: [],
     txt: [],
@@ -135,7 +204,10 @@ async function dnsProbe(host) {
   };
   const grab = async (fn, key) => {
     try {
-      out[key] = await fn;
+      out[key] = await Promise.race([
+        fn,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 3000)),
+      ]);
     } catch (e) {
       out.errors.push(`${key}: ${e.code || e.message}`);
     }
@@ -146,6 +218,7 @@ async function dnsProbe(host) {
   await grab(dns.resolve4(host), 'a');
   await grab(dns.resolve6(host), 'aaaa');
   await grab(dns.resolveCname(host), 'cname');
+  out.cnameChain = await resolveCnameChain(host).catch((e) => ({ error: e.message }));
   await grab(dns.resolveNs(apex), 'ns');
   await grab(dns.resolveMx(apex), 'mx');
   await grab(dns.resolveTxt(apex), 'txt');
@@ -165,4 +238,4 @@ async function dnsProbe(host) {
   return out;
 }
 
-module.exports = { dnsProbe, whoisLookup, certProbe, whoisQuery };
+module.exports = { dnsProbe, whoisLookup, certProbe, whoisQuery, resolveCnameChain, classifyCname };

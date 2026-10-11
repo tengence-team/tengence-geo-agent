@@ -8,9 +8,39 @@
  * "info" items carry observations with no pass/fail judgement.
  */
 
+const { normLang } = require('./i18n');
+
 function check(dimension, name, status, detail, id) {
   const suffix = id || `${dimension}-${name}`.replace(/[\/\\]/g, '-');
   return { id: suffix, dimension, name, status, detail };
+}
+
+/** Well-known third-party hosts (analytics/CDN/fonts/embeds) — presence is not a risk. */
+const KNOWN_THIRD_PARTY = [
+  'google-analytics.com', 'googletagmanager.com', 'googletagservices.com', 'googlesyndication.com',
+  'googleapis.com', 'gstatic.com', 'doubleclick.net', 'google.com', 'google.cn', 'gstatic.cn',
+  'jsdelivr.net', 'unpkg.com', 'cdnjs.cloudflare.com', 'cloudflare.com', 'bootstrapcdn.com',
+  'alicdn.com', 'aliyuncs.com', 'taobao.com', 'tmall.com', 'bytedance.com', 'byteimg.com', 'pstatp.com',
+  'baidu.com', 'bdstatic.com', 'hm.baidu.com', 'cnzz.com', 'qq.com', 'gtimg.com', 'gtimg.cn',
+  'qcloud.com', 'myqcloud.com', 'weixin.qq.com', 'woa.com', '51.la', 'cnzz.mochiji.com',
+  'matomo.cloud', 'hotjar.com', 'sentry.io', 'amplitude.com', 'mixpanel.com', 'segment.com',
+  'intercom.io', 'crisp.chat', 'tawk.to', 'zendesk.com', 'freshchat.com', 'fullstory.com',
+  'fonts.googleapis.com', 'fonts.gstatic.com', 'ajax.googleapis.com', 'yandex.ru', 'yandex.com',
+  'bing.com', 'microsoft.com', 'microsoftonline.com', 'facebook.net', 'fbcdn.net', 'facebook.com',
+  'tiktok.com', 'douyin.com', 'youtube.com', 'youtube-nocookie.com', 'vimeo.com', 'twitter.com',
+  'x.com', 'twimg.com', 'instagram.com', 'linkedin.com', 'pinterest.com', 'medium.com',
+  'notion.so', 'vercel.app', 'netlify.app', 'squarespace.com', 'shopify.com', 'myshopify.com',
+  'wordpress.org', 'wordpress.com', 'wp.com', 'gravatar.com', 'automattic.com',
+  'cloudinary.com', 'imgix.net', 'unsplash.com', 'images.unsplash.com', 'pixabay.com',
+  'freepik.com', 'flaticon.com', 'icons8.com', 'fontawesome.com', 'fontawesome.cn',
+  'vuejs.org', 'reactjs.org', 'nextjs.org', 'nuxtjs.org', 'astro.build', 'webflow.com',
+  'zoho.com', 'hubspot.com', 'salesforce.com', 'sfccstatic.com', 'marketo.com', 'klaviyo.com',
+  'mailchimp.com', 'sendgrid.net', 'stripe.com', 'paypal.com', 'paypalobjects.com', 'alipay.com',
+  'wechat.com', 'tenpay.com', 'jpush.cn', 'getui.com', 'umeng.com', 'umengcloud.com', 'cnzz.com',
+];
+function isKnownThirdParty(host) {
+  const h = String(host || '').toLowerCase();
+  return KNOWN_THIRD_PARTY.some((k) => h === k || h.endsWith('.' + k));
 }
 
 function buildChecks(ev) {
@@ -21,6 +51,7 @@ function buildChecks(ev) {
   const dns = ev.dns || {};
   const rob = ev.robots || {};
   const sm = ev.sitemap || {};
+  const smLang = ev.sitemapLangDist || {};
   const sc = ev.scale || {};
   const ai = ev.aiBots || [];
   const llms = ev.llms || {};
@@ -74,6 +105,18 @@ function buildChecks(ev) {
   }
   if (who && who.registrar) C.push(check('domain', '注册商', 'info', who.registrar));
 
+  // ---- CNAME chain expansion (CDN/GSLB detection from DNS alone) ----
+  const cc = ev.cnameChain || (dns.cnameChain) || null;
+  if (cc && !cc.error && cc.chain && cc.chain.length) {
+    const kinds = cc.chain.map((h) => h.kind).filter((k) => k && k !== 'cname');
+    C.push(check('domain', 'CNAME 链（CDN 路由）', 'pass',
+      `${cc.chain.map((h) => h.from).join(' → ')} → ${cc.terminal} | A: ${(cc.a || []).slice(0, 2).join(', ')}${kinds.length ? `｜CDN/GSLB 特征: ${kinds.join(', ')}` : ''}`));
+  } else if (cc && !cc.error && (!cc.chain || !cc.chain.length)) {
+    C.push(check('domain', 'CNAME 链', 'info', '无 CNAME（直接 A 记录解析）'));
+  } else {
+    C.push(check('domain', 'CNAME 链', 'info', cc && cc.error ? `解析失败: ${cc.error}` : '未探测'));
+  }
+
   // ============ 技术/传输 ============
   const finalUrl = rp.finalUrl || r.url;
   let proto = '';
@@ -114,6 +157,37 @@ function buildChecks(ev) {
   C.push(check('tech', 'HTML 体积', rp.bodyLength < 512 * 1024 ? 'pass' : rp.bodyLength < 1024 * 1024 ? 'warn' : 'fail',
     `${(rp.bodyLength / 1024).toFixed(1)} KB`));
 
+  // ---- HTTP/3 readiness (alt-svc header; ALPN h3 cannot be negotiated over TLS 1.3) ----
+  const http3Info = ev.http3 || {};
+  C.push(check('tech', 'HTTP/3 (QUIC)', http3Info.h3 ? 'pass' : 'info',
+    http3Info.h3 ? `已宣告 h3（alt-svc: ${String(http3Info.altSvc || '').slice(0, 60)}）` : '未宣告 alt-svc/h3（HTTP/3 未启用，国际链路弱网下传输优化空间）'));
+
+  // ---- TTFB stability across repeated samples (CDN edge vs origin revalidation) ----
+  const ttfbS = ev.ttfbSamples || [];
+  if (ttfbS.length >= 2) {
+    const sorted = [...ttfbS].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const maxV = sorted[sorted.length - 1];
+    const st = maxV < 2 * Math.max(median, 100) ? 'pass' : maxV < 2000 ? 'warn' : 'fail';
+    C.push(check('tech', 'TTFB 稳定性', st,
+      `样本 ${ttfbS.length} 次: min=${sorted[0]}ms median=${median}ms max=${maxV}ms${maxV >= 2000 ? '（存在回源长尾，见 cdn 缓存命中率）' : ''}`));
+  } else {
+    C.push(check('tech', 'TTFB 稳定性', 'info', ttfbS.length === 1 ? `仅 1 次采样 ${ttfbS[0]}ms` : '未采样'));
+  }
+
+  // ---- redirect type audit: 302 is temporary and uncacheable for crawlers ----
+  const tempRedirs = redirs.filter((x) => x.status === 302 || x.status === 303 || x.status === 307);
+  C.push(check('tech', '重定向类型', redirs.length === 0 ? 'pass' : tempRedirs.length === 0 ? 'pass' : 'warn',
+    redirs.length ? `${redirs.map((x) => x.status).join(' → ')}${tempRedirs.length ? `｜${tempRedirs.length} 个临时重定向（302/303/307，建议改 301，利于缓存与权重传递）` : '（全 301/308 永久重定向）'}` : '无重定向'));
+
+  // ---- mobile (m.) subdomain redirect semantics ----
+  const mob = ev.mobileRedirect;
+  const mRedir = mob && mob.redirects && mob.redirects.length ? mob.redirects[0].status : null;
+  C.push(check('tech', '移动端子域 (m.)', mob === null ? 'info' : mRedir === 301 ? 'pass' : mRedir === 302 ? 'warn' : mob && mob.error ? 'warn' : 'info',
+    mob === null ? '无 m. 子域（未部署独立移动端域名）' : mob && mob.status
+      ? `${mob.host || 'm. 子域'} 返回 ${mob.status}${mRedir ? `，首跳 ${mRedir} → ${mob.redirects[0].location}` : ''}${mRedir === 302 ? '（临时重定向，建议 301）' : ''}`
+      : (mob && mob.error) || '探测失败'));
+
   // ============ 安全 ============
   const secHdrs = {
     'strict-transport-security': 'HSTS',
@@ -133,6 +207,29 @@ function buildChecks(ev) {
     `已配置: ${present.join(', ') || '无'} | 缺失: ${missing.join(', ') || '无'}`));
   C.push(check('security', '混合内容', rp.mixedContent === 0 ? 'pass' : 'warn',
     `页面引用了 ${rp.mixedContent} 个 http:// 资源`));
+
+  // ---- CSP policy parse: report-only is a rollout stage; can it go live? ----
+  const csp = ev.csp || {};
+  if (csp && (csp.enforced || csp.reportOnly)) {
+    C.push(check('security', 'CSP 策略',
+      csp.enforced ? 'pass' : csp.enforceReady ? 'warn' : 'info',
+      csp.enforced
+        ? 'Content-Security-Policy 已生效（enforce）'
+        : csp.reportOnly
+          ? `CSP 仍为 Report-Only${csp.enforceReady ? '，指令无硬阻塞，可转 enforce' : `，${csp.blockers.join('、')} 阻碍转 enforce`}`
+          : '未配置'));
+  } else {
+    C.push(check('security', 'CSP 策略', 'info', '未配置 CSP（含 Report-Only）'));
+  }
+
+  // ---- certificate SAN usage: hostnames covered by the cert that are not served ----
+  const san = ev.sanUsage;
+  if (san && san.sans && san.sans.length) {
+    C.push(check('security', '证书 SAN 使用核对', san.unused.length === 0 ? 'pass' : 'info',
+      `SAN: ${san.sans.slice(0, 6).join(', ')}${san.unused.length ? `｜${san.unused.length} 个 SAN 主机无服务: ${san.unused.join(', ')}` : ''}`));
+  } else {
+    C.push(check('security', '证书 SAN 使用核对', 'info', '未获取 SAN 列表'));
+  }
 
   // ---- cookie security flags (Secure / HttpOnly / SameSite) ----
   if (ck.total && ck.total > 0) {
@@ -164,6 +261,10 @@ function buildChecks(ev) {
       rob.sitemaps.length ? rob.sitemaps.join(', ') : '未在 robots 中声明 sitemap'));
     const blocks = rob.groups.map((g) => `UA=${g.userAgents.join(',')} Disallow=[${g.disallow.join(';')}]`).join(' | ');
     C.push(check('crawl', 'robots 规则概览', 'info', blocks || '无规则'));
+    // ---- Allow/Disallow same-path conflict detection (specificity trap) ----
+    const rc = ev.robotsConflicts || [];
+    C.push(check('crawl', 'robots 规则冲突', rc.length === 0 ? 'pass' : 'warn',
+      rc.length ? `${rc.length} 处 Allow 与 Disallow 同路径冲突: ${rc.slice(0, 4).map((x) => `Allow ${x.allow} vs Disallow ${x.disallow}`).join('；')}（按“最长匹配优先”，Allow 更长时静默放行）` : '无同路径 Allow/Disallow 冲突'));
   }
   C.push(check('crawl', 'sitemap 可用', sm.found ? 'pass' : 'warn',
     sm.found ? `${sm.type} · ${sm.urlCount} 个 URL` : '未发现可访问的 sitemap'));
@@ -198,13 +299,42 @@ function buildChecks(ev) {
     C.push(check('crawl', 'sitemap 协议一致性', nonCanonical.length === 0 ? 'pass' : 'warn',
       `${urls.length} 个 URL 中 ${nonCanonical.length} 个非 https://${host} 规范形态（http/www 混用会重复收录）`));
 
+    // ---- sitemap language distribution: does the declared i18n show up in the inventory? ----
+    if (smLang && smLang.total > 0 && smLang.missing && smLang.missing.length) {
+      C.push(check('crawl', 'sitemap 语言分布', 'warn',
+        `声明语言 ${smLang.byLang ? Object.keys(smLang.byLang).join('/') : ''}，sitemap 中缺失 ${smLang.missing.join(', ')}（${smLang.noPrefix} 个无语言前缀 URL 未被语言化收录）`));
+    } else if (smLang && smLang.total > 0) {
+      C.push(check('crawl', 'sitemap 语言分布', 'pass',
+        `${Object.entries(smLang.byLang || {}).map(([k, v]) => `${k}×${v}`).join(' ')}｜无前缀 ${smLang.noPrefix || 0}`));
+    }
+
+    // ---- sitemap freshness (lastmod coverage & recency) ----
+    const lastmods = sm.lastmods || [];
+    if (lastmods.length) {
+      const dates = lastmods.map((d) => new Date(d).getTime()).filter(Number.isFinite);
+      const recent = dates.length ? Math.max(...dates) : 0;
+      const daysSince = recent ? Math.max(0, Math.floor((Date.now() - recent) / 86400000)) : null;
+      const coverage = Math.round((lastmods.length / Math.max(1, urls.length)) * 100);
+      C.push(check('crawl', 'sitemap 新鲜度', daysSince !== null && daysSince <= 30 ? 'pass' : 'warn',
+        `lastmod 覆盖 ${coverage}% 的 URL${daysSince !== null ? `｜最近更新 ${daysSince} 天前` : '｜无有效日期'}`));
+    } else {
+      C.push(check('crawl', 'sitemap 新鲜度', 'warn', 'sitemap 未提供 lastmod（搜索引擎难判断内容更新节奏）'));
+    }
+
     // sitemap inventory: what share of sitemap URLs actually resolve (200)
     if (sc.total > 0) {
       const pct = Math.round((sc.ok200 / sc.total) * 100);
+      const pathOf = (f) => {
+        try {
+          return new URL(f.url).pathname || f.url;
+        } catch {
+          return String(f.url || '?').slice(0, 40);
+        }
+      };
       C.push(check('crawl', 'sitemap 收录页可访问性', sc.failures.length === 0 ? 'pass' : sc.failures.length <= sc.total * 0.1 ? 'warn' : 'fail',
-        `${sc.ok200}/${sc.total} 个 sitemap URL 返回 200（${pct}%）| 异常: ${sc.failures.slice(0, 6).map((f) => `${new URL(f.url).pathname}:${f.status}`).join(' ') || '无'}`));
+        `${sc.ok200}/${sc.total} 个 sitemap URL 返回 200（${pct}%）| 异常: ${sc.failures.slice(0, 6).map((f) => `${pathOf(f)}:${f.status}`).join(' ') || '无'}`));
       C.push(check('crawl', 'sitemap 500/异常软错误', sc.abnormal.length === 0 ? 'pass' : 'fail',
-        sc.abnormal.length ? `发现 ${sc.abnormal.length} 个稳定 ${[...new Set(sc.abnormal.map((f) => f.status))].join('/')} 页: ${sc.abnormal.slice(0, 8).map((f) => new URL(f.url).pathname).join(', ')}` : '无 5xx/403/429 软错误'));
+        sc.abnormal.length ? `发现 ${sc.abnormal.length} 个稳定 ${[...new Set(sc.abnormal.map((f) => f.status))].join('/')} 页: ${sc.abnormal.slice(0, 8).map(pathOf).join(', ')}` : '无 5xx/403/429 软错误'));
     } else {
       C.push(check('crawl', 'sitemap 收录页可访问性', 'info', 'sitemap 未解析出 URL，无法盘点'));
     }
@@ -320,6 +450,42 @@ function buildChecks(ev) {
   C.push(check('content', 'Twitter Card', rp.twitter && rp.twitter.card ? 'info' : 'info',
     rp.twitter && rp.twitter.card ? `card=${rp.twitter.card}` : '未配置 twitter:card'));
 
+  // ---- social share image completeness (og:image + twitter:image) ----
+  const twImg = rp.twitter && rp.twitter.image;
+  const ogImg = og.image;
+  C.push(check('content', '社交分享图片', ogImg && twImg ? 'pass' : ogImg || twImg ? 'warn' : 'fail',
+    `og:image=${!!ogImg} twitter:image=${!!twImg}${ogImg && !twImg ? '｜缺 twitter:image（Twitter/X 分享无图）' : !ogImg && twImg ? '｜缺 og:image（Facebook/微信等无图）' : !ogImg && !twImg ? '｜两者均缺失，社交分享卡片将无图' : ''}`));
+
+  // ---- image real format: declared extension vs served Content-Type ----
+  const imgTypes = ev.imgTypes || { mismatches: [], probes: [] };
+  C.push(check('content', '图片格式一致性', imgTypes.mismatches && imgTypes.mismatches.length === 0 ? 'pass' : 'warn',
+    imgTypes.probes && imgTypes.probes.length
+      ? `抽样 ${imgTypes.probes.length} 个资源${imgTypes.mismatches && imgTypes.mismatches.length ? `｜${imgTypes.mismatches.length} 个扩展名与 Content-Type 不符: ${imgTypes.mismatches.map((m) => `${new URL(m.url).pathname} (${m.declared}→${m.contentType})`).join(' ').slice(0, 100)}` : '，扩展名与 Content-Type 一致'}`
+      : '未抽样'));
+
+  // ---- third-party host audit (privacy / supply-chain signal) ----
+  const tp = rp.thirdPartyHosts || [];
+  const unknownTp = tp.filter((h) => !isKnownThirdParty(h));
+  C.push(check('content', '第三方域名', tp.length === 0 ? 'pass' : unknownTp.length === 0 ? 'pass' : 'warn',
+    tp.length
+      ? `页面引用 ${tp.length} 个外域: ${tp.join(', ').slice(0, 120)}${unknownTp.length ? `｜${unknownTp.length} 个未识别外域（隐私/供应链审查）: ${unknownTp.join(', ').slice(0, 80)}` : ''}`
+      : '无第三方外域资源'));
+
+  // ---- external resource reachability (HEAD probes against third-party hosts) ----
+  const extHealth = ev.externalHealth || { probes: [], failed: [] };
+  C.push(check('content', '外链资源可用性', extHealth.failed && extHealth.failed.length === 0 ? 'pass' : 'warn',
+    extHealth.probes && extHealth.probes.length
+      ? `抽样 ${extHealth.probes.length} 个外域资源${extHealth.failed && extHealth.failed.length ? `｜${extHealth.failed.length} 个不可达: ${extHealth.failed.slice(0, 3).join(', ')}` : '全部可达'}`
+      : '未抽样'));
+
+  // ---- duplicate no-prefix URLs (same content served twice: /path and /en/path) ----
+  if (smLang && smLang.total > 0 && smLang.noPrefix > 0 && smLang.byLang && Object.values(smLang.byLang).some((v) => v > 0)) {
+    C.push(check('content', '无前缀重复 URL', 'warn',
+      `sitemap 中 ${smLang.noPrefix} 个无语言前缀 URL 与带前缀版本并存（双 URL 均 200，靠 canonical 缓解，建议统一收录规范语言版）`));
+  } else if (smLang && smLang.total > 0) {
+    C.push(check('content', '无前缀重复 URL', 'pass', 'sitemap URL 语言前缀规整，无无前缀与带前缀并存'));
+  }
+
   // ============ 结构化数据 / GEO ============
   const types = rp.jsonld ? rp.jsonld.types : [];
   C.push(check('geo', 'JSON-LD 结构化数据', rp.jsonld && rp.jsonld.count > 0 ? 'pass' : 'warn',
@@ -336,6 +502,18 @@ function buildChecks(ev) {
     `blockquote×${rp.blockquotes} · 列表×${rp.lists}`));
   C.push(check('geo', 'robots meta', rp.robotsMeta ? 'info' : 'info',
     rp.robotsMeta ? `robots=${rp.robotsMeta}` : '未设置 robots meta（默认可索引）'));
+
+  // ---- meta robots vs X-Robots-Tag header consistency (two crawl directives) ----
+  const xRobots = lower['x-robots-tag'] || null;
+  const metaRobots = rp.robotsMeta || null;
+  if (xRobots && metaRobots) {
+    const same = String(xRobots).toLowerCase().replace(/\s+/g, '') === String(metaRobots).toLowerCase().replace(/\s+/g, '');
+    C.push(check('geo', 'robots 指令一致性', same ? 'pass' : 'warn',
+      `meta robots=${metaRobots} 与 X-Robots-Tag=${xRobots} 不一致（爬虫判定可能冲突）`));
+  } else {
+    C.push(check('geo', 'robots 指令一致性', xRobots ? 'pass' : 'info',
+      xRobots ? `X-Robots-Tag: ${xRobots}` : '无 X-Robots-Tag 头（HTTP 层未下发抓取指令）'));
+  }
 
   // ---- llms.txt (generative-engine site map) ----
   C.push(check('geo', 'llms.txt', llms.found ? 'pass' : 'info',
@@ -410,6 +588,101 @@ function buildChecks(ev) {
     `${rp.scripts ? rp.scripts.blocking : 0} 个无 defer/async 的外部脚本`));
   C.push(check('perf', '图片懒加载', rp.images && rp.images.lazy > 0 ? 'pass' : 'info',
     `${rp.images ? rp.images.lazy : 0}/${rp.images ? rp.images.count : 0} 张图启用懒加载`));
+
+  // ---- LCP candidate: biggest first-viewport element as a rough Web-Vitals proxy ----
+  const lcp = ev.lcpCandidate || null;
+  C.push(check('perf', 'LCP 候选元素', 'info',
+    lcp ? lcp.detail : '未识别（首页资源样本不足以判定最大首屏元素）'));
+
+  // ---- static asset cache policy (immutable long-lived assets reduce repeat TTFB) ----
+  const cpol = ev.cachePolicy || { probes: [] };
+  if (cpol.probes && cpol.probes.length) {
+    const good = cpol.probes.filter((p) => p.immutable || (p.cacheControl && /max-age=(\d{7,})/.test(p.cacheControl)));
+    C.push(check('perf', '静态资源缓存策略', good.length === cpol.probes.length ? 'pass' : good.length > 0 ? 'warn' : 'fail',
+      `${cpol.probes.map((p) => `${new URL(p.url).pathname.slice(-24)}: ${p.cacheControl || '无 Cache-Control'}${p.immutable ? ' (immutable)' : ''}`).join(' | ')}`));
+  } else {
+    C.push(check('perf', '静态资源缓存策略', 'info', '未抽样静态资源'));
+  }
+
+  // ============ 多语言 (i18n) ============
+  const i18nProbes = (ev.i18n && ev.i18n.probes) || [];
+  if (i18nProbes.length) {
+    const ok = i18nProbes.filter((p) => p.status === 200);
+    const zero = ok.filter((p) => p.hreflangCount === 0);
+    const partial = ok.filter((p) => p.hreflangCount > 0 && (p.hreflangCount < 3 || !p.hasXDefault));
+    const st = ok.length && zero.length === 0 && partial.length === 0 ? 'pass' : zero.length ? 'fail' : 'warn';
+    C.push(check('i18n', '首页 hreflang 对称性', st,
+      ok.length
+        ? `${ok.map((p) => `${p.lang}: ${p.hreflangCount} 条${p.hasXDefault ? '' : '（缺 x-default）'}`).join(' ｜ ')}${zero.length ? `｜${zero.map((p) => p.lang).join(', ')} 首页 hreflang=0（语言版本间无互认，搜索会视为独立单语站）` : partial.length ? `｜${partial.map((p) => p.lang).join(', ')} 组不完整` : ''}`
+        : '语言首页不可达'));
+  } else {
+    C.push(check('i18n', '首页 hreflang 对称性', 'info', '未探测语言首页'));
+  }
+
+  const l404 = ev.lang404 || {};
+  C.push(check('i18n', '404 页本地化',
+    l404.consistent === true ? 'pass' : l404.consistent === false ? 'warn' : 'info',
+    l404.note || '未探测 404 页语言一致性'));
+
+  const switcher = rp.langSwitcher || {};
+  C.push(check('i18n', '语言切换器', switcher.found ? 'pass' : 'info',
+    switcher.found ? `页面内提供 ${switcher.links.length} 个语言切换链接（与 hreflang 互证）` : '页面内未见语言切换链接（用户只能靠 URL 猜语言版）'));
+
+  // ---- hreflang casing consistency across pages (zh-hans vs zh-Hans) ----
+  {
+    const allTags = [];
+    for (const p of i18nProbes) if (p.tags) allTags.push(...p.tags);
+    const rootTags = (rp.hreflang || []).map((x) => x.hreflang);
+    const merged = [...rootTags, ...allTags];
+    const variants = new Map();
+    for (const t of merged) {
+      const n = normLang(t);
+      if (!variants.has(n)) variants.set(n, new Set());
+      variants.get(n).add(t);
+    }
+    const mixed = [...variants.values()].filter((s) => s.size > 1);
+    C.push(check('i18n', 'hreflang 大小写统一', mixed.length === 0 ? 'pass' : 'info',
+      mixed.length
+        ? `同语言存在大小写变体（如 ${[...mixed[0]].join(' / ')}），建议统一 BCP47 规范写法`
+        : `hreflang 写法统一（${[...variants.keys()].slice(0, 6).join(', ')}）`));
+  }
+
+  const cov = ev.i18nCoverage || {};
+  C.push(check('i18n', '多语言文章覆盖度', cov.total ? (cov.gapPct <= 10 ? 'pass' : 'warn') : 'info',
+    cov.total ? `文章级 URL ${cov.total} 个，三语齐全 ${cov.covered} 个，缺口 ${cov.gapPct}%${cov.gaps && cov.gaps.length ? `（如 ${cov.gaps.slice(0, 2).map((g) => g.slug).join(', ')}）` : ''}` : 'sitemap 无文章 URL，无法计算'));
+
+  // ============ CDN / 缓存 ============
+  const hits = ev.cdnHits || {};
+  if (hits.samples && hits.samples.length) {
+    const st = hits.hitRate >= 2 / 3 ? 'pass' : hits.hitRate > 0 ? 'warn' : 'fail';
+    C.push(check('cdn', 'CDN 缓存命中率', st,
+      `采样 ${hits.samples.length} 次: 命中 ${hits.hit} / 未命中 ${hits.miss} / 其他 ${hits.other}（命中率 ${Math.round((hits.hitRate || 0) * 100)}%）${hits.miss >= hits.hit ? '｜连续 MISS 表明回源频繁，边缘缓存形同虚设' : '｜缓存工作正常'}`));
+  } else {
+    C.push(check('cdn', 'CDN 缓存命中率', 'info', '未采样缓存头'));
+  }
+
+  // ============ 子域 ============
+  const subs = ev.subdomains || { probes: [] };
+  const served = (subs.probes || []).filter((p) => p.hasDns);
+  if (served.length) {
+    const bad = served.filter((p) => p.status >= 400 || p.error);
+    C.push(check('subdomains', '子域健康巡检', bad.length === 0 ? 'pass' : 'warn',
+      `${served.map((p) => `${p.name}: ${p.status || 'ERR'}${p.error ? `(${p.error})` : ''}`).join(' | ')}${bad.length ? `｜${bad.length} 个子域异常（403/502 等，见证书 SAN 与部署核对）` : ''}`));
+  } else {
+    C.push(check('subdomains', '子域健康巡检', 'info', '未发现解析的子域（仅主域提供服务）'));
+  }
+
+  // ============ 暴露面 ============
+  const exp = ev.exposure || { probes: [] };
+  const reachable = (exp.probes || []).filter((p) => p.status === 200 || p.status === 302 || p.status === 301);
+  C.push(check('exposure', '后台/隐藏路径', reachable.length === 0 ? 'pass' : 'warn',
+    reachable.length
+      ? `可访问 ${reachable.length} 个非公开路径: ${reachable.map((p) => `${p.path}(${p.status})`).join(' ')}${
+          reachable.some((p) => /wp-(json|admin|content|login)|xmlrpc/i.test(p.path))
+            ? '｜识别为 WordPress 后端，建议核对补丁版本并收紧访问'
+            : ''
+        }`
+      : '全部非公开路径返回 4xx（暴露面收敛）'));
 
   // ============ CDN / 平台 ============
   C.push(check('platform', '服务器', 'info', fp.server ? fp.server : '未识别（可能已隐藏）'));

@@ -12,13 +12,34 @@ const UA =
   '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
 
 /**
+ * Request accounting for the whole diagnosis run. The diagnose domain wants to
+ * be a *polite* guest on the target site: every outbound request is counted so
+ * callers can enforce a total budget and report the load they caused.
+ * `get`/`head` count every hop (redirects included).
+ */
+const requestStats = { get: 0, head: 0 };
+function countRequest(method) {
+  requestStats[(method || 'GET').toUpperCase() === 'HEAD' ? 'head' : 'get']++;
+}
+function getRequestStats() {
+  return { ...requestStats };
+}
+function resetRequestStats() {
+  requestStats.get = 0;
+  requestStats.head = 0;
+}
+
+/**
  * @param {string} url
- * @param {{timeoutMs?:number, maxRedirects?:number, headers?:object}} [opts]
+ * @param {{timeoutMs?:number, maxRedirects?:number, headers?:object, method?:'GET'|'HEAD'}} [opts]
+ *        method: 'HEAD' skips the body download entirely (status/headers only) —
+ *        used by every status-probe so large sitemaps don't drag megabytes down.
  * @returns {Promise<{ok:boolean, status:number, statusText:string, finalUrl:string,
  *          redirects:Array<{from:string,status:number,location:string}>,
  *          headers:object, ttfbMs:number, bodyLength:number, body:string, error?:string}>}
  */
-async function fetchPage(url, { timeoutMs = 15000, maxRedirects = 6, headers = {} } = {}) {
+async function fetchPage(url, { timeoutMs = 15000, maxRedirects = 6, headers = {}, method = 'GET' } = {}) {
+  const wantHead = String(method || 'GET').toUpperCase() === 'HEAD';
   const t0 = Date.now();
   const redirects = [];
   let current = url;
@@ -30,13 +51,16 @@ async function fetchPage(url, { timeoutMs = 15000, maxRedirects = 6, headers = {
     'accept-language': 'zh-hans,zh;q=0.9,en;q=0.8',
     ...headers,
   };
+  const fetchOpts = (u) => ({
+    redirect: 'manual',
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: common,
+    method: wantHead ? 'HEAD' : 'GET',
+  });
 
   try {
-    res = await fetch(current, {
-      redirect: 'manual',
-      signal: AbortSignal.timeout(timeoutMs),
-      headers: common,
-    });
+    countRequest(wantHead ? 'HEAD' : 'GET');
+    res = await fetch(current, fetchOpts(current));
   } catch (e) {
     return { error: e.message, finalUrl: current, redirects };
   }
@@ -48,11 +72,8 @@ async function fetchPage(url, { timeoutMs = 15000, maxRedirects = 6, headers = {
     redirects.push({ from: current, status: res.status, location: loc });
     current = new URL(loc, current).href;
     try {
-      res = await fetch(current, {
-        redirect: 'manual',
-        signal: AbortSignal.timeout(timeoutMs),
-        headers: common,
-      });
+      countRequest(wantHead ? 'HEAD' : 'GET');
+      res = await fetch(current, fetchOpts(current));
     } catch (e) {
       return { error: e.message, finalUrl: current, redirects };
     }
@@ -61,6 +82,23 @@ async function fetchPage(url, { timeoutMs = 15000, maxRedirects = 6, headers = {
 
   const ttfbMs = Date.now() - t0;
   let body = '';
+  if (wantHead) {
+    // HEAD: no body is transferred — length comes from the content-length header
+    const cl = res.headers.get('content-length');
+    const bodyLength = cl ? parseInt(cl, 10) || 0 : 0;
+    return {
+      ok: res.ok,
+      status: res.status,
+      statusText: res.statusText,
+      finalUrl: current,
+      redirects,
+      headers: Object.fromEntries(res.headers.entries()),
+      rawCookies: [],
+      ttfbMs,
+      bodyLength,
+      body,
+    };
+  }
   try {
     body = await res.text();
   } catch {
@@ -124,4 +162,4 @@ function parseCookieFlags(rawCookies = []) {
   return { cookies, flags: { secure, httpOnly, sameSite }, total: cookies.length };
 }
 
-module.exports = { fetchPage, parseCookieFlags, UA };
+module.exports = { fetchPage, parseCookieFlags, UA, countRequest, getRequestStats, resetRequestStats };

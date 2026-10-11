@@ -12,18 +12,23 @@
  */
 
 const { siteKeyFromUrl, loadSite } = require('../site');
-const { fetchPage, parseCookieFlags } = require('./fetch');
+const { fetchPage, parseCookieFlags, getRequestStats, resetRequestStats } = require('./fetch');
 const { parsePage } = require('./parse');
 const { fingerprint } = require('./fingerprint');
 const { dnsProbe } = require('./dns');
-const { parseRobots } = require('./robots');
-const { probeSitemaps } = require('./sitemap');
+const { parseRobots, detectRobotsConflicts } = require('./robots');
+const { probeSitemaps, languageDistribution } = require('./sitemap');
 const { probeRange } = require('./probeRange');
 const { aiReachability, probeLlms, probeLanguages, robotsAiBlocks, countWords } = require('./aiBots');
 const { alpnProbe } = require('./proto');
 const { buildChecks } = require('./checks');
+const { probeLangHomepages, check404Localization, i18nCoverage } = require('./i18n');
+const { probeCdnHits, probeCachePolicy, probeHttp3, parseCspPolicy, probeImageTypes } = require('./cdn');
+const { probeSubdomains, probeMobileRedirect, checkSanUsage, probeExternalResources } = require('./infra');
+const { probeExposure } = require('./exposure');
 
 const SITEMAP_CANDIDATES = ['/sitemap.xml', '/sitemap_index.xml', '/sitemap-index.xml'];
+const DEFAULT_LANG_PREFIXES = ['en', 'zh-hans', 'zh-hant'];
 
 /** Dedupe + same-host filter for a URL list, keeping canonical hrefs. */
 function cleanUrls(urls, baseUrl) {
@@ -100,18 +105,31 @@ function linksFallback(rootParsed, baseUrl, max) {
 }
 
 /**
- * @param {{url:string, siteKey?:string, extraPages?:string[], maxPages?:number}} opts
+ * @param {{url:string, siteKey?:string, extraPages?:string[], maxPages?:number,
+ *          deep?:boolean, maxRequests?:number}} opts
  *        maxPages: cap on representative pages fetched (default 4; the site is
  *        sampled, never fully crawled)
+ *        deep: true = run the full probe set (subdomains / exposure / cache-hit
+ *        sampling / i18n homepages …). false = skip every probe that would add
+ *        network load beyond the classic pack; zero-request pure-parsing checks
+ *        (CSP, SAN, robots conflicts, sitemap language distribution…) still run.
+ *        maxRequests: total outbound request budget across the whole run
+ *        (redirects counted). When the budget is exhausted, remaining optional
+ *        probes are skipped and recorded in evidence.budget.
  * @returns {Promise<object>} { ok, site_key, site_dir, domain, url, _bootstrap?,
- *          evidence: { rootPage, robots, sitemap, dns, fingerprint, pages, probe404 },
+ *          evidence: { rootPage, robots, sitemap, dns, fingerprint, pages, probe404, … },
  *          checks: [...] }
  */
-async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}) {
+async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep = true, maxRequests = 700 } = {}) {
   if (!url) throw new Error('diagnose_site requires url');
   const parsed = siteKeyFromUrl(url);
   const key = siteKey || parsed.key;
   const S = loadSite(key, { autoInit: true, domain: parsed.domain });
+
+  resetRequestStats();
+  const requestsUsed = () => getRequestStats().get + getRequestStats().head;
+  const budgetLeft = () => Math.max(0, maxRequests - requestsUsed());
+  const budgetOk = () => requestsUsed() < maxRequests;
 
   const evidence = {};
 
@@ -218,6 +236,124 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
   evidence.proto = protoRes;
   evidence.aiBlocksGeo = robotsAiBlocks(evidence.robots, 'geo');
   evidence.aiBlocksSeo = robotsAiBlocks(evidence.robots, 'seo');
+
+  // ---- language prefixes declared by the site (from root hreflang, minus x-default) ----
+  const langPrefixes = [
+    ...new Set(
+      (evidence.rootParsed && evidence.rootParsed.hreflang || [])
+        .map((x) => String(x.hreflang || '').toLowerCase())
+        .filter((t) => t && t !== 'x-default'),
+    ),
+  ];
+  if (!langPrefixes.length) langPrefixes.push(...DEFAULT_LANG_PREFIXES);
+
+  // ---- static-asset sample for cache-policy / image-format probes (same origin first) ----
+  const staticAssets = [];
+  {
+    const rp = evidence.rootParsed || {};
+    const origin = (() => {
+      try {
+        return new URL(probeBase).origin;
+      } catch {
+        return '';
+      }
+    })();
+    const pool = [...((rp.scripts && rp.scripts.srcs) || []), ...((rp.images && rp.images.srcs) || [])];
+    for (const u of pool) {
+      try {
+        if (new URL(u, probeBase).origin === origin) staticAssets.push(new URL(u, probeBase).href);
+      } catch {
+        /* noop */
+      }
+      if (staticAssets.length >= 4) break;
+    }
+    if (staticAssets.length < 2) staticAssets.push(...pool.slice(0, 2).map((u) => new URL(u, probeBase).href));
+  }
+  const imgSample = ((evidence.rootParsed && evidence.rootParsed.images && evidence.rootParsed.images.srcs) || [])
+    .map((s) => { try { return new URL(s, probeBase).href; } catch { return null; } })
+    .filter(Boolean)
+    .slice(0, 2);
+  // external-host reachability: probe the third-party hosts found in the page
+  // (script/iframe/link origins), so a page that loads no external scripts still
+  // gets its outbound hosts checked
+  const extSample = ((evidence.rootParsed && evidence.rootParsed.thirdPartyHosts) || [])
+    .map((h) => { try { return new URL('https://' + h).href; } catch { return null; } })
+    .filter(Boolean)
+    .slice(0, 2);
+
+  // ---- extended probe pack (deep=true): parallel, bounded by the request budget.
+  //      Every probe is HEAD-first / soft-fail; if the budget is nearly gone the
+  //      whole pack is skipped (the classic pack still produced a valid report). ----
+  const DEEP_NEEDED = 25; // rough headroom so probes don't starve the budget mid-run
+  const runDeep = deep && budgetLeft() >= DEEP_NEEDED;
+  let deepResults = null;
+  if (runDeep) {
+    const [cdnHits, i18n, subdomains, mobile, exposure, cachePolicy, imgTypes, extHealth] =
+      await Promise.allSettled([
+        probeCdnHits(baseUrl, {
+          samples: 3,
+          firstSample: { headers: rootPage.headers, status: rootPage.status, ttfbMs: rootPage.ttfbMs },
+        }),
+        probeLangHomepages(baseUrl, (evidence.rootParsed && evidence.rootParsed.hreflang) || []),
+        probeSubdomains(String(parsed.domain).replace(/^www\./, '')),
+        probeMobileRedirect(String(parsed.domain).replace(/^www\./, '')),
+        probeExposure(probeBase),
+        probeCachePolicy(staticAssets),
+        probeImageTypes(imgSample),
+        probeExternalResources(extSample),
+      ]);
+    deepResults = {
+      cdnHits: cdnHits.status === 'fulfilled' ? cdnHits.value : { error: cdnHits.reason && cdnHits.reason.message },
+      i18n: i18n.status === 'fulfilled' ? i18n.value : { error: i18n.reason && i18n.reason.message },
+      subdomains: subdomains.status === 'fulfilled' ? subdomains.value : { error: subdomains.reason && subdomains.reason.message },
+      mobile: mobile.status === 'fulfilled' ? mobile.value : { error: mobile.reason && mobile.reason.message },
+      exposure: exposure.status === 'fulfilled' ? exposure.value : { error: exposure.reason && exposure.reason.message },
+      cachePolicy: cachePolicy.status === 'fulfilled' ? cachePolicy.value : { error: cachePolicy.reason && cachePolicy.reason.message },
+      imgTypes: imgTypes.status === 'fulfilled' ? imgTypes.value : { error: imgTypes.reason && imgTypes.reason.message },
+      external: extHealth.status === 'fulfilled' ? extHealth.value : { error: extHealth.reason && extHealth.reason.message },
+    };
+  }
+  const deepEv = deepResults || {};
+
+  // ---- zero-request computations (run regardless of deep; pure parsing/derivation) ----
+  evidence.cnameChain = dnsInfo.cnameChain;
+  evidence.http3 = probeHttp3(rootPage.headers || {});
+  evidence.csp = parseCspPolicy(
+    rootPage.headers && (rootPage.headers['content-security-policy'] || rootPage.headers['Content-Security-Policy']),
+    rootPage.headers && (rootPage.headers['content-security-policy-report-only'] || rootPage.headers['Content-Security-Policy-Report-Only']),
+  );
+  evidence.robotsConflicts = detectRobotsConflicts(evidence.robots);
+  evidence.sitemapLangDist = languageDistribution(evidence.sitemap.urls, langPrefixes);
+  evidence.i18nCoverage = i18nCoverage(evidence.sitemap.urls, langPrefixes);
+  evidence.lang404 = check404Localization(
+    notFoundRes.status === 404 && !notFoundRes.error ? parsePage(notFoundRes.body || '', notFoundUrl) : null,
+  );
+  evidence.sanUsage = dnsInfo.certificate
+    ? await checkSanUsage(dnsInfo.certificate, parsed.domain).catch(() => ({ sans: [], used: [], unused: [] }))
+    : { sans: [], used: [], unused: [] };
+  {
+    const rp = evidence.rootParsed || {};
+    const firstImg = (rp.images && rp.images.srcs && rp.images.srcs[0]) || null;
+    const h1 = rp.headings && rp.headings.h1 && rp.headings.h1.samples && rp.headings.h1.samples[0];
+    evidence.lcpCandidate = {
+      detail: firstImg || h1
+        ? `候选: ${h1 ? 'H1「' + h1.slice(0, 30) + '」' : ''}${firstImg ? ' + 首图 ' + new URL(firstImg, probeBase).pathname.slice(0, 40) : ''}（DOM 顺序估算，非 RUM 实测）`
+        : '无首屏元素样本',
+    };
+  }
+  evidence.requestStats = getRequestStats();
+  evidence.budget = {
+    maxRequests,
+    used: requestsUsed(),
+    deepRan: !!runDeep,
+    deepSkipped: !runDeep && deep ? '预算不足（used=' + requestsUsed() + '）' : !deep ? 'deep=false' : null,
+  };
+
+  // ---- TTFB samples across repeated homepage fetches (for the stability check) ----
+  evidence.ttfbSamples = [rootPage.ttfbMs, ...((deepEv.cdnHits && deepEv.cdnHits.samples) || []).map((s) => s.ttfbMs)].filter((v) => typeof v === 'number' && v > 0);
+
+  // ---- merge deep results into evidence (checks read them from here) ----
+  Object.assign(evidence, deepEv);
 
   // ---- cross-page title / meta duplication (the "all titles identical" check) ----
   const titleMeta = { titles: [], descriptions: [], titleSet: new Set(), descSet: new Set() };
@@ -329,6 +465,25 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
     contentDup: evidence.contentDup,
     cookieFlags: evidence.cookieFlags,
     pages: pages,
+    // ---- extended check inputs (zero-request + deep probes) ----
+    cnameChain: evidence.cnameChain,
+    http3: evidence.http3,
+    csp: evidence.csp,
+    robotsConflicts: evidence.robotsConflicts,
+    sitemapLangDist: evidence.sitemapLangDist,
+    i18nCoverage: evidence.i18nCoverage,
+    lang404: evidence.lang404,
+    sanUsage: evidence.sanUsage,
+    ttfbSamples: evidence.ttfbSamples,
+    lcpCandidate: evidence.lcpCandidate,
+    cdnHits: deepEv.cdnHits,
+    cachePolicy: deepEv.cachePolicy,
+    i18n: deepEv.i18n,
+    subdomains: deepEv.subdomains,
+    mobileRedirect: deepEv.mobile,
+    exposure: deepEv.exposure,
+    imgTypes: deepEv.imgTypes,
+    externalHealth: deepEv.external,
   });
 
   return {
@@ -373,6 +528,28 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4 } = {}
       titleMeta: titleMeta,
       contentDup: evidence.contentDup,
       cookieFlags: evidence.cookieFlags,
+      cnameChain: evidence.cnameChain,
+      http3: evidence.http3,
+      csp: evidence.csp,
+      robotsConflicts: evidence.robotsConflicts,
+      sitemapLangDist: evidence.sitemapLangDist,
+      i18nCoverage: evidence.i18nCoverage,
+      lang404: evidence.lang404,
+      sanUsage: evidence.sanUsage,
+      ttfbSamples: evidence.ttfbSamples,
+      lcpCandidate: evidence.lcpCandidate,
+      requestStats: evidence.requestStats,
+      budget: evidence.budget,
+      deep: deepResults ? {
+        cdnHits: deepEv.cdnHits,
+        cachePolicy: deepEv.cachePolicy,
+        i18n: deepEv.i18n,
+        subdomains: deepEv.subdomains,
+        mobile: deepEv.mobile,
+        exposure: deepEv.exposure,
+        imgTypes: deepEv.imgTypes,
+        external: deepEv.external,
+      } : null,
     },
     checks,
   };

@@ -1,10 +1,12 @@
 /**
  * diagnose/proto.js — HTTP protocol version probe via TLS ALPN
  * ============================================================================
- * HTTP/1.1 vs HTTP/2 matters for transport quality (multiplexing, TTFB on
- * international links). The fetch API does not expose the negotiated protocol,
- * so we do a tiny TLS handshake with an ALPN list and read what the server
- * advertises. Fails softly (null protocol = unknown, not a finding).
+ * HTTP/1.1 vs HTTP/2 vs HTTP/3 matters for transport quality (multiplexing,
+ * TTFB on international links). The fetch API does not expose the negotiated
+ * protocol, so we do a tiny TLS handshake with an ALPN list and read what the
+ * server advertises. h3 (QUIC) cannot be negotiated over this TLS handshake —
+ * its presence is inferred separately from the `alt-svc` response header
+ * (see cdn.js). Fails softly (null protocol = unknown, not a finding).
  */
 
 const tls = require('tls');
@@ -20,7 +22,7 @@ function alpnProbe(host, { timeoutMs = 8000 } = {}) {
       host,
       port: 443,
       rejectUnauthorized: false,
-      ALPNProtocols: ['h2', 'http/1.1'],
+      ALPNProtocols: ['h2', 'http/1.1', 'h3'],
     };
     // RFC 6066: ServerName must not be an IP literal
     if (!/^[\d.]+$/.test(host) && host !== 'localhost') opts.servername = host;
