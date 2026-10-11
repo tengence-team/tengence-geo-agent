@@ -731,10 +731,19 @@ function buildChecks(ev) {
 
 
   // ============ 性能 ============
+  // 首屏资源量按「唯一 URL」统计（同一资源多次引用只计一次），
+  // 避免 img 按标签计数（含复用）与内联脚本造成的虚高。
   const cssCount = (rp.stylesheets && rp.stylesheets.count) || 0;
-  const resCount = (rp.scripts ? rp.scripts.count : 0) + cssCount + (rp.images ? rp.images.count : 0);
+  const scriptCount = (rp.scripts ? rp.scripts.count : 0);
+  const imgCount = (rp.images ? rp.images.count : 0);
+  const resUrls = new Set([
+    ...((rp.scripts && rp.scripts.srcs) || []),
+    ...((rp.stylesheets && rp.stylesheets.srcs) || []),
+    ...((rp.images && rp.images.srcs) || []),
+  ]);
+  const resCount = resUrls.size;
   C.push(check('perf', '首屏资源量', resCount < 50 ? 'pass' : resCount < 100 ? 'warn' : 'fail',
-    `script×${rp.scripts ? rp.scripts.count : 0} + css×${cssCount} + img×${rp.images ? rp.images.count : 0} = ${resCount}`));
+    `按唯一 URL 去重 ${resCount} 个（script×${scriptCount} + css×${cssCount} + img×${imgCount} 标签数，复用资源已合并）`));
   C.push(check('perf', '渲染阻塞脚本', (rp.scripts && rp.scripts.blocking) || 0 <= 3 ? 'pass' : 'warn',
     `${rp.scripts ? rp.scripts.blocking : 0} 个无 defer/async 的外部脚本`));
   C.push(check('perf', '图片懒加载', rp.images && rp.images.lazy > 0 ? 'pass' : 'info',

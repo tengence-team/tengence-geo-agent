@@ -113,7 +113,7 @@ function parsePage(html, baseUrl) {
     if (ext === 'webp') images.webp++;
     if (ext === 'avif') images.avif++;
     if (!$(el).attr('width') && !$(el).attr('height')) images.missingSize++;
-    if (images.srcs.length < 20 && src) images.srcs.push(src);
+    if (images.srcs.length < 100 && src) images.srcs.push(src);
   });
 
   // ---- links ----
@@ -150,14 +150,14 @@ function parsePage(html, baseUrl) {
       if (!$(el).attr('defer') && !$(el).attr('async') && !$(el).attr('type')?.includes('application/ld+json')) {
         scripts.blocking++;
       }
-      if (scripts.srcs.length < 20) scripts.srcs.push(src);
+      if (scripts.srcs.length < 100) scripts.srcs.push(src);
     }
   });
   const stylesheets = { count: 0, srcs: [] };
   $('link[rel="stylesheet"]').each((i, el) => {
     stylesheets.count++;
     const href = $(el).attr('href');
-    if (href && stylesheets.srcs.length < 12) stylesheets.srcs.push(href);
+    if (href && stylesheets.srcs.length < 50) stylesheets.srcs.push(href);
   });
 
   // ---- Subresource Integrity (SRI) presence on external script/link tags ----
