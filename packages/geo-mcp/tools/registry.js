@@ -1907,13 +1907,16 @@ const tools = [
               // publishGated (aliyun): the platform refused/never attempted a live
               // publish, so even with asDraft=false the truthful status is "draft".
               const status = !r.ok ? 'failed' : wentLive && !r.publishGated ? 'published' : 'draft';
+              // devto returns the live post url in detail.url — keep it as publish evidence
+              // (devto has no taxonomy, so taxNote alone would drop the trace).
+              const devtoUrl = r.detail && r.detail.url ? `url: ${r.detail.url}` : null;
               await ch.recordPublish({
                 platform: args.platform,
                 slug: r.slug,
                 title: r.title || (r.detail && r.detail.title),
                 status,
                 draftId: r.draftId || (r.detail && r.detail.draftId),
-                notes: status === 'published' ? taxNote : null,
+                notes: status === 'published' ? (taxNote || devtoUrl) : null,
                 error: r.ok ? null : r.error || (r.detail && (r.detail.err || r.detail.message)) || r.stage,
               });
             } catch (logErr) {
