@@ -274,10 +274,14 @@ function parsePage(html, baseUrl) {
   const thirdPartyHosts = [];
   const externalHosts = [];
   {
+    // 站点注册域（host 的 eTLD+1，如 www.tengence.com → tengence.com）：同站子域
+    // （console./static./m. 等）不算第三方，避免自有服务被误报为隐私/供应链风险。
+    const siteHost = host.split('.').slice(-2).join('.');
     const seen = new Set();
     const push = (h) => {
       if (!h) return;
       const hh = String(h).toLowerCase();
+      if (hh === siteHost || hh.endsWith('.' + siteHost)) return; // 同站子域/主域
       if (!seen.has(hh)) {
         seen.add(hh);
         thirdPartyHosts.push(hh);

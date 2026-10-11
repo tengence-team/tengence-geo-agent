@@ -35,6 +35,7 @@ const KNOWN_THIRD_PARTY = [
   'x.com', 'twimg.com', 'instagram.com', 'linkedin.com', 'pinterest.com', 'medium.com',
   'notion.so', 'vercel.app', 'netlify.app', 'squarespace.com', 'shopify.com', 'myshopify.com',
   'wordpress.org', 'wordpress.com', 'wp.com', 'gravatar.com', 'automattic.com',
+  'miit.gov.cn', // 工信部备案链接（ICP 备案法规要求，简体中文页必备）
   'cloudinary.com', 'imgix.net', 'unsplash.com', 'images.unsplash.com', 'pixabay.com',
   'freepik.com', 'flaticon.com', 'icons8.com', 'fontawesome.com', 'fontawesome.cn',
   'vuejs.org', 'reactjs.org', 'nextjs.org', 'nuxtjs.org', 'astro.build', 'webflow.com',
@@ -139,8 +140,16 @@ function buildChecks(ev) {
   C.push(check('tech', '首页状态码', rp.status === 200 ? 'pass' : 'fail',
     `HTTP ${rp.status} ${rp.statusText || ''}`));
   const redirs = rp.redirects || [];
-  C.push(check('tech', '重定向链', redirs.length === 0 ? 'pass' : redirs.length <= 2 ? 'warn' : 'fail',
-    redirs.length ? redirs.map((x) => `${x.status} ${x.from} → ${x.location}`).join(' | ') : '无重定向'));
+  // 单跳 302 且带 Vary: Accept-Language = 语言协商重定向（多语言站点标准做法，
+  // 浏览器/爬虫按 Accept-Language 落到语言首页），不是缺陷链。
+  const langNegotiation =
+    redirs.length === 1 && /accept-language/i.test(String(redirs[0].vary || ''));
+  C.push(check('tech', '重定向链',
+    redirs.length === 0 ? 'pass' : langNegotiation ? 'pass' : redirs.length <= 2 ? 'warn' : 'fail',
+    redirs.length
+      ? redirs.map((x) => `${x.status} ${x.from} → ${x.location}`).join(' | ')
+        + (langNegotiation ? '（语言协商重定向，Vary: Accept-Language，标准做法）' : '')
+      : '无重定向'));
   if (redirs.length) {
     try {
       const from = new URL(redirs[0].from);
@@ -156,8 +165,8 @@ function buildChecks(ev) {
   }
   C.push(check('tech', '压缩传输', lower['content-encoding'] ? 'pass' : 'warn',
     `Content-Encoding: ${lower['content-encoding'] || '未压缩'}`));
-  C.push(check('tech', '缓存头', lower['cache-control'] ? 'pass' : 'warn',
-    `Cache-Control: ${lower['cache-control'] || '未设置'}`));
+  C.push(check('tech', '缓存头', lower['cache-control'] ? 'pass' : 'info',
+    `Cache-Control: ${lower['cache-control'] || 'HTML 文档未显式设置（动态页/语言协商页常见，防缓存串语言；静态资源缓存策略见 perf 静态资源缓存策略）'}`));
   C.push(check('tech', 'TTFB', rp.ttfbMs < 600 ? 'pass' : rp.ttfbMs < 2000 ? 'warn' : 'fail',
     `${rp.ttfbMs} ms`));
   C.push(check('tech', 'HTML 体积', rp.bodyLength < 512 * 1024 ? 'pass' : rp.bodyLength < 1024 * 1024 ? 'warn' : 'fail',
@@ -550,9 +559,12 @@ function buildChecks(ev) {
 
   // ---- external resource reachability (HEAD probes against third-party hosts) ----
   const extHealth = ev.externalHealth || { probes: [], failed: [] };
-  C.push(check('content', '外链资源可用性', extHealth.failed && extHealth.failed.length === 0 ? 'pass' : 'warn',
+  // 工信部备案外链（miit.gov.cn）境外常不可达，但它是 ICP 备案法规要求且仅简体中文页
+  // 需要展示，属已知/可接受，不参与可用性判定。
+  const extFailed = (extHealth.failed || []).filter((u) => !/miit\.gov\.cn/i.test(u));
+  C.push(check('content', '外链资源可用性', extFailed.length === 0 ? 'pass' : 'warn',
     extHealth.probes && extHealth.probes.length
-      ? `抽样 ${extHealth.probes.length} 个外域资源${extHealth.failed && extHealth.failed.length ? `｜${extHealth.failed.length} 个不可达: ${extHealth.failed.slice(0, 3).join(', ')}` : '全部可达'}`
+      ? `抽样 ${extHealth.probes.length} 个外域资源${extFailed.length ? `｜${extFailed.length} 个不可达: ${extFailed.slice(0, 3).join(', ')}` : '全部可达'}`
       : '未抽样'));
 
   // ---- duplicate no-prefix URLs (same content served twice: /path and /en/path) ----
@@ -707,8 +719,9 @@ function buildChecks(ev) {
       : `正文 ${sh.textLength} 字符 · H1 ${sh.h1s} 个${sh.textLength < 800 ? '（核心内容疑似依赖 JS 渲染，AI 爬虫可能读不到）' : ''}`));
 
   const aigc = geoX.aigcDisclosure || { declared: false };
-  C.push(check('geo', 'AI 生成内容标识', aigc.declared ? 'info' : 'warn',
-    aigc.declared ? `已声明 AI 生成内容: 「${aigc.match}」（GB 45438 标识方向）` : '未发现 AI 生成内容声明（若含 AI 生成内容，建议按 GB 45438 做标识）'));
+  // 中立事实项：是否含 AI 生成内容、是否声明由站点自行决定，不视为缺陷（不扣分）。
+  C.push(check('geo', 'AI 生成内容标识', 'info',
+    aigc.declared ? `已声明 AI 生成内容: 「${aigc.match}」（GB 45438 标识方向）` : '未发现 AI 生成内容声明（中性事实，非缺陷）'));
 
   const qa = geoX.qaBlocks || { count: 0 };
   C.push(check('geo', '问答块 (答案块)', qa.count > 0 ? 'pass' : 'info',
