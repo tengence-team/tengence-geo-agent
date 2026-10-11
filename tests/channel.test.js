@@ -187,25 +187,27 @@ const WECHAT_ISSUES = [
   },
 ];
 
-test('importWechatIssues: writes structured rows, idempotent on re-run', async () => {
+test('importWechatIssues: writes structured rows (one row per slug), idempotent on re-run', async () => {
   const dbSqlite = require('../packages/geo-sdk/db/sqlite');
   const { withConn } = require('../packages/geo-sdk/db/connection');
   dbSqlite.getDb();
   try {
     const res = await importWechatIssues(WECHAT_ISSUES);
     assert.equal(res.platform, 'wechat');
-    assert.equal(res.rows, 2);
-    assert.equal(res.imported, 2, 'first run inserts');
+    assert.equal(res.rows, 3, 'one row per slug (第1期×2 + 第2期×1)');
+    assert.equal(res.imported, 3, 'first run inserts');
     const again = await importWechatIssues(WECHAT_ISSUES);
     assert.equal(again.imported, 0, 'second run is idempotent');
-    assert.equal(again.updated, 2);
+    assert.equal(again.updated, 3);
 
     const rows = await t.plan.channel.list({ platform: 'wechat' });
-    const first = rows.find((r) => r.period === '第1期');
+    const firstSlugs = rows.filter((r) => r.period === '第1期').map((r) => r.slug).sort();
     const second = rows.find((r) => r.period === '第2期');
-    assert.deepEqual(first.article_slugs, ['what-is-geo', 'geo-vs-seo-differences']);
+    assert.deepEqual(firstSlugs, ['geo-vs-seo-differences', 'what-is-geo']);
+    const first = rows.find((r) => r.period === '第1期' && r.slug === 'what-is-geo');
     assert.deepEqual(first.draft_ids, ['STla8_i3I98']);
     assert.equal(first.status, 'published');
+    assert.equal(first.lang, 'zh-hans');
     assert.equal(second.status, 'todo');
   } finally {
     await withConn(async (conn) => {
@@ -237,9 +239,9 @@ test('nextDue: derived from blog publish_order, skipping slugs already sent', as
     // blog-a already dispatched to wechat → must be skipped
     await conn.query(
       `INSERT INTO tengence_geo_channel_plan
-         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
-       VALUES (1, 'wechat', 'P10', 'blog-a', null, 'published', ?, ?)`,
-      [JSON.stringify(['blog-a']), JSON.stringify([])]
+         (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids)
+       VALUES (1, 'wechat', 'blog-a', 'zh-hans', 'P10', 'blog-a', null, 'published', ?)`,
+      [JSON.stringify([])]
     );
   });
   let logId;
@@ -275,9 +277,9 @@ test('markStatus: records draft ids, preserves them when not passed', async () =
   await withConn(async (conn) => {
     const [r] = await conn.query(
       `INSERT INTO tengence_geo_channel_plan
-         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
-       VALUES (1, 'wechat', '测试期', '测试主题', '周二', 'todo', ?, ?)`,
-      [JSON.stringify(['a', 'b']), JSON.stringify([])]
+         (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids)
+       VALUES (1, 'wechat', 'a', 'zh-hans', '测试期', '测试主题', '周二', 'todo', ?)`,
+      [JSON.stringify([])]
     );
     id = r.insertId;
   });
@@ -315,19 +317,19 @@ test('dispatched statuses: wechat counts a draft as dispatched, juejin does not'
     ]) {
       const [r] = await conn.query(
         `INSERT INTO tengence_geo_channel_plan
-           (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
-         VALUES (1, ?, ?, ?, null, ?, ?, ?)`,
-        [platform, `T-${slug}`, slug, status, JSON.stringify([slug]), JSON.stringify(['MEDIA'])]
+           (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids)
+         VALUES (1, ?, ?, 'zh-hans', ?, ?, null, ?, ?)`,
+        [platform, slug, `T-${slug}`, slug, status, JSON.stringify(['MEDIA'])]
       );
       ids.push(r.insertId);
     }
   });
   try {
     const wechatSet = await t.plan.channel.publishedSlugs('wechat');
-    assert.ok(wechatSet.has('wc-draft'), 'wechat never mass-sends → a draft IS dispatched');
-    assert.ok(!wechatSet.has('wc-todo'), 'a todo row is not dispatched yet');
+    assert.ok(wechatSet.has('wc-draft::zh-hans'), 'wechat never mass-sends → a draft IS dispatched');
+    assert.ok(!wechatSet.has('wc-todo::zh-hans'), 'a todo row is not dispatched yet');
     const juejinSet = await t.plan.channel.publishedSlugs('juejin');
-    assert.ok(!juejinSet.has('jj-draft'), 'juejin drafts are an intermediate step → stay eligible');
+    assert.ok(!juejinSet.has('jj-draft::zh-hans'), 'juejin drafts are an intermediate step → stay eligible');
   } finally {
     await withConn(async (conn) => {
       await conn.query('DELETE FROM tengence_geo_channel_plan WHERE id IN (?, ?, ?)', ids);
@@ -344,9 +346,9 @@ test('recordWechatIssue: one message = one 第N期 row holding the whole group',
   await withConn(async (conn) => {
     const [r] = await conn.query(
       `INSERT INTO tengence_geo_channel_plan
-         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
-       VALUES (1, 'wechat', '第7期', '旧期', null, 'draft', ?, ?)`,
-      [JSON.stringify(['old-a']), JSON.stringify(['MEDIA_OLD'])]
+         (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids)
+       VALUES (1, 'wechat', 'old-a', 'zh-hans', '第7期', '旧期', null, 'draft', ?)`,
+      [JSON.stringify(['MEDIA_OLD'])]
     );
     ids.push(r.insertId);
   });
@@ -356,20 +358,27 @@ test('recordWechatIssue: one message = one 第N期 row holding the whole group',
       mediaId: 'MEDIA_NEW',
       status: 'draft',
     });
-    ids.push(rec.id);
+    ids.push(...rec.rows.map((r) => r.id));
     assert.equal(rec.period, '第8期', 'issue numbering continues from the existing calendar');
-    assert.deepEqual(rec.article_slugs, ['g1', 'g2', 'g3'], 'the whole group stays in ONE row');
-    const row = await t.plan.channel.get(rec.id);
-    assert.deepEqual(row.article_slugs, ['g1', 'g2', 'g3']);
-    assert.deepEqual(row.draft_ids, ['MEDIA_NEW'], 'the message media_id is kept with the group');
-    assert.equal(row.status, 'draft');
+    assert.equal(rec.rows.length, 3, 'one row per slug in the issue');
+    assert.deepEqual(rec.article_slugs, ['g1', 'g2', 'g3'], 'the whole group is returned for the message');
+    // v7: each slug is its own row, sharing period + media_id; order = row id order
+    const g1 = await t.plan.channel.get(rec.rows[0].id);
+    assert.equal(g1.slug, 'g1');
+    assert.equal(g1.lang, 'zh-hans');
+    assert.equal(g1.period, '第8期');
+    assert.deepEqual(g1.draft_ids, ['MEDIA_NEW'], 'the message media_id is kept with every row of the issue');
+    assert.equal(g1.status, 'draft');
+    const g3 = await t.plan.channel.get(rec.rows[2].id);
+    assert.equal(g3.slug, 'g3');
+    assert.ok(g3.id > g1.id, 'in-issue headline order = row id order');
     // the group is now dispatched → none of its slugs come back from nextDue
     const set = await t.plan.channel.publishedSlugs('wechat');
-    for (const s of ['g1', 'g2', 'g3']) assert.ok(set.has(s), `${s} must count as dispatched`);
+    for (const s of ['g1', 'g2', 'g3']) assert.ok(set.has(`${s}::zh-hans`), `${s} must count as dispatched`);
     await assert.rejects(() => recordWechatIssue({ slugs: [] }), /non-empty slugs/);
   } finally {
     await withConn(async (conn) => {
-      await conn.query('DELETE FROM tengence_geo_channel_plan WHERE id IN (?, ?)', ids);
+      await conn.query('DELETE FROM tengence_geo_channel_plan WHERE id IN (?, ?, ?, ?)', ids);
     });
   }
 });
@@ -383,16 +392,16 @@ test('nextDue: wechat no longer hijacked by calendar rows (derived like every pl
   await withConn(async (conn) => {
     const [d] = await conn.query(
       `INSERT INTO tengence_geo_channel_plan
-         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
-       VALUES (1, 'wechat', '已建草稿期', '主题A', '周二', 'draft', ?, ?)`,
-      [JSON.stringify(['x']), JSON.stringify(['MEDIA_A'])]
+         (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids)
+       VALUES (1, 'wechat', 'x', 'zh-hans', '已建草稿期', '主题A', '周二', 'draft', ?)`,
+      [JSON.stringify(['MEDIA_A'])]
     );
     draftId = d.insertId;
     const [t] = await conn.query(
       `INSERT INTO tengence_geo_channel_plan
-         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
-       VALUES (1, 'wechat', '待办期', '主题B', '周四', 'todo', ?, ?)`,
-      [JSON.stringify(['y', 'z']), JSON.stringify([])]
+         (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids)
+       VALUES (1, 'wechat', 'y', 'zh-hans', '待办期', '主题B', '周四', 'todo', ?)`,
+      [JSON.stringify([])]
     );
     todoId = t.insertId;
   });

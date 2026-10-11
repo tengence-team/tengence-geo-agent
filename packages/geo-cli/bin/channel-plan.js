@@ -50,8 +50,8 @@ async function main() {
     console.log(`channel_plan rows: ${rows.length}${platform ? ` (platform=${platform})` : ''}${flags.status ? ` (status=${flags.status})` : ''}`);
     for (const r of rows) {
       console.log(
-        `  #${r.id} ${r.platform} | ${r.period} | ${r.status} | ${r.weekday || '—'} | ${r.topic || ''} | ` +
-          `${r.article_slugs.length} slugs | draft_ids=${r.draft_ids.length}`
+        `  #${r.id} ${r.platform} | ${r.period || '—'} | ${r.slug} (${r.lang}) | ${r.status} | ${r.weekday || '—'} | ${r.topic || ''} | ` +
+          `draft_ids=${r.draft_ids.length}`
       );
     }
     return;
@@ -69,7 +69,8 @@ async function main() {
     }
     console.log(`Next due for ${platform}: #${next.id ?? '—'} ${next.period || ''} [${next.status}] ${next.topic || ''} (${next.weekday || '—'})` +
       (next.source ? `  source=${next.source}` : ''));
-    console.log(`Slugs (${next.article_slugs.length}): ${next.article_slugs.join(', ')}`);
+    console.log(`Slugs (${next.article_slugs.length}): ${next.article_slugs.join(', ')}` +
+      (next.lang ? `  [lang=${next.lang}]` : ''));
     return;
   }
 

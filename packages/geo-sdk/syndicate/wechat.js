@@ -787,13 +787,12 @@ async function syncProgressFromWechat({ siteKey, dryRun = false, fetchers } = {}
 
   await t.db.withConn(async (conn) => {
     for (const row of rows) {
+      // v7: one row = one slug; in-issue order = row id order
       const titles = [];
-      for (const slug of row.article_slugs) {
-        try {
-          const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug, 'zh-hans');
-          if (detail && detail.title) titles.push(detail.title);
-        } catch (_) { /* article missing → skip */ }
-      }
+      try {
+        const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', row.slug, row.lang || 'zh-hans');
+        if (detail && detail.title) titles.push(detail.title);
+      } catch (_) { /* article missing → skip */ }
       const matchedDraft = row.draft_ids.some((id) => draftIds.has(id));
       const matchedPublished = titles.some((title) => publishedTitles.has(title));
 

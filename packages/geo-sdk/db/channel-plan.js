@@ -1,17 +1,21 @@
 'use strict';
 /**
- * Channel publishing-calendar repository (db domain) — table tengence_geo_channel_plan
+ * Channel publishing-task repository (db domain) — table tengence_geo_channel_plan
  * ============================================================================
- * Read/write entry for the per-platform publishing calendar (which platform posts
- * which slugs in which period). The service layer (plan/channel.js) orchestrates
- * this table; raw SQL against it is forbidden.
+ * Read/write entry for the per-platform publishing TASK table.
+ *
+ * v7 model (2026-10-11): ONE ROW = ONE (platform, slug, lang) publish task.
+ *   - wechat: one issue (一期) = N rows sharing the same `period` ("第N期");
+ *     in-issue headline order = row id order (insertion order of the slugs).
+ *   - single-article channels (juejin / csdn / aliyun / tencent / devto …): one
+ *     row per article language; `period` keeps only historical values (v5 legacy),
+ *     new rows leave it NULL.
+ * Unique key = (app_id, platform, slug, lang). Statuses: todo → draft → published
+ * (paused for manual holds; reviewing / review_failed / deleted from live reconcile).
  *
  * This table is WORKSPACE-LOCAL state only (never part of the MySQL production
- * schema); see db/sqlite-schema.js.
- *
- * Statuses: todo → draft → published (paused for manual holds).
- * nextDue() = the earliest todo row for a platform (period order), i.e. the next
- * issue to prepare.
+ * schema); see db/sqlite-schema.js. v5 → v7 data migration is a one-off script
+ * (scripts/migrate-channel-plan-v7.js), NOT part of this repository.
  * ============================================================================
  */
 
@@ -28,18 +32,15 @@ const { CHANNEL_PLAN } = require('./sqlite-schema');
 // for a (re)publish attempt.
 const STATUSES = ['todo', 'draft', 'published', 'paused', 'reviewing', 'review_failed', 'deleted'];
 
+/** Normalize a language tag: 'zh-hans' | 'en' | 'zh-hant' (defensive trim/lowercase). */
+function normalizeLang(l) {
+  const v = String(l == null ? 'zh-hans' : l).trim().toLowerCase();
+  return v || 'zh-hans';
+}
+
 /** Normalize a row record (decode JSON columns). */
 function normalizeRow(row) {
   if (!row) return null;
-  let articleSlugs = row.article_slugs;
-  if (typeof articleSlugs === 'string') {
-    try {
-      articleSlugs = JSON.parse(articleSlugs);
-    } catch (e) {
-      articleSlugs = [];
-    }
-  }
-  if (!Array.isArray(articleSlugs)) articleSlugs = [];
   let draftIds = row.draft_ids;
   if (typeof draftIds === 'string') {
     try {
@@ -50,12 +51,12 @@ function normalizeRow(row) {
   }
   if (!Array.isArray(draftIds)) draftIds = [];
   const articleId = row.article_id != null ? String(row.article_id) : null;
-  return { ...row, article_slugs: articleSlugs, draft_ids: draftIds, article_id: articleId };
+  return { ...row, draft_ids: draftIds, article_id: articleId };
 }
 
 /**
- * List calendar rows (optional platform / status filter).
- * @param {object} filters { platform, status, limit }
+ * List task rows (optional platform / status / lang filter).
+ * @param {object} filters { platform, status, lang, limit }
  */
 async function list(conn, appId, filters = {}) {
   let sql = `SELECT * FROM ${CHANNEL_PLAN} WHERE app_id = ?`;
@@ -68,45 +69,63 @@ async function list(conn, appId, filters = {}) {
     sql += ' AND status = ?';
     params.push(filters.status);
   }
+  if (filters.lang) {
+    sql += ' AND lang = ?';
+    params.push(normalizeLang(filters.lang));
+  }
   sql += ' ORDER BY id ASC';
-  if (filters.limit) sql += ' LIMIT ?';
-  if (filters.limit) params.push(filters.limit);
+  if (filters.limit) {
+    sql += ' LIMIT ?';
+    params.push(filters.limit);
+  }
   const [rows] = await conn.query(sql, params);
   return rows.map(normalizeRow);
 }
 
-/**
- * Get one row by id.
- */
-async function get(conn, appId, id) {
+/** Get one row by primary key. */
+async function getById(conn, appId, id) {
   const [rows] = await conn.query(`SELECT * FROM ${CHANNEL_PLAN} WHERE app_id = ? AND id = ?`, [appId, id]);
   return normalizeRow(rows[0] || null);
 }
 
+/** Lookup by the unique key (platform, slug, lang). */
+async function getByKey(conn, appId, platform, slug, lang) {
+  const [rows] = await conn.query(
+    `SELECT * FROM ${CHANNEL_PLAN}
+      WHERE app_id = ? AND platform = ? AND slug = ? AND lang = ? LIMIT 1`,
+    [appId, platform, slug, normalizeLang(lang)]
+  );
+  return normalizeRow(rows[0] || null);
+}
+
 /**
- * Upsert a calendar row, keyed by (app_id, platform, period).
- * @param {object} row { platform, period, topic, weekday, article_slugs, status, draft_ids, notes, schedule_at }
+ * Upsert a task row keyed by (app_id, platform, slug, lang): UPDATE the existing
+ * row, else INSERT. Every write path (wechat issues, single-article recordPublish,
+ * imports, reconciliation) goes through here so the unique key is the DB backstop
+ * for "one (platform, slug, lang) task at most".
+ * @param {object} row { platform, slug, lang?, period?, topic?, weekday?, status?, draft_ids?, notes?, schedule_at? }
  * @returns {Promise<{id:number, action:'insert'|'update'}>}
  */
 async function upsert(conn, appId, row) {
-  const existing = await getByPeriod(conn, appId, row.platform, row.period);
-  const slugsJson = JSON.stringify(Array.isArray(row.article_slugs) ? row.article_slugs : []);
+  const lang = normalizeLang(row.lang);
+  const existing = await getByKey(conn, appId, row.platform, row.slug, lang);
   const draftJson = JSON.stringify(Array.isArray(row.draft_ids) ? row.draft_ids : []);
   if (existing) {
     await conn.query(
       `UPDATE ${CHANNEL_PLAN}
-         SET topic = ?, weekday = ?, article_slugs = ?, status = ?, draft_ids = ?,
+         SET period = ?, topic = ?, weekday = ?, status = ?, draft_ids = ?,
              notes = ?, schedule_at = ?,
              updated_at = NOW()
-       WHERE id = ?`,
+       WHERE app_id = ? AND id = ?`,
       [
-        row.topic || existing.topic || null,
-        row.weekday || existing.weekday || null,
-        row.article_slugs ? slugsJson : existing.article_slugs,
+        row.period !== undefined ? row.period : existing.period,
+        row.topic !== undefined ? row.topic : existing.topic,
+        row.weekday !== undefined ? row.weekday : existing.weekday,
         row.status || existing.status || 'todo',
-        row.draft_ids ? draftJson : existing.draft_ids,
+        draftJson,
         row.notes !== undefined ? row.notes : existing.notes,
         row.schedule_at !== undefined ? row.schedule_at : existing.schedule_at,
+        appId,
         existing.id,
       ]
     );
@@ -114,92 +133,20 @@ async function upsert(conn, appId, row) {
   }
   const [result] = await conn.query(
     `INSERT INTO ${CHANNEL_PLAN}
-       (app_id, platform, period, topic, weekday, article_slugs, status, draft_ids, notes, schedule_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids, notes, schedule_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       appId,
       row.platform,
-      row.period,
+      row.slug,
+      lang,
+      row.period || null,
       row.topic || null,
       row.weekday || null,
-      slugsJson,
       row.status || 'todo',
       draftJson,
       row.notes || null,
       row.schedule_at || null,
-    ]
-  );
-  return { id: Number(result.insertId), action: 'insert' };
-}
-
-/** Lookup one row by (platform, period). */
-async function getByPeriod(conn, appId, platform, period) {
-  const [rows] = await conn.query(
-    `SELECT * FROM ${CHANNEL_PLAN} WHERE app_id = ? AND platform = ? AND period = ?`,
-    [appId, platform, period]
-  );
-  return normalizeRow(rows[0] || null);
-}
-
-/** Lookup one row by the single slug it carries in article_slugs (json array). */
-async function findBySlug(conn, appId, platform, slug) {
-  const [rows] = await conn.query(
-    `SELECT * FROM ${CHANNEL_PLAN}
-      WHERE app_id = ? AND platform = ?
-        AND EXISTS (SELECT 1 FROM json_each(article_slugs) WHERE json_each.value = ?)
-      LIMIT 1`,
-    [appId, platform, slug]
-  );
-  return normalizeRow(rows[0] || null);
-}
-
-/** Delete every row for a platform (used to drop a stale bulk-import). */
-async function removeAll(conn, appId, platform) {
-  const [result] = await conn.query(
-    `DELETE FROM ${CHANNEL_PLAN} WHERE app_id = ? AND platform = ?`,
-    [appId, platform]
-  );
-  return result.affectedRows || 0;
-}
-
-/**
- * Upsert a row keyed by (app_id, platform, slug-in-article_slugs). Used by the
- * publish log: a re-run updates the prior row (failed → published) instead of
- * creating a duplicate. The slug is the unique key — no per-platform article id is
- * stored (consistent with the wechat rows, which rely on article_slugs only).
- */
-async function upsertBySlug(conn, appId, row) {
-  const existing = await findBySlug(conn, appId, row.platform, row.slug);
-  const slugsJson = JSON.stringify([row.slug]);
-  const draftJson = JSON.stringify(row.draftId ? [row.draftId] : []);
-  if (existing) {
-    await conn.query(
-      `UPDATE ${CHANNEL_PLAN}
-         SET topic = ?, status = ?, draft_ids = ?, notes = ?, updated_at = NOW()
-       WHERE id = ?`,
-      [
-        row.topic || existing.topic || null,
-        row.status || existing.status || 'todo',
-        draftJson,
-        row.notes !== undefined ? row.notes : existing.notes,
-        existing.id,
-      ]
-    );
-    return { id: existing.id, action: 'update' };
-  }
-  const [result] = await conn.query(
-    `INSERT INTO ${CHANNEL_PLAN}
-       (app_id, platform, period, topic, article_slugs, status, draft_ids, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      appId,
-      row.platform,
-      row.period || `P${row.blogOrder != null ? row.blogOrder : 'x'}`,
-      row.topic || null,
-      slugsJson,
-      row.status || 'todo',
-      draftJson,
-      row.notes || null,
     ]
   );
   return { id: Number(result.insertId), action: 'insert' };
@@ -214,7 +161,7 @@ async function markStatus(conn, appId, id, status, draftIds) {
   if (!STATUSES.includes(status)) {
     throw new Error(`Invalid channel_plan status "${status}" (allowed: ${STATUSES.join(', ')})`);
   }
-  const existing = await get(conn, appId, id);
+  const existing = await getById(conn, appId, id);
   if (!existing) throw new Error(`channel_plan row not found: id=${id}`);
   if (draftIds !== undefined) {
     if (!Array.isArray(draftIds)) throw new Error('draftIds must be an array of media ids');
@@ -245,32 +192,23 @@ async function setArticleId(conn, appId, id, articleId) {
   return { id: Number(id), articleId: articleId != null ? String(articleId) : null };
 }
 
-/**
- * The next due row for a platform: the earliest row still in todo (nothing has
- * been prepared for it yet — draft/published rows are already handled). This is
- * what the scheduled publisher should prepare next. Returns null when all rows
- * are at least drafted.
- */
-async function nextDue(conn, appId, platform) {
-  const [rows] = await conn.query(
-    `SELECT * FROM ${CHANNEL_PLAN}
-      WHERE app_id = ? AND platform = ? AND status = 'todo'
-      ORDER BY id ASC LIMIT 1`,
+/** Delete every row for a platform (used to drop a stale bulk-import). */
+async function removeAll(conn, appId, platform) {
+  const [result] = await conn.query(
+    `DELETE FROM ${CHANNEL_PLAN} WHERE app_id = ? AND platform = ?`,
     [appId, platform]
   );
-  return normalizeRow(rows[0] || null);
+  return result.affectedRows || 0;
 }
 
 module.exports = {
   STATUSES,
+  normalizeLang,
   list,
-  get,
-  getByPeriod,
-  findBySlug,
-  removeAll,
+  getById,
+  getByKey,
   upsert,
-  upsertBySlug,
   markStatus,
   setArticleId,
-  nextDue,
+  removeAll,
 };

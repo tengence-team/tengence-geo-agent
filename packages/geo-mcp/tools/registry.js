@@ -1520,7 +1520,7 @@ const tools = [
   {
     name: 'diagnose_site',
     description:
-      'Full GEO/SEO site diagnosis: domain (DNS/TLS cert/WHOIS), transport & server fingerprint (CMS/framework/platform/CDN), robots.txt, sitemap, homepage + representative pages (meta, H1..H6 structure, JSON-LD, OG, images/alt, links, mixed content), performance and security checks. Bootstraps the site on first use (url → site key, dots → underscores).',
+      'Full GEO/SEO site diagnosis: domain (DNS incl. CNAME chain / TLS cert / WHOIS), transport & server fingerprint (CMS/framework/platform/CDN), HTTP/3, robots.txt (incl. Allow/Disallow conflicts), sitemap (all child sitemaps, language distribution, lastmod freshness), homepage + representative pages (meta, H1..H6, JSON-LD, OG, images/alt, links, mixed content), i18n (per-language homepage hreflang symmetry, 404 localization, article coverage, language switcher), CDN cache hit-rate sampling, static asset cache policy, subdomain health sweep, admin/backend exposure sweep, external-resource health, performance (TTFB stability, LCP candidate) and security (CSP parse, SAN usage) checks. Bootstraps the site on first use. All probes are read-only (GET/HEAD), bounded by a request budget, and soft-fail.',
     inputSchema: z.object({
       url: z.string().describe('site URL, e.g. https://www.example.com'),
       site: siteField,
@@ -1534,6 +1534,16 @@ const tools = [
         .min(1)
         .optional()
         .describe('max representative pages to sample (default 4; the site is sampled, never fully crawled)'),
+      deep: z
+        .boolean()
+        .optional()
+        .describe('run the full probe set — subdomains / exposure / CDN cache-hit sampling / i18n homepages / asset cache policy (default true; set false to skip all load-adding probes, keeping zero-request parsing checks)'),
+      max_requests: z
+        .number()
+        .int()
+        .min(50)
+        .optional()
+        .describe('total outbound request budget across the run, redirects counted (default 700; optional probes are skipped once exhausted)'),
     }),
     async run(args) {
       if (!args.url) return fail(new Error('diagnose_site requires url'));
@@ -1544,6 +1554,8 @@ const tools = [
           siteKey: args.site ? resolveSiteKey(args) : undefined,
           extraPages: args.pages,
           maxPages: args.max_pages,
+          deep: args.deep !== false,
+          maxRequests: args.max_requests || 700,
         });
         return ok(res);
       } catch (e) {
@@ -1848,11 +1860,12 @@ const tools = [
         //   draft-only creation → status "draft"  (NOT published)
         //   article went live   → status "published"
         //   attempt failed      → status "failed" (leaves the slug eligible for a retry)
-        // ---- wechat: ONE message = ONE 第N期 row holding the WHOLE group ----------
-        // A wechat send merges N articles into a single 图文 message (one media_id), so
-        // the calendar row must keep the group (article_slugs) intact. Logging per-slug
-        // (as the other platforms do) would shred the group and lose the
-        // "which articles went into this message" mapping forever.
+        // ---- wechat: ONE message = N rows sharing ONE 第N期 period + media_id ----
+        // A wechat send merges N articles into a single 图文 message (one media_id).
+        // v7: recordWechatIssue writes one row PER SLUG, all sharing the same
+        // period ("第N期") and the same draft_ids (media_id); in-issue headline
+        // order = row id order. The shared period/media_id keeps the
+        // "which articles went into this message" mapping.
         if (args.platform === 'wechat' && !args.dryRun && result.ok) {
           const group = (result.slugs && result.slugs.length ? result.slugs : args.slugs) || [];
           const mediaId = (result.refs && result.refs.mediaId) || null;
@@ -2111,19 +2124,20 @@ const tools = [
     name: 'channel_plan_reconcile',
     description:
       'Reconcile a platform channel_plan with what is ACTUALLY published on that platform (platform=juejin | csdn). ' +
-      'This SEEDS the publish log with already-published articles — we do NOT bulk-import the blog plan (the table only logs ' +
-      'real outcomes, so each platform keeps its own calendar). Pass map[] of {slug, title?, blogOrder?} for the ' +
+      'This SEEDS the publish plan with already-published articles — we do NOT bulk-import the blog plan (the table logs ' +
+      'real outcomes, so each platform keeps its own calendar). Pass map[] of {slug, lang?, title?} for the ' +
       'explicitly-known published articles (recommended — avoids API rate limits), or omit map to live-read the platform ' +
-      'published list and match titles back to blog slugs. Idempotent (upsert by slug). Run this once per platform before the ' +
-      'first channel_plan_next so the already-published articles are skipped instead of re-published.',
+      'published list and match titles back to blog slugs. Idempotent (upsert by platform+slug+lang; lang defaults to the ' +
+      "platform's language, e.g. zh-hans). Run this once per platform before the first channel_plan_next so the " +
+      'already-published articles are skipped instead of re-published.',
     inputSchema: z.object({
       platform: z.string().describe('platform key, e.g. juejin or csdn'),
       map: z
         .array(
           z.object({
             slug: z.string(),
+            lang: z.string().optional().describe("article language, e.g. 'zh-hans' (default: platform's language)"),
             title: z.string().optional(),
-            blogOrder: z.number().optional(),
           })
         )
         .optional()

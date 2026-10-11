@@ -1,33 +1,44 @@
 'use strict';
 /**
- * Channel publishing-calendar service (plan domain) — t.plan.channel
+ * Channel publishing-task service (plan domain) — t.plan.channel
  * ============================================================================
  * Orchestration over the workspace-local channel_plan table (repo: db/channel-plan):
- *   - importWechatIssues() writes wechat calendar rows from STRUCTURED input. The old
- *     importWechatPlan(mdPath), which parsed 《微信公众号发布计划.md》, was removed on
- *     2026-10-07: a prose document is not a data source.
+ *   - v7 model: ONE ROW = ONE (platform, slug, lang) publish task. wechat keeps a
+ *     calendar semantics by sharing one `period` ("第N期") across the rows of one
+ *     issue; single-article channels record one row per article language.
+ *   - REGISTRATION-BASED queue: the queue is NOT pre-generated. nextDue() looks up
+ *     the plan first — already-dispatched → skip to the next; recorded-but-not-sent
+ *     → reuse that row; not recorded → INSERT a todo row (register) and return it.
+ *     The publish pipeline then updates the row's status on outcome
+ *     (published / draft / failed / reviewing). A row is therefore never "published
+ *     but missing from the plan".
  *   - every platform (wechat included) gets its queue DERIVED from the blog
- *     article_plan publish_order — see nextDue(). The table is a PUBLISH LOG:
- *     we NEVER bulk-import the blog plan. recordPublish() writes one row per slug
- *     on each attempt (success → published, failure → failed) keyed by slug;
- *     reconcileFromPlatform() seeds already-published articles (failed rows retry).
- *     Each platform therefore owns an INDEPENDENT publishing calendar inside the
- *     shared table: only what was actually published on that platform is recorded.
- *   - list / markStatus / nextDue expose the calendar to CLIs and MCP tools
- *
- * Data flow:
- *   channel-plan.js CLI   list / next / import-wechat / reconcile → this service
- *   channel-publish.js    records each outcome via recordPublish() (juejin)
- *   MCP channel_plan_next → nextDue() → next slug to prepare
+ *     article_plan publish_order, filtered by the platform's language rule
+ *     (PLATFORM_LANGS): which language of an article goes to which platform.
+ *   - list / markStatus / nextDue expose the calendar to CLIs and MCP tools.
  * ============================================================================
  */
 const t = require('../index');
 const repo = require('../db/channel-plan');
-const planRepo = require('../db/plan');
 const { withConn } = require('../db/connection');
 
 /** Default tenant: process-level APP_ID env var (default 1). */
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
+
+/**
+ * Language → platform routing: which language version of an article each platform
+ * publishes. Single source for nextDue / filterUnpublished / recordPublish defaults.
+ * Adjust to the real channel mix (e.g. devto → ['en'] for overseas platforms).
+ */
+const PLATFORM_LANGS = {
+  wechat: ['zh-hans'],
+  juejin: ['zh-hans'],
+  csdn: ['zh-hans'],
+  aliyun: ['zh-hans'],
+  tencent: ['zh-hans'],
+  devto: ['en'],
+};
+const defaultLangFor = (platform) => (PLATFORM_LANGS[platform] || ['zh-hans'])[0];
 
 /**
  * Import WeChat calendar rows from STRUCTURED input.
@@ -39,8 +50,11 @@ const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
  * rows is the caller's job (AI, or a one-off script under dev/) — this API only
  * accepts the result.
  *
- * @param {Array<{period:string, topic?:string, weekday?:string,
- *                article_slugs:string[], status?:string, draft_ids?:string[],
+ * v7: one issue = N rows (one per slug) sharing the same `period`; in-issue order
+ * = row id order (insertion order). `lang` defaults to zh-hans.
+ *
+ * @param {Array<{period:string, article_slugs:string[], lang?:string, topic?:string,
+ *                weekday?:string, status?:string, draft_ids?:string[],
  *                notes?:string}>} issues
  * @returns {Promise<{platform:string, imported:number, updated:number, rows:number}>}
  */
@@ -49,24 +63,32 @@ async function importWechatIssues(issues) {
   const appId = DEFAULT_APP_ID();
   let imported = 0;
   let updated = 0;
+  let rows = 0;
   await withConn(async (conn) => {
     for (const issue of issues) {
       if (!issue || !issue.period) throw new Error('importWechatIssues: every issue requires a period');
-      const res = await repo.upsert(conn, appId, {
-        platform: 'wechat',
-        period: issue.period,
-        topic: issue.topic || null,
-        weekday: issue.weekday || null,
-        article_slugs: Array.isArray(issue.article_slugs) ? issue.article_slugs : [],
-        status: issue.status || 'todo',
-        draft_ids: Array.isArray(issue.draft_ids) ? issue.draft_ids : [],
-        notes: issue.notes || null,
-      });
-      if (res.action === 'insert') imported += 1;
-      else updated += 1;
+      const slugs = Array.isArray(issue.article_slugs) ? issue.article_slugs : [];
+      if (!slugs.length) throw new Error(`importWechatIssues: issue ${issue.period} requires non-empty article_slugs`);
+      const lang = issue.lang || 'zh-hans';
+      for (const slug of slugs) {
+        const res = await repo.upsert(conn, appId, {
+          platform: 'wechat',
+          slug,
+          lang,
+          period: issue.period,
+          topic: issue.topic || null,
+          weekday: issue.weekday || null,
+          status: issue.status || 'todo',
+          draft_ids: Array.isArray(issue.draft_ids) ? issue.draft_ids : [],
+          notes: issue.notes || null,
+        });
+        rows += 1;
+        if (res.action === 'insert') imported += 1;
+        else updated += 1;
+      }
     }
   });
-  return { platform: 'wechat', imported, updated, rows: issues.length };
+  return { platform: 'wechat', imported, updated, rows };
 }
 
 /** List calendar rows (optional platform / status filter). */
@@ -84,7 +106,7 @@ async function get(id) {
   const appId = DEFAULT_APP_ID();
   let result;
   await withConn(async (conn) => {
-    result = await repo.get(conn, appId, Number(id));
+    result = await repo.getById(conn, appId, Number(id));
   });
   return result;
 }
@@ -115,10 +137,13 @@ async function clearPlatform(platform) {
 }
 
 /**
- * Set of slugs already DISPATCHED to a platform (published OR still under review) —
- * drives the nextDue / filterUnpublished skip. `reviewing` is included so a
- * just-published-but-not-yet-approved article is never re-sent; `review_failed` and
- * `deleted` are deliberately excluded so they get a fresh (re)publish attempt.
+ * Set of (slug, lang) pairs already DISPATCHED to a platform (published OR still
+ * under review) — drives the nextDue / filterUnpublished skip. `reviewing` is
+ * included so a just-published-but-not-yet-approved article is never re-sent;
+ * `review_failed` and `deleted` are deliberately excluded so they get a fresh
+ * (re)publish attempt. Keyed by `slug::lang` (v7: language participates in dedup —
+ * the en version of a slug may still be due on an overseas platform even when the
+ * zh-hans version is dispatched domestically).
  * @returns {Promise<Set<string>>}
  */
 const DEFAULT_DISPATCHED = new Set(['published', 'reviewing']);
@@ -146,9 +171,7 @@ async function publishedSlugs(platform) {
   await withConn(async (conn) => {
     const rows = await repo.list(conn, appId, { platform });
     for (const row of rows) {
-      if (dispatched.has(row.status)) {
-        for (const s of row.article_slugs) set.add(s);
-      }
+      if (dispatched.has(row.status)) set.add(`${row.slug}::${row.lang}`);
     }
   });
   return set;
@@ -160,85 +183,81 @@ async function publishedSlugs(platform) {
  * entry point (wechat / juejin / devto, Mode A and Mode B, MCP and CLI) must go
  * through this exactly once, so the logic is never re-implemented per platform.
  *
- * Keyed STRICTLY by slug against the local channel_plan publish log — no external
- * API calls, no title matching. Which statuses count as "dispatched" is per-platform
- * (see dispatchedStatuses): for juejin/csdn only `published`/`reviewing` count, so a
- * draft still gets retried; for wechat `draft` counts too (draft box is the terminal
- * state there).
+ * Keyed by (slug, lang) against the local channel_plan publish log — no external
+ * API calls, no title matching. The language of the check is the platform's default
+ * language (PLATFORM_LANGS), so callers keep passing plain slug strings.
  *
  * @param {string} platform platform key
  * @param {string[]} slugs ordered input slugs
  * @returns {Promise<{toPublish:string[], skipped:string[]}>}
  */
 async function filterUnpublished(platform, slugs) {
-  const published = await publishedSlugs(platform); // Set<string>
+  const lang = defaultLangFor(platform);
+  const published = await publishedSlugs(platform); // Set<`slug::lang`>
   const toPublish = [];
   const skipped = [];
   for (const s of slugs || []) {
-    if (published.has(s)) skipped.push(s);
+    if (published.has(`${s}::${lang}`)) skipped.push(s);
     else toPublish.push(s);
   }
   return { toPublish, skipped };
 }
 
 /**
- * Record the OUTCOME of a publish attempt for one slug on a platform. Called by the
- * publish pipeline after each attempt (success OR failure). This is the ONLY writer
- * for non-wechat platforms: the channel_plan table is a publish LOG, NOT a mirror of
- * the blog plan. Idempotent — re-running on success updates the prior failed/duplicate
- * row instead of creating a new one.
+ * Record the OUTCOME of a publish attempt for one (slug, lang) on a platform.
+ * Called by the publish pipeline after each attempt (success OR failure). This is
+ * the ONLY writer for non-wechat platforms. Idempotent — re-running on success
+ * updates the prior failed/duplicate row instead of creating a new one (unique key
+ * (platform, slug, lang) backstops it at the DB level).
  *
- * @param {{platform:string, slug:string, title?:string, blogOrder?:number,
+ * v7: `period` is never derived here — publish_order has nothing to do with the
+ * plan's period semantics anymore (the v5 root cause).
+ *
+ * @param {{platform:string, slug:string, lang?:string, title?:string,
  *          status:'published'|'failed', draftId?:string,
  *          notes?:string, error?:string}} rec
- * @returns {Promise<{ok:boolean, platform:string, slug:string, status:string}>}
+ * @returns {Promise<{ok:boolean, platform:string, slug:string, lang:string, status:string}>}
  */
 async function recordPublish(rec) {
   if (!rec || !rec.platform || !rec.slug) throw new Error('recordPublish requires platform + slug');
   const appId = DEFAULT_APP_ID();
-  let order = rec.blogOrder;
-  if (order == null) {
-    await withConn(async (conn) => {
-      const r = await planRepo.getBySlug(conn, appId, rec.slug);
-      order = r ? r.publish_order : null;
-    });
-  }
-  const period = `P${order != null ? order : 'x'}`;
+  const lang = rec.lang || defaultLangFor(rec.platform);
   await withConn(async (conn) => {
-    await repo.upsertBySlug(conn, appId, {
+    await repo.upsert(conn, appId, {
       platform: rec.platform,
       slug: rec.slug,
-      title: rec.title || null,
+      lang,
       topic: rec.title || rec.slug,
-      blogOrder: order,
       status: rec.status || 'failed',
-      draftId: rec.draftId || null,
+      draft_ids: rec.draftId ? [rec.draftId] : [],
       notes: rec.error ? `error: ${String(rec.error).slice(0, 200)}` : rec.notes || null,
     });
   });
-  return { ok: true, platform: rec.platform, slug: rec.slug, status: rec.status || 'failed' };
+  return { ok: true, platform: rec.platform, slug: rec.slug, lang, status: rec.status || 'failed' };
 }
 
 /**
- * Record ONE WeChat issue (one 群发 message) as ONE calendar row.
+ * Record ONE WeChat issue (one 群发 message) as calendar rows.
  *
- * This is the persistent home of "which articles go into one WeChat message".
- * A wechat send merges several articles into a single 图文 message (one media_id),
- * so the row keeps the WHOLE group: period=第N期, article_slugs=[the group],
- * draft_ids=[mediaId]. Never log wechat per-slug (recordPublish) — that would shred
- * the group and lose the issue↔message mapping.
+ * v7: ONE ROW = ONE slug. An issue (一期, one media_id message) becomes N rows
+ * sharing the same `period` ("第N期") and the same draft_ids (media_id); in-issue
+ * headline order = row id order (insertion order of the slugs). Never log wechat
+ * per-slug through recordPublish — this function keeps the issue↔message mapping
+ * via the shared period/media_id.
  *
  * Issue numbering continues from whatever is already on the platform (第1期…第N期),
  * so the calendar stays a single continuous history instead of restarting.
  *
- * @param {{slugs:string[], mediaId?:string, status?:string, topic?:string, notes?:string}} rec
- * @returns {Promise<{platform:string, period:string, id:number, action:string, article_slugs:string[]}>}
+ * @param {{slugs:string[], lang?:string, mediaId?:string, status?:string,
+ *          topic?:string, notes?:string}} rec
+ * @returns {Promise<{platform:string, period:string, rows:Array<{id:number, action:string, slug:string}>, article_slugs:string[]}>}
  */
 async function recordWechatIssue(rec) {
   const slugs = Array.isArray(rec && rec.slugs) ? rec.slugs.filter(Boolean) : [];
   if (!slugs.length) throw new Error('recordWechatIssue requires a non-empty slugs array');
   const appId = DEFAULT_APP_ID();
-  let out;
+  const lang = rec.lang || 'zh-hans';
+  const out = { platform: 'wechat', rows: [], article_slugs: slugs };
   await withConn(async (conn) => {
     const rows = await repo.list(conn, appId, { platform: 'wechat' });
     let maxIssue = 0;
@@ -247,16 +266,20 @@ async function recordWechatIssue(rec) {
       if (m) maxIssue = Math.max(maxIssue, Number(m[1]));
     }
     const period = `第${maxIssue + 1}期`;
-    const res = await repo.upsert(conn, appId, {
-      platform: 'wechat',
-      period,
-      topic: rec.topic || null,
-      article_slugs: slugs,
-      status: rec.status || 'draft',
-      draft_ids: rec.mediaId ? [rec.mediaId] : [],
-      notes: rec.notes || null,
-    });
-    out = { platform: 'wechat', period, id: res.id, action: res.action, article_slugs: slugs };
+    for (const slug of slugs) {
+      const res = await repo.upsert(conn, appId, {
+        platform: 'wechat',
+        slug,
+        lang,
+        period,
+        topic: rec.topic || null,
+        status: rec.status || 'draft',
+        draft_ids: rec.mediaId ? [rec.mediaId] : [],
+        notes: rec.notes || null,
+      });
+      out.rows.push({ id: res.id, action: res.action, slug });
+    }
+    out.period = period;
   });
   return out;
 }
@@ -271,24 +294,27 @@ async function recordWechatIssue(rec) {
  *   - no map: live-read the platform's published list and match back to blog slugs
  *     by title. Unmatched titles fall back to a synthetic slug so they are recorded.
  *
+ * v7: rows are keyed by (platform, slug, lang); `lang` defaults to the platform's
+ * default language (PLATFORM_LANGS).
+ *
  * @param {string} platform platform key (juejin / csdn / …)
- * @param {{map?:Array<{slug:string,title?:string,blogOrder?:number,draftId?:string,notes?:string}>}} opts
+ * @param {{map?:Array<{slug:string, lang?:string, title?:string, draftId?:string, notes?:string}>}} opts
  * @returns {Promise<{platform:string, source:string, inserted:number, matched:number, unmatched:number}>}
  */
 async function reconcileFromPlatform(platform, { map } = {}) {
   if (!platform) throw new Error('reconcileFromPlatform requires a platform key');
   const appId = DEFAULT_APP_ID();
+  const lang = defaultLangFor(platform);
   if (Array.isArray(map) && map.length) {
     await withConn(async (conn) => {
       for (const m of map) {
-        await repo.upsertBySlug(conn, appId, {
+        await repo.upsert(conn, appId, {
           platform,
           slug: m.slug,
-          title: m.title || m.slug,
+          lang: m.lang || lang,
           topic: m.title || m.slug,
-          blogOrder: m.blogOrder != null ? m.blogOrder : null,
           status: 'published',
-          draftId: m.draftId || null,
+          draft_ids: m.draftId ? [m.draftId] : [],
           notes: m.notes || null,
         });
       }
@@ -328,20 +354,20 @@ async function reconcileFromPlatform(platform, { map } = {}) {
       const slug = titleToSlug.get(title.trim().toLowerCase());
       if (slug) {
         matched += 1;
-        await repo.upsertBySlug(conn, appId, {
+        await repo.upsert(conn, appId, {
           platform,
           slug,
-          title: title || slug,
+          lang,
           topic: title || slug,
           status: 'published',
           notes: null,
         });
       } else {
         unmatched += 1;
-        await repo.upsertBySlug(conn, appId, {
+        await repo.upsert(conn, appId, {
           platform,
           slug: String(articleId),
-          title: title || String(articleId),
+          lang,
           topic: title || String(articleId),
           status: 'published',
           notes: 'unmatched title — synthetic slug',
@@ -467,7 +493,7 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
 
     for (const row of rows) {
       const draftId = row.draft_ids && row.draft_ids[0] ? String(row.draft_ids[0]) : null;
-      const slug = (row.article_slugs || [])[0];
+      const slug = row.slug;
       const titleCandidates = [row.topic, slug && blogTitleBySlug.get(slug)]
         .filter(Boolean)
         .map(norm);
@@ -530,57 +556,77 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
 }
 
 /**
- * The next article(s) to publish on a platform.
+ * The next article(s) to publish on a platform — REGISTRATION-BASED queue.
  *
- * Every platform — wechat included — is DERIVED from the blog article_plan: only
- * blog-published rows, in publish_order, skipping slugs already dispatched to that
- * platform. This keeps each channel queue in the SAME order as the blog, resuming
- * right after the last article sent there (a failed row is NOT skipped, so it
- * retries). `count` lets wechat take a whole issue-sized batch in one go.
+ * The queue is NOT pre-generated. nextDue() works through the blog article_plan in
+ * publish_order (filtered to the platform's language rule, PLATFORM_LANGS) and, per
+ * article, consults the channel_plan task table FIRST:
+ *   - already dispatched (published / reviewing, plus wechat draft) → skip to next
+ *   - recorded but not yet sent (todo / failed / review_failed / deleted / paused)
+ *     → reuse that row (no duplicate INSERT; failed rows retry)
+ *   - not recorded at all → INSERT a todo row (register) and return it
+ * The publish pipeline then updates the row's status on outcome. A row therefore
+ * never "published but missing from the plan".
  *
- * wechat used to be driven by a per-issue calendar parsed out of
- * 《微信公众号发布计划.md》; the queue now comes from the DB publish_order like every
- * other platform, and the calendar rows are left as what they really are — a
- * dispatch log (importWechatIssues() can still seed issue metadata as structured
- * input, and dispatched rows keep driving the dedup in publishedSlugs()).
+ * `count` lets wechat take a whole issue-sized batch in one go (N rows sharing one
+ * period when recordWechatIssue is called afterwards).
  *
  * @param {string} platform
- * @param {{count?:number}} [opts] how many slugs to return (default 1)
+ * @param {{count?:number}} [opts] how many articles to return (default 1)
  * @returns {Promise<object|null>}
  */
 async function nextDue(platform, { count = 1 } = {}) {
-  const published = await publishedSlugs(platform);
-  const blog = (await t.plan.list({ limit: 5000 })).filter((r) => r.plan_status === 'published');
-  // One blog article = up to THREE plan rows (zh-hans / en / zh-hant) sharing the same
-  // publish_order — they are the SAME article, not three queue entries. Collapse to one
-  // entry per slug, preferring the zh-hans row (the authoritative source of the order).
-  const byslug = new Map();
-  for (const r of blog) {
-    if (!r || !r.slug) continue;
-    const prev = byslug.get(r.slug);
-    if (!prev) byslug.set(r.slug, r);
-    else if (prev.lang !== 'zh-hans' && r.lang === 'zh-hans') byslug.set(r.slug, r);
-  }
-  const sorted = [...byslug.values()].sort((a, b) => (a.publish_order || 1e9) - (b.publish_order || 1e9));
+  const appId = DEFAULT_APP_ID();
+  const langs = PLATFORM_LANGS[platform] || ['zh-hans'];
+  const published = await publishedSlugs(platform); // Set<`slug::lang`>
+  const blog = (await t.plan.list({ limit: 5000 })).filter(
+    (r) => r.plan_status === 'published' && langs.includes(r.lang)
+  );
+  const sorted = [...blog].sort((a, b) => (a.publish_order || 1e9) - (b.publish_order || 1e9));
   const picked = [];
-  for (const r of sorted) {
-    if (published.has(r.slug)) continue;
-    picked.push(r);
-    if (picked.length >= Math.max(1, count)) break;
-  }
+  await withConn(async (conn) => {
+    for (const r of sorted) {
+      const key = `${r.slug}::${r.lang}`;
+      if (published.has(key)) continue; // 已发送 → 下一篇
+      let task = await repo.getByKey(conn, appId, platform, r.slug, r.lang);
+      if (!task) {
+        // 未记录 → 先登记 todo（这就是"发布计划"的登记动作）
+        const res = await repo.upsert(conn, appId, {
+          platform,
+          slug: r.slug,
+          lang: r.lang,
+          status: 'todo',
+        });
+        task = { id: res.id };
+      }
+      picked.push({
+        id: task.id,
+        platform,
+        slug: r.slug,
+        lang: r.lang,
+        status: 'todo',
+        period: null,
+        title: r.title,
+        topic: r.title,
+        blogOrder: r.publish_order,
+      });
+      if (picked.length >= Math.max(1, count)) break;
+    }
+  });
   if (!picked.length) return null;
-  const head = picked[0];
   return {
     platform,
     status: 'todo',
     source: 'blog_plan',
-    id: null,
+    tasks: picked,
+    id: picked[0].id,
     period: null,
-    slug: head.slug,
+    slug: picked[0].slug,
+    lang: picked[0].lang,
     article_slugs: picked.map((r) => r.slug),
-    title: head.title,
-    topic: head.title,
-    blogOrder: head.publish_order,
+    title: picked[0].title,
+    topic: picked[0].title,
+    blogOrder: picked[0].blogOrder,
   };
 }
 
@@ -599,4 +645,5 @@ module.exports = {
   get,
   markStatus,
   nextDue,
+  PLATFORM_LANGS,
 };

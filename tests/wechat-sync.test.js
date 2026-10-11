@@ -42,20 +42,22 @@ after(() => {
   fs.rmSync(TMP, { recursive: true, force: true });
 });
 
-/** Insert a channel_plan row; returns its id. */
+/** Insert channel_plan rows (one per slug, sharing period + draftIds); returns the ids. */
 async function insertPlanRow({ period, status, slugs, draftIds }) {
   sqlite.getDb();
-  let id;
+  const ids = [];
   await withConn(async (conn) => {
-    const [r] = await conn.query(
-      `INSERT INTO tengence_geo_channel_plan
-         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
-       VALUES (1, 'wechat', ?, ?, '周二', ?, ?, ?)`,
-      [period, `主题 ${period}`, status, JSON.stringify(slugs), JSON.stringify(draftIds || [])]
-    );
-    id = r.insertId;
+    for (const slug of slugs) {
+      const [r] = await conn.query(
+        `INSERT INTO tengence_geo_channel_plan
+           (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids)
+         VALUES (1, 'wechat', ?, 'zh-hans', ?, ?, '周二', ?, ?)`,
+        [slug, period, `主题 ${period}`, status, JSON.stringify(draftIds || [])]
+      );
+      ids.push(r.insertId);
+    }
   });
-  return id;
+  return ids.length === 1 ? ids[0] : ids;
 }
 
 /** Insert an article row so getDetail can resolve a title for a slug. */

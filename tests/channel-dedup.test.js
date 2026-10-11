@@ -43,18 +43,20 @@ after(() => {
   fs.rmSync(TMP, { recursive: true, force: true });
 });
 
-async function insertPlanRow({ platform, status, slugs }) {
-  let id;
+async function insertPlanRow({ platform, status, slugs, lang = 'zh-hans' }) {
+  const ids = [];
   await withConn(async (conn) => {
-    const [r] = await conn.query(
-      `INSERT INTO tengence_geo_channel_plan
-         (app_id, platform, period, topic, weekday, status, article_slugs, draft_ids)
-       VALUES (1, ?, '测试期', '测试主题', '周二', ?, ?, ?)`,
-      [platform, status, JSON.stringify(slugs), JSON.stringify([])]
-    );
-    id = r.insertId;
+    for (const slug of slugs) {
+      const [r] = await conn.query(
+        `INSERT INTO tengence_geo_channel_plan
+           (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids)
+         VALUES (1, ?, ?, ?, '测试期', '测试主题', '周二', ?, ?)`,
+        [platform, slug, lang, status, JSON.stringify([])]
+      );
+      ids.push(r.insertId);
+    }
   });
-  return id;
+  return ids;
 }
 
 async function deletePlanRow(id) {
@@ -66,7 +68,7 @@ async function deletePlanRow(id) {
 // ==================== filterUnpublished (pure unit) ====================
 
 test('filterUnpublished: drops published slugs, keeps the rest', async () => {
-  const id = await insertPlanRow({ platform: 'wechat', status: 'published', slugs: ['already-out', 'also-out'] });
+  const ids = await insertPlanRow({ platform: 'wechat', status: 'published', slugs: ['already-out', 'also-out'] });
   try {
     const { toPublish, skipped } = await filterUnpublished('wechat', [
       'already-out',
@@ -77,18 +79,18 @@ test('filterUnpublished: drops published slugs, keeps the rest', async () => {
     assert.deepEqual(skipped.sort(), ['already-out', 'also-out']);
     assert.deepEqual(toPublish.sort(), ['another-fresh', 'fresh']);
   } finally {
-    await deletePlanRow(id);
+    for (const id of ids) await deletePlanRow(id);
   }
 });
 
 test('filterUnpublished: draft rows are NOT skipped', async () => {
-  const id = await insertPlanRow({ platform: 'juejin', status: 'draft', slugs: ['only-draft'] });
+  const ids = await insertPlanRow({ platform: 'juejin', status: 'draft', slugs: ['only-draft'] });
   try {
     const { toPublish, skipped } = await filterUnpublished('juejin', ['only-draft', 'fresh']);
     assert.deepEqual(skipped, [], 'draft-status slug must NOT be filtered');
     assert.deepEqual(toPublish.sort(), ['fresh', 'only-draft']);
   } finally {
-    await deletePlanRow(id);
+    for (const id of ids) await deletePlanRow(id);
   }
 });
 
@@ -104,15 +106,15 @@ test('filterUnpublished: cross-platform isolation', async () => {
     const jOnly = await filterUnpublished('juejin', ['wechat-only']);
     assert.deepEqual(jOnly.toPublish, ['wechat-only']);
   } finally {
-    await deletePlanRow(w);
-    await deletePlanRow(j);
+    for (const id of w) await deletePlanRow(id);
+    for (const id of j) await deletePlanRow(id);
   }
 });
 
 // ==================== publishFromSlugs skip-empty (no platform API call) ====================
 
 test('publishFromSlugs (WeChat): all published → skip-empty, no mediaId', async () => {
-  const id = await insertPlanRow({ platform: 'wechat', status: 'published', slugs: ['a', 'b', 'c'] });
+  const ids = await insertPlanRow({ platform: 'wechat', status: 'published', slugs: ['a', 'b', 'c'] });
   try {
     const res = await t.syndicate.channel.publishToChannel({
       platform: 'wechat',
@@ -125,12 +127,12 @@ test('publishFromSlugs (WeChat): all published → skip-empty, no mediaId', asyn
     assert.equal(res.refs.mediaId, undefined, 'no draft created');
     assert.deepEqual(res.skipped.sort(), ['a', 'b', 'c']);
   } finally {
-    await deletePlanRow(id);
+    for (const id of ids) await deletePlanRow(id);
   }
 });
 
 test('publishFromSlugs (Juejin): all published → skip-empty (unified dedup covers juejin too)', async () => {
-  const id = await insertPlanRow({ platform: 'juejin', status: 'published', slugs: ['j-done'] });
+  const ids = await insertPlanRow({ platform: 'juejin', status: 'published', slugs: ['j-done'] });
   try {
     const res = await t.syndicate.channel.publishToChannel({
       platform: 'juejin',
@@ -141,14 +143,14 @@ test('publishFromSlugs (Juejin): all published → skip-empty (unified dedup cov
     assert.equal(res.action, 'skip-empty', 'juejin must use the same unified filterUnpublished');
     assert.deepEqual(res.skipped, ['j-done']);
   } finally {
-    await deletePlanRow(id);
+    for (const id of ids) await deletePlanRow(id);
   }
 });
 
 // ==================== Mode B exportArticles dedup ====================
 
 test('publishToChannel Mode B: skips already-published slug, exports the rest', async () => {
-  const id = await insertPlanRow({ platform: 'zhihu', status: 'published', slugs: ['done-slug'] });
+  const ids = await insertPlanRow({ platform: 'zhihu', status: 'published', slugs: ['done-slug'] });
   try {
     const res = await t.syndicate.channel.publishToChannel({
       platform: 'zhihu',
@@ -168,6 +170,6 @@ test('publishToChannel Mode B: skips already-published slug, exports the rest', 
     const donePath = path.join(TMP, 'tengence_test', 'data', 'channel-export', 'zhihu', 'done-slug.md');
     assert.ok(!fs.existsSync(donePath), 'skipped slug must NOT be written');
   } finally {
-    await deletePlanRow(id);
+    for (const id of ids) await deletePlanRow(id);
   }
 });

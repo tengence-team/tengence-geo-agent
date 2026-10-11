@@ -41,7 +41,52 @@ const CHANNEL_TAXONOMY = 'tengence_geo_channel_taxonomy';
 // only used as a monotonic "DDL already applied" marker (the DDL itself is idempotent,
 // IF NOT EXISTS), so jumping to 4 guarantees the channel_taxonomy table is created
 // everywhere regardless of which of {2,3} a given DB is currently at.
-const SCHEMA_VERSION = 5;
+//
+// v6 was skipped: the intermediate "slug_key (JSON slug set)" design was replaced by
+// the v7 design (single-article rows + lang) before anything was shipped.
+//
+// v7 (2026-10-11): channel_plan rows became ONE ROW = ONE (platform, slug, lang)
+// publish task; unique key moved from (app_id, platform, period) to
+// (app_id, platform, slug, lang). Existing v5 databases are migrated by the
+// one-off script scripts/migrate-channel-plan-v7.js (NOT by ensureSchema —
+// ensureSchema only stamps the version and applies IF NOT EXISTS DDL for new DBs).
+const SCHEMA_VERSION = 7;
+
+/**
+ * channel_plan v7 DDL template (workspace-local publishing TASK table).
+ *
+ * One row = one (platform, slug, lang) publish task/log entry:
+ *   - wechat: one issue (一期) = N rows sharing the same `period` ("第N期");
+ *     in-issue headline order = row id order (insertion order of the slugs).
+ *   - single-article channels (juejin / csdn / aliyun / tencent / devto …): one
+ *     row per article language; `period` keeps historical values only (v5 legacy),
+ *     new rows leave it NULL — period is NEVER derived from publish_order anymore
+ *     (that was the root cause of the v5 unique-key collisions).
+ * Unique key = (app_id, platform, slug, lang) — the dedup semantics live in
+ * publishedSlugs()/filterUnpublished() (per slug+lang); the unique key is the DB
+ * backstop and is order/format independent (plain text columns, no JSON).
+ */
+function channelPlanDDL(tableName) {
+  return `
+CREATE TABLE IF NOT EXISTS ${tableName} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id INTEGER NOT NULL DEFAULT 1,
+  platform TEXT NOT NULL,
+  slug TEXT NOT NULL,
+  lang TEXT NOT NULL DEFAULT 'zh-hans',
+  period TEXT,
+  topic TEXT,
+  weekday TEXT,
+  status TEXT DEFAULT 'todo',
+  draft_ids TEXT,
+  article_id TEXT,
+  notes TEXT,
+  schedule_at TEXT,
+  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  UNIQUE (app_id, platform, slug, lang)
+);`;
+}
 
 const createSqliteTablesSQL = `
 -- ========== 1. articles main table ==========
@@ -388,24 +433,8 @@ CREATE INDEX IF NOT EXISTS idx_sqlite_plan_category ON ${TABLES.articlePlan} (ap
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_slug ON ${TABLES.articlePlan} (slug);
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_batch ON ${TABLES.articlePlan} (app_id, publish_batch);
 
--- ========== 17. channel publishing calendar (workspace-local, not in MySQL) ==========
-CREATE TABLE IF NOT EXISTS ${CHANNEL_PLAN} (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  app_id INTEGER NOT NULL DEFAULT 1,
-  platform TEXT NOT NULL,
-  period TEXT NOT NULL,
-  topic TEXT,
-  weekday TEXT,
-      article_slugs TEXT NOT NULL,
-      status TEXT DEFAULT 'todo',
-      draft_ids TEXT,
-      article_id TEXT,
-      notes TEXT,
-  schedule_at TEXT,
-  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
-  updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
-  UNIQUE (app_id, platform, period)
-);
+-- ========== 17. channel publishing tasks (workspace-local, not in MySQL) ==========
+${channelPlanDDL(CHANNEL_PLAN)}
 CREATE INDEX IF NOT EXISTS idx_sqlite_channel_plan_app ON ${CHANNEL_PLAN} (app_id);
 CREATE INDEX IF NOT EXISTS idx_sqlite_channel_plan_status ON ${CHANNEL_PLAN} (app_id, platform, status);
 
@@ -444,4 +473,4 @@ CREATE INDEX IF NOT EXISTS idx_channel_taxonomy_name ON ${CHANNEL_TAXONOMY} (app
 -- idx_channel_taxonomy_name (extra write cost, zero read benefit).
 `;
 
-module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN, CHANNEL_TAXONOMY };
+module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN, CHANNEL_TAXONOMY, channelPlanDDL };
