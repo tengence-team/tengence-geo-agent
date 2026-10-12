@@ -87,6 +87,9 @@ rewrite:
     allowCitations: true
     brandLinkAllowedPatterns:
       - "tengence.com/blog/article/"
+      - "tengence.com/zh-hans/blog/article/"
+      - "tengence.com/zh-hant/blog/article/"
+      - "tengence.com/en/blog/article/"
     brandLinkDeniedPatterns:
       - "console."
       - "app."

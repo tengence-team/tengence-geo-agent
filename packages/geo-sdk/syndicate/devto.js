@@ -16,6 +16,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const { articleUrl, appendUtm } = require('./utm');
+
 /**
  * Publish a local markdown article to Dev.to (LIVE, not draft)
  * @param {{mdPath:string, dryRun?:boolean, coverImage?:string}} opts
@@ -66,10 +68,12 @@ async function publishDevto({ mdPath, dryRun = false, coverImage = null }) {
 
   const title = fmValue('title');
 
-  // canonical URL = the official-site original
-  let siteDomain = process.env.SITE_DOMAIN || 'www.tengence.com';
-  if (!siteDomain.startsWith('http')) siteDomain = `https://www.${siteDomain.replace(/^www\./, '')}`;
-  const canonicalUrl = `${siteDomain}/blog/article/${slug}/`;
+  // canonical URL = the official-site original (English row: /en/ prefix + UTM)
+  const canonicalUrl = appendUtm(
+    articleUrl({ domain: process.env.SITE_DOMAIN, slug, lang: 'en' }),
+    'devto',
+    { slug, lang: 'en' }
+  );
 
   // derive Dev.to tags from keywords
   const keywordsLine = fmValue('keywords') || '[]';

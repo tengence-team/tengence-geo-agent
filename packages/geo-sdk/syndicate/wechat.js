@@ -25,6 +25,7 @@ const sharp = require('sharp');
 
 const t = require('../index');
 const { renderMarkdownToWechat } = require('@rbbtsn0w/wechat-markdown');
+const { articleUrl, appendUtm } = require('./utm');
 
 // ==================== WeChat API client ====================
 
@@ -596,7 +597,13 @@ async function prepareArticle(conn, slug, siteDomain, overrides = {}) {
   }
   digest = digest.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 120);
 
-  const sourceUrl = `https://${siteDomain}/blog/article/${slug}/`;
+  // 「阅读原文」→ 博客原文：强制 www + 简体中文语言前缀 + UTM 渠道归因
+  // （wechat_oa = WeChat Official Account，公众平台；详见 syndicate/utm.js）
+  const sourceUrl = appendUtm(
+    articleUrl({ domain: siteDomain, slug, lang: 'zh-hans' }),
+    'wechat',
+    { slug, lang: 'zh-hans' }
+  );
 
   const articleBase = {
     title: title,

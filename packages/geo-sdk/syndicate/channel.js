@@ -41,6 +41,7 @@ const aliyun = require('./aliyun');
 const tencent = require('./tencent');
 const tencentTaxonomy = require('./tencent-taxonomy');
 const { publishDevto } = require('./devto');
+const { articleUrl, appendUtm, rewriteMarkdownUtm, langFor } = require('./utm');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
 
@@ -87,13 +88,17 @@ function stripLeadingTitle(md, title) {
 
 /** Build the publish-package markdown (front matter + body). */
 function renderPublishPackage(platform, article) {
+  // 渠道导出包（人工发布用）：本站链接统一加语言前缀 + UTM（只动 tengence.com 域）
+  const lang = langFor(platform);
   const fm = {
     platform,
     slug: article.slug,
     title: article.title,
     summary: article.summary || '',
     tags: Array.isArray(article.tags) ? article.tags : [],
-    source_url: article.sourceUrl || '',
+    source_url: article.sourceUrl
+      ? appendUtm(article.sourceUrl, platform, { slug: article.slug, lang })
+      : '',
     cover: article.cover || '',
     exported_at: new Date().toISOString(),
     rewrite: article.rewrite || 'harness',
@@ -103,7 +108,7 @@ function renderPublishPackage(platform, article) {
   // title lives in the front matter above — drop a leading "# Title" from the body
   // ONLY when it duplicates the article title, so the exported package never shows the
   // title twice while genuine content headings are preserved.
-  const body = stripLeadingTitle(article.contentMd || '', article.title);
+  const body = rewriteMarkdownUtm(stripLeadingTitle(article.contentMd || '', article.title), { platform, lang });
   return `---\n${fmText}---\n\n${body.trim()}\n`;
 }
 
@@ -301,6 +306,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
         // zh-hans content was actually published).
         const lang = platform === 'devto' ? 'en' : 'zh-hans';
         const article = await articleFromDb(conn, appId, slug, SITE_DOMAIN, lang);
+        // 渠道出口正文：本站链接统一加渠道语言前缀 + UTM 归因参数
+        // （只动 tengence.com 域链接，第三方引用原样保留；详见 syndicate/utm.js）
+        const contentMd = rewriteMarkdownUtm(article.contentMd, { platform, lang });
         const dir = exportDir(site.siteDir, platform);
         fs.mkdirSync(dir, { recursive: true });
         const mdPath = path.join(dir, `${slug}.md`);
@@ -321,7 +329,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
 
           // title is passed separately to publishJuejin; never embed it in the
           // body — drop any leading "# Title" so the exported file stays clean.
-          fs.writeFileSync(mdPath, `${stripLeadingTitle(article.contentMd, article.title).trim()}\n`, 'utf8');
+          fs.writeFileSync(mdPath, `${stripLeadingTitle(contentMd, article.title).trim()}\n`, 'utf8');
 
           const tagKws = (article.targetKeywords || '')
             .split(',')
@@ -405,7 +413,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           };
           // title is in the front matter above; drop any leading "# Title" from
           // the body so the exported file never shows the title twice.
-          fs.writeFileSync(mdPath, `---\n${yaml.dump(fm, { lineWidth: -1 }).trim()}\n---\n\n${stripLeadingTitle(article.contentMd, article.title).trim()}\n`, 'utf8');
+          fs.writeFileSync(mdPath, `---\n${yaml.dump(fm, { lineWidth: -1 }).trim()}\n---\n\n${stripLeadingTitle(contentMd, article.title).trim()}\n`, 'utf8');
           // coverImage: the blog's featured image (absolute URL). dev.to re-hosts
           // it to its own CDN at publish time (main_image field), so a broken
           // source never leaves a broken cover.
@@ -423,7 +431,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // the env fallback when there is none).
           // title is passed separately to the platform pipeline; drop any leading
           // "# Title" so the exported .md body stays clean.
-          fs.writeFileSync(mdPath, `${stripLeadingTitle(article.contentMd, article.title).trim()}\n`, 'utf8');
+          fs.writeFileSync(mdPath, `${stripLeadingTitle(contentMd, article.title).trim()}\n`, 'utf8');
           const tags = articleTagsFor(article);
 
           if (dryRun) {
@@ -443,6 +451,12 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             // 封面：博客特色图（articles.featured_image）；publishCsdn 内部会
             // 把它转存到 CSDN 图床（外链封面在 CSDN 无效）。
             coverUrl: await featuredImageFor(slug, article.featuredImage),
+            // 原文链接：CSDN 编辑器的「原文链接」字段 → 博客原文（www + zh-hans + UTM）
+            originalLink: appendUtm(
+              articleUrl({ domain: SITE_DOMAIN, slug, lang: 'zh-hans' }),
+              'csdn',
+              { slug, lang: 'zh-hans' }
+            ),
           });
           appendLog(site.siteDir, {
             action: asDraft ? 'draft' : 'publish', platform, slug, ok: !res.failed, detail: res,
@@ -474,7 +488,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // the WeChat channel's "draft box + human send" contract.
           // title is passed separately to the platform pipeline; drop any leading
           // "# Title" so the exported .md body stays clean.
-          fs.writeFileSync(mdPath, `${stripLeadingTitle(article.contentMd, article.title).trim()}\n`, 'utf8');
+          fs.writeFileSync(mdPath, `${stripLeadingTitle(contentMd, article.title).trim()}\n`, 'utf8');
 
           if (dryRun) {
             appendLog(site.siteDir, {
@@ -522,7 +536,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // so `publish` follows `asDraft` like the other ungated channels.
           // title is passed separately to the platform pipeline; drop any leading
           // "# Title" so the exported .md body stays clean.
-          fs.writeFileSync(mdPath, `${stripLeadingTitle(article.contentMd, article.title).trim()}\n`, 'utf8');
+          fs.writeFileSync(mdPath, `${stripLeadingTitle(contentMd, article.title).trim()}\n`, 'utf8');
           const tags = articleTagsFor(article);
 
           // Map OUR plan category onto the platform's 分类 id via the cached
@@ -617,6 +631,9 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
  */
 async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = true }) {
   const site = t.site.loadSite(siteKey);
+  const SITE_DOMAIN = (process.env.SITE_DOMAIN || (site.site && site.site.site && site.site.site.domain) || 'www.tengence.com')
+    .replace(/^https?:\/\//, '')
+    .replace(/^www\./, 'www.');
   const dir = exportDir(site.siteDir, platform);
   fs.mkdirSync(dir, { recursive: true });
 
@@ -727,7 +744,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
           : null;
 
         const res = await juejin.publishJuejin({
-          contentMd: stripLeadingTitle(article.contentMd, article.title).trim(),
+          contentMd: rewriteMarkdownUtm(stripLeadingTitle(article.contentMd, article.title).trim(), { platform: 'juejin' }),
           title,
           publish: !asDraft,
           tags,
@@ -790,12 +807,18 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
         }
 
         const res = await csdn.publishCsdn({
-          contentMd: stripLeadingTitle(article.contentMd, article.title).trim(),
+          contentMd: rewriteMarkdownUtm(stripLeadingTitle(article.contentMd, article.title).trim(), { platform: 'csdn' }),
           title: article.title,
           publish: !asDraft,
           tags,
           // 封面同 Mode A：harness 传了 cover 就用，否则回落到 DB featured_image。
           coverUrl: await featuredImageFor(article.slug, article.cover || article.featuredImage),
+          // 原文链接：CSDN 编辑器「原文链接」字段 → 博客原文（www + zh-hans + UTM）
+          originalLink: appendUtm(
+            articleUrl({ domain: SITE_DOMAIN, slug: article.slug, lang: 'zh-hans' }),
+            'csdn',
+            { slug: article.slug, lang: 'zh-hans' }
+          ),
         });
 
         appendLog(site.siteDir, {
@@ -839,7 +862,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
       if (!article.slug || !article.title || !article.contentMd) continue;
       try {
         const res = await aliyun.publishAliyun({
-          contentMd: stripLeadingTitle(article.contentMd, article.title).trim(),
+          contentMd: rewriteMarkdownUtm(stripLeadingTitle(article.contentMd, article.title).trim(), { platform: 'aliyun' }),
           title: article.title,
           publish: false, // live publish is human-gated on this platform
           coverUrl: await featuredImageFor(article.slug, article.featuredImage),
@@ -910,7 +933,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
           : null;
 
         const res = await tencent.publishTencent({
-          contentMd: stripLeadingTitle(article.contentMd, article.title).trim(),
+          contentMd: rewriteMarkdownUtm(stripLeadingTitle(article.contentMd, article.title).trim(), { platform: 'tencent' }),
           title: article.title,
           publish: !asDraft, // not human-gated on this platform
           tags: Array.isArray(article.tags) && article.tags.length ? article.tags : null,

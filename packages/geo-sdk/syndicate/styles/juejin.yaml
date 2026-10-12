@@ -56,6 +56,9 @@ rewrite:
     # 允许保留的本站链接：必须是文章正文页（编辑性引用），其余路径一律 error
     brandLinkAllowedPatterns:
       - "tengence.com/blog/article/"
+      - "tengence.com/zh-hans/blog/article/"
+      - "tengence.com/zh-hant/blog/article/"
+      - "tengence.com/en/blog/article/"
     # 禁止出现的转化/营销类路径或主机（命中即 error，即使数量未超上限）
     brandLinkDeniedPatterns:
       - "console."

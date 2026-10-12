@@ -390,6 +390,7 @@ async function saveArticle({
   readType = 'public',
   coverImages = [],
   coverType = 1,
+  originalLink = '',
 } = {}) {
   const { source, creationStatement } = creds();
   const isNew = articleId ? 0 : 1;
@@ -417,7 +418,7 @@ async function saveArticle({
     resource_id: '',
     scheduled_time: 0,
     reason: '',
-    original_link: '',
+    original_link: originalLink || '',
   };
   return request(`${BASE_EDITOR}/v1/postedit/saveArticle`, {
     method: 'POST',
@@ -575,6 +576,7 @@ async function publishCsdn({
   coverType = 1,
   coverUrl = null,
   coverSuffix = null,
+  originalLink = null,
 } = {}) {
   const { cookie, defaultTags } = creds();
   if (!cookie) {
@@ -658,6 +660,7 @@ async function publishCsdn({
     categories,
     coverImages: resolvedCovers,
     coverType: resolvedCovers.length ? coverType : 0,
+    originalLink,
   });
   const u = unwrap(resp);
   if (!u.ok) {
