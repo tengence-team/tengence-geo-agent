@@ -246,6 +246,13 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
       await withConn((conn) => repo.markLastRun(conn, appId, s.id, localStamp(now)));
       fired.status = 'published';
       fired.slugs = slugs;
+      // Surface the external article URLs (juejin/csdn/devto publish for real and
+      // return pub.results[].url; wechat stays in the draft box → no url) so the
+      // external ticker can DISPLAY the links of what was just published.
+      const publishedUrls = (pub.results || [])
+        .map((r) => (r && typeof r === 'object' && r.url ? r.url : null))
+        .filter(Boolean);
+      if (publishedUrls.length) fired.urls = publishedUrls;
       results.push(fired);
     } catch (e) {
       results.push({
