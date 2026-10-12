@@ -10,14 +10,14 @@ description: 多语言翻译标准链路——把已过门禁的中文文章经 
 把站点中**已通过 check_article 门禁**的中文文章（lang=zh-hans）翻译为
 `en` / `zh-hant` 独立文章（同 slug、同 translation_group），机械门禁全绿后
 入库并发布为 WordPress 独立文章。目标语言规范与术语表见
-`standards_read('translation-standards')` 与站点级
+`geo://standard/translation-standards` 与站点级
 `config/translation-glossary.yaml`。
 
 ## 核心分工（不可协商）
 
 1. **翻译与 AI 审校由 agent/harness 执行**。MCP server 不调用任何 LLM：
    只负责供原文（`article_export --lang`）、供规则与术语表
-   （`standards_read('translation-standards')` + `translation_glossary_get`）、
+   （`geo://standard/translation-standards` + `translation_glossary_get`）、
    机械门禁（`check_translation`）、入库（`article_ingest --lang`）、发布
    （`publish_from_db`）。server 从不翻译内容。
 2. **规则运行时获取，禁止硬编码**。所有语言规范、术语表、门禁规则都来自
@@ -35,7 +35,7 @@ description: 多语言翻译标准链路——把已过门禁的中文文章经 
 
 1. **取原文**：`article_export { slug, lang: 'zh-hans', site }` → 中文 md 落
    `<site>/data/inbox/zh-hans/<slug>.md`，读取正文与研究简报。
-2. **取规则与术语表**：`standards_read('translation-standards')` +
+2. **取规则与术语表**：`geo://standard/translation-standards` +
    `translation_glossary_get { site, target_lang }`（合并全局与站点级，
    返回目标语言术语 + 禁用词）。繁体用香港风格（軟件/資訊/網絡/優化…）。
 3. **翻译（agent 执行）**：按标准的三条红线执行——
@@ -73,7 +73,7 @@ description: 多语言翻译标准链路——把已过门禁的中文文章经 
 | 现象 | 处理 |
 |---|---|
 | `check_translation` 反复不过 | 对照 `translation-standards` T1–T8 逐条修正，最多 2 轮；仍不过标失败上报 |
-| 术语表缺失 | 确认 `standards_read` 返回 translation-standards、站点 glossary 存在 |
+| 术语表缺失 | 确认资源 `geo://standard/translation-standards` 与站点 glossary 存在 |
 | 目标语言不在 site.yaml | 先更新 `languages.available` 再执行 |
 | 原文未过门禁 | 先走 `geo-article-writing` 使中文稿全绿，再翻译 |
 | 任一工具失败 | 最多重试 1 次，仍失败上报工具原始输出，不得绕过 MCP 直改数据 |

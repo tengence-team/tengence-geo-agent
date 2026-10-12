@@ -16,7 +16,7 @@ description: 文章发布后向搜索引擎提交收录，并按 T+3/T+7/T+14 �
 
 ## 流程
 
-1. `standards_read('search-engine-integration')` —— 读收录→排名→引用链路、
+1. `geo://standard/search-engine-integration` —— 读收录→排名→引用链路、
    推送渠道架构、配额与节奏、复推时间表。
 2. 读基线：`search_gsc_stats`、`search_gsc_inspect`、`webmaster_bing_status`
    —— **以站长后台真实数据为准，不用 `site:` 查询数**。
@@ -46,7 +46,7 @@ description: 文章发布后向搜索引擎提交收录，并按 T+3/T+7/T+14 �
 
 ```
 用户：昨天发的三篇文章提交一下收录
-→ standards_read('search-engine-integration')
+→ geo://standard/search-engine-integration
 → search_gsc_stats 读当前基线
 → search_submit_indexnow（3 条 URL）
 → 报告：已提交 3 条，当前收录基线 X，建议 T+3 复推

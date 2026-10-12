@@ -18,8 +18,8 @@ product / case / industry / comparison / guide 七类体裁。
 ## 流程
 
 1. `article_draft { type, topic }` —— 取回该体裁的骨架、research-brief 模板与写作标准。
-2. `standards_read('article-writing-standards')` —— 读交付形态、引用规则、G1–G14 全表。
-3. `standards_read('block-conventions')` —— 核对区块标题的中英精确写法。
+2. `geo://standard/article-writing-standards` —— 读交付形态、引用规则、G1–G14 全表。
+3. `geo://standard/block-conventions` —— 核对区块标题的中英精确写法。
 4. 按 research-brief 模板完成研究简报（联网检索，落盘）。**缺此文件门禁直接失败。**
 5. 按骨架写正文：每个 H2 开头先给 40–60 字自足结论。
 6. `article_ingest` 提交正文与简报。
@@ -61,7 +61,7 @@ product / case / industry / comparison / guide 七类体裁。
 
 | 现象 | 处理 |
 |---|---|
-| `check_article` 反复不过 | `standards_read('article-writing-standards')` 逐条对照 G1–G14 |
+| `check_article` 反复不过 | `geo://standard/article-writing-standards` 逐条对照 G1–G14 |
 | research-brief 硬校验失败 | 确认简报文件已落盘到站点目录；缺失则补做 |
 | 区块未被解析 | 对照 `block-conventions` 校正标题词（中英均可，但用词须精确） |
 | `site_list` 为空 | 工作区绑定错误；`workspace_use` 重新绑定（不要设 `SITES_ROOT`） |

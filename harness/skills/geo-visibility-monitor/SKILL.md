@@ -16,9 +16,9 @@ description: 测量内容在 AI 助手与 AI 搜索引擎中的可见性，输�
 
 ## 流程
 
-1. `standards_read('llm-visibility-monitoring')` —— 读"监测"的四类含义、
+1. `geo://standard/llm-visibility-monitoring` —— 读"监测"的四类含义、
    爬虫策略、国内外助手与 AI 搜索引擎覆盖清单、可见性维度、内容工程方法。
-2. `standards_read('search-engine-integration')` —— 读收录→排名→引用链路，
+2. `geo://standard/search-engine-integration` —— 读收录→排名→引用链路，
    确认收录是 AI 引用的前置条件。
 3. `monitor_run` —— 执行监测。
 4. `monitor_report` —— 取回报告。
@@ -46,7 +46,7 @@ description: 测量内容在 AI 助手与 AI 搜索引擎中的可见性，输�
 
 ```
 用户：看看我们品牌在 AI 助手里的可见性怎么样
-→ standards_read('llm-visibility-monitoring')
+→ geo://standard/llm-visibility-monitoring
 → monitor_run → monitor_report
 → search_gsc_stats 交叉核对
 → report_write：可见性维度得分 + 异常项 + 下一步（如需刷新哪些文章）

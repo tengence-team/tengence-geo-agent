@@ -71,8 +71,8 @@ and a **manpower person-day matrix**. Callers implement/verify plans against thi
 
 ### B1. Keyword matrix & format selection
 
-- **MCP:** `standards_read { name: "content-strategy" }` — format selection rules & cadence
-- **MCP:** `standards_list` / `standards_read` — the progressive-load index of all standards
+- **MCP:** `geo://standard/content-strategy` — format selection rules & cadence
+- **MCP:** resource `geo://standard-index` / `geo://standard/{name}` — the progressive-load index of all standards
 
 The keyword matrix comes from the implementation plan (Phase A3) and is turned into
 concrete rows in the article plan table. The `content-strategy` standard drives
@@ -100,7 +100,7 @@ Key plan fields: `slug`, `lang`, `node_type` (spoke|hub), `title`, `focus_keywor
 
 - **MCP:** `article_draft { type?, topic? }` — returns the matched **T1–T7 body skeleton**,
   the **research-brief template**, and the full **`article-writing-standards`**
-- **MCP:** `standards_read { name }` — pull any individual standard as needed
+- **MCP:** resource `geo://standard/{name}` — pull any individual standard as needed
 
 Author the Markdown body against the brief. Body blocks must use the canonical GEO block
 headings (see `standards/block-conventions.md`): Summary, Key Takeaways, FAQ, Data

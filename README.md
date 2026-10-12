@@ -54,7 +54,7 @@ Full onboarding: [docs/getting-started.md](docs/getting-started.md).
 ## Documentation
 
 - [Architecture & design decisions](docs/architecture.md) (layering / multi-tenancy / init model / why MCP bridging)
-- [Generic writing & GEO standards](packages/geo-sdk/standards/INDEX.md) — shipped in `@tengence/geo-sdk`, consumed via the `standards_list` / `standards_read` / `article_draft` MCP tools (the requirements an article must satisfy)
+- [Generic writing & GEO standards](packages/geo-sdk/standards/INDEX.md) — shipped in `@tengence/geo-sdk`, consumed via the MCP resources `geo://standard-index` / `geo://standard/{name}` and the `article_draft` tool (the requirements an article must satisfy)
 - [Getting started](docs/getting-started.md)
 - [MCP integration (stdio / HTTP, any client)](docs/mcp-platforms.md)
 - [Release & distribution (npm / Docker)](docs/release.md)

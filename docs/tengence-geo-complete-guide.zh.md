@@ -196,7 +196,7 @@ todo → written → queued → published     （archived/paused 为终态或暂
 | ------- | -------- | ------------------------------------------------------------------------------------------------ |
 | A 诊断与方案 | ① 站点诊断   | `workspace_use` / `site_init` / `site_list` / `site_status` → `diagnose_site`                    |
 |         | ② 出方案    | `site_geo_plan_skill`（GEO/SEO 实施计划规范）                                                            |
-| B 规划    | ③ 关键词矩阵  | `site_geo_plan_skill` + `standards_read('content-strategy')`                                     |
+| B 规划    | ③ 关键词矩阵  | `site_geo_plan_skill` + `geo://standard/content-strategy`                                     |
 |         | ④ 发布文章计划 | `plan_import` / `plan_list` / `plan_mark_status`                                                 |
 | C 内容生产  | ⑤ 生成文章   | `article_draft`（T1–T7 骨架 + brief）→ 写正文 → `article_ingest` / `article_export`                     |
 |         | ⑥ 多语言翻译  | `translation_glossary_get` → 翻译 → `check_translation` → `article_ingest --lang`                  |
@@ -220,7 +220,7 @@ todo → written → queued → published     （archived/paused 为终态或暂
 
 ### 阶段 B —— 规划：关键词矩阵与发布计划
 
-**B1. 关键词矩阵与格式选型**：`standards_read { name: "content-strategy" }` 驱动文章类型路由（T1–T7）与节奏。关键词矩阵来自实施方案（A3），转成计划表中的具体行。
+**B1. 关键词矩阵与格式选型**：`geo://standard/content-strategy` 驱动文章类型路由（T1–T7）与节奏。关键词矩阵来自实施方案（A3），转成计划表中的具体行。
 
 **B2. 装载文章计划（发布排期）**：`plan_import { rows[] }` 按 `slug`+`lang` 幂等 upsert 计划行（每种语言一行）；`plan_list` 查看队列；`plan_mark_status` 变更状态。关键字段：`slug`、`lang`、`node_type`（spoke|hub）、`title`、`focus_keyword`、`content_type`、`publish_order`、`category`、`tags`、`plan_status`。
 
@@ -373,23 +373,10 @@ todo → written → queued → published     （archived/paused 为终态或暂
 
 ***
 
-## 模块 2 —— 写作标准与起草（3 个工具）
+## 模块 2 —— 写作标准与资源（工具 + Resources）
 
-### `standards_list`
-
-列出引擎内置的通用写作与 GEO 标准（标题、是否存在站点补充文件）。
-
-\* 参数：\* 无。
-
-### `standards_read`
-
-读取一个通用标准文档（合并基础 + 站点补充）。名称相对仓库且不带 `.md`，如 `article-writing-standards`、`content-strategy`、`block-conventions`、`templates/skeletons/howto`、`templates/research-brief`。
-
-
-
-| 参数     | 类型     | 必填 | 说明                                           |
-| ------ | ------ | -- | -------------------------------------------- |
-| `name` | string | 是  | 不带 `.md` 的标准名（如 `article-writing-standards`） |
+### 资源：`geo://standard/*`
+标准文档通过 MCP **Resources** 读取（非工具）。索引见资源 `geo://standard-index`；单篇标准（基础 + 站点补充合并）见资源 `geo://standard/{name}`，`name` 相对仓库且不带 `.md`，如 `article-writing-standards`、`content-strategy`、`block-conventions`、`templates/skeletons/howto`、`templates/research-brief`。相关资源：`geo://site/{key}`（站点配置）、`geo://glossary/{lang}`（术语表）。
 
 ### `article_draft`
 

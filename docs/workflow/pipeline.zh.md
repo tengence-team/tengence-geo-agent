@@ -54,8 +54,8 @@ todo → written → queued → published
 
 ### B1. 关键词矩阵与格式选型
 
-- **MCP**：`standards_read { name: "content-strategy" }` —— 格式选型规则与节奏
-- **MCP**：`standards_list` / `standards_read` —— 所有标准的渐进加载索引
+- **MCP**：`geo://standard/content-strategy` —— 格式选型规则与节奏
+- **MCP**：资源 `geo://standard-index` / `geo://standard/{name}` —— 所有标准的渐进加载索引
 
 关键词矩阵来自实施方案（阶段 A3），被转成文章计划表中的具体行。`content-strategy` 标准驱动文章类型路由（T1–T7）与节奏。
 
@@ -77,7 +77,7 @@ todo → written → queued → published
 ### C1. 起草文章
 
 - **MCP**：`article_draft { type?, topic? }` —— 返回匹配的 **T1–T7 正文骨架**、**research-brief 模板**与完整 **`article-writing-standards`**
-- **MCP**：`standards_read { name }` —— 按需读取任一标准
+- **MCP**：资源 `geo://standard/{name}` —— 按需读取任一标准
 
 根据 brief 撰写 Markdown 正文。正文必须使用规范 GEO 区块标题（见 `standards/block-conventions.md`）：摘要、关键要点、FAQ、数据来源、相关阅读、立即行动、关于。
 

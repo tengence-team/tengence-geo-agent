@@ -8,7 +8,7 @@
 > gate lives in code (`geo-sdk/translate/gate.js`) and is authoritative for T1–T11.
 > This file is the single source of truth for **rules and glossaries** — code never
 > copies rule text; the harness never copies rule text either (it reads this file at
-> runtime via `standards_read`).
+> runtime via the MCP resource `geo://standard/translation-standards`).
 
 ## 1. Purpose & scope
 

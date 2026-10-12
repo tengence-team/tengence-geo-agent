@@ -1,7 +1,7 @@
 {
   "name": "@tengence/geo-mcp",
   "version": "0.2.0",
-  "description": "GEO content engine MCP server: 68 tools across content, publishing, search-inclusion, AI-monitoring and multilingual term-name (category/tag/author) domains; stdio + Streamable HTTP transports, Bearer-token auth (the MCP bridge layer of @tengence/geo-sdk)",
+  "description": "GEO content engine MCP server: 77 tools plus 5 prompt templates and geo://standard|site|glossary resources across content, publishing, search-inclusion, AI-monitoring and multilingual term-name (category/tag/author) domains; stdio + Streamable HTTP transports, Bearer-token auth (the MCP bridge layer of @tengence/geo-sdk)",
   "bin": {
     "tengence-geo-mcp": "bin/geo-mcp.js",
     "tengence-geo-mcp-http": "bin/geo-mcp-http.js"

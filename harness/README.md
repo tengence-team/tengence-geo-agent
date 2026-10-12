@@ -24,8 +24,8 @@ graph TB
     subgraph L0["L0 · Contract layer (code)"]
         CK["check/index.js<br/>hard gate · 368 lines"]
     end
-    WM -->|"standards_read()"| ST
-    SK -->|"standards_read()"| ST
+    WM -->|"geo://standard/*"| ST
+    SK -->|"geo://standard/*"| ST
     EX -->|references| ST
     WM --> SK
     EX --> SK
@@ -43,7 +43,7 @@ graph TB
 
 > **L2 and L3 never copy rule text. They only say *which document to read*.**
 
-Every rule detail is fetched at runtime via the MCP tool `standards_read('<file>')`.
+Every rule detail is fetched at runtime via the MCP tool `geo://standard/{name}`.
 Consequences:
 
 - One fact source. Changing a rule means editing **L1 only** — no drift across three
@@ -101,7 +101,7 @@ retirements.
 
 ## 6. Consumption map (which standard each asset reads)
 
-| Asset | Standards it must read (via `standards_read`) |
+| Asset | Standards it must read (via geo://standard/{name}) |
 |---|---|
 | `work-modes/topic-planning.md` | `content-strategy` |
 | `work-modes/writing-gate.md` | `article-writing-standards`, `block-conventions`, `templates/research-brief`, `templates/skeletons/<type>` |

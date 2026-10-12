@@ -75,19 +75,10 @@
 
 ---
 
-## 3. 写作标准（3）
+## 3. 写作标准与资源
 
-### `standards_list`
-列出引擎内置的通用写作与 GEO 标准（标题、是否存在站点补充文件）。
-
-*参数：*无。
-
-### `standards_read`
-读取一个通用标准文档（合并基础 + 站点补充）。名称相对仓库且不带 `.md`，如 `article-writing-standards`、`content-strategy`、`block-conventions`、`templates/skeletons/howto`、`templates/research-brief`。
-
-| 参数 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `name` | string | 是 | 不带 `.md` 的标准名（如 `article-writing-standards`） |
+### 资源：`geo://standard/*`
+标准文档通过 MCP **Resources** 读取（非工具）。索引见资源 `geo://standard-index`；单篇标准（基础 + 站点补充合并）见资源 `geo://standard/{name}`，`name` 相对仓库且不带 `.md`，如 `article-writing-standards`、`content-strategy`、`block-conventions`、`templates/skeletons/howto`、`templates/research-brief`。相关资源：`geo://site/{key}`（站点配置）、`geo://glossary/{lang}`（术语表，zh-hans|en|zh-hant）。
 
 ### `article_draft`
 组装一份可用的写作 brief：匹配的 **T1–T7 正文骨架**、写作前的 **research-brief 模板**、完整**写作标准**（基础 + 补充）。先调用它，再写 Markdown 正文，然后 `check_article`。

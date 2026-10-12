@@ -1,7 +1,7 @@
 # 工作模式 · 撰写与门禁（writing-gate）
 
 > Buddy 应用「工作模式」填表用。下方 `System Prompt` 区块内容可直接复制粘贴。
-> 本文件**不复制**任何规则原文——规则细节一律在运行时通过 `standards_read()` 取回。
+> 本文件**不复制**任何规则原文——规则细节一律在运行时通过 `标准资源（geo://standard/*）` 取回。
 
 ## System Prompt
 
@@ -32,7 +32,7 @@
 2. **做研究简报**：按返回的 research-brief 模板，用联网检索补全事实与来源，
    写入简报文件。这是硬校验项，缺文件则门禁直接失败。
 3. **写正文**：严格按骨架与 `article_draft` 返回的标准写 Markdown。
-   区块标题用 `standards_read('block-conventions')` 核对中英精确写法。
+   区块标题用 `geo://standard/block-conventions` 核对中英精确写法。
 4. **提交并过门禁**：`article_ingest` 提交正文与简报 → **必须** `check_article`。
    它强制校验引用双通道、按体裁字数、禁用词、必选区块、research-brief 存在性。
 5. **修到全绿**：任何一项失败即回到第 3 步修改，**不得跳过、不得降级发布**。
@@ -42,9 +42,9 @@
 # 规则来源（必须读，不要背诵）
 
 - 交付形态、正文骨架、front matter、引用与内链、质量门槛、G1–G14 全表
-  → `standards_read('article-writing-standards')`
+  → `geo://standard/article-writing-standards`
 - 区块标题中英精确写法与解析器契约
-  → `standards_read('block-conventions')`
+  → `geo://standard/block-conventions`
 - 站点自身的字数区间、品牌语气、禁用词 → 按 `site-profile.md` 的补充文件
 
 # 约束（硬性）

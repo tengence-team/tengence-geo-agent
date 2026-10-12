@@ -12,8 +12,8 @@
 - **Language / naming:** English, kebab-case file names. Article files *inside a site*
   keep their own language.
 - **Index:** `standards/INDEX.md` defines the progressive load order — read it first.
-- **How they are consumed:** AI clients read them through the MCP tools
-  `standards_list`, `standards_read`, and `article_draft` (see §4). **The engine code
+- **How they are consumed:** AI clients read them through the MCP resources
+  `geo://standard-index`, `geo://standard/{name}`, and the `article_draft` tool (see §4). **The engine code
   never parses these docs for rules** — it returns their text to the model.
 
 ## 2. Base + supplement — a supplement never replaces the base
@@ -24,7 +24,7 @@
 - **Merge rule:** the supplement is appended *after* the base, delimited by a
   `## Site-specific Additions` section. It may only **tighten or instantiate** the base
   — never relax a hard requirement. Where it intentionally conflicts, it must declare an
-  `Overrides:` note so `standards_read` surfaces the conflict.
+  `Overrides:` note so the merged standard (`geo://standard/{name}`) surfaces the conflict.
 - The contract of what a supplement must supply is `standards/site-profile.md`.
 
 ## 3. GEO block headings — canonical (EN + ZH)
@@ -49,7 +49,7 @@ fixed. The full parser contract is `standards/block-conventions.md`.
 2. `article_draft { type, topic }` → returns the matched **T1–T7 skeleton**, the
    **research-brief template**, and the full **`article-writing-standards`** (the G1–G16
    editorial gates). Write the Markdown body following them.
-3. Optionally `standards_read('content-strategy')` / `standards_read('block-conventions')`
+3. Optionally `geo://standard/content-strategy` / `geo://standard/block-conventions`
    for format selection and parser details.
 4. `article_ingest` the body + research brief.
 5. `check_article` — enforces the **same** G1–G16 rules codified in

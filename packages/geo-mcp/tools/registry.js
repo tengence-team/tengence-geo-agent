@@ -253,6 +253,9 @@ const tools = [
   // ---------- workspace ----------
   {
     name: 'workspace_use',
+    title: '绑定工作目录',
+    annotations: { readOnlyHint: false },
+    structured: true,
     description:
       'Bind the user workspace directory (call this first): all site config, credentials and output files live under it. Ask the user which directory to use if it was not mentioned; `~` is supported and expanded here.',
     inputSchema: z.object({
@@ -269,6 +272,9 @@ const tools = [
   },
   {
     name: 'site_init',
+    title: '初始化站点',
+    annotations: { openWorldHint: false },
+    structured: true,
     description:
       'Scaffold a site inside the bound workspace: <workspace>/<key>/{config,data/inbox,data/reports,.env} (idempotent, never overwrites existing files)',
     inputSchema: z.object({
@@ -290,6 +296,9 @@ const tools = [
   // ---------- site ----------
   {
     name: 'site_list',
+    title: '列出站点',
+    annotations: { readOnlyHint: true },
+    structured: true,
     description:
       'List the sites inside the bound user workspace (site key, domain, app_id, storage driver). Returns a hint instead when no workspace is bound yet.',
     inputSchema: z.object({}),
@@ -464,6 +473,9 @@ const tools = [
   },
   {
     name: 'article_ingest',
+    title: '入库文章',
+    annotations: { openWorldHint: false },
+    structured: true,
     description: 'Content ingest (single entry): body md + research brief → articles table (CLI canonical orchestration)',
     inputSchema: z.object({
       slug: z.string().describe('article slug'),
@@ -512,7 +524,10 @@ const tools = [
   // ---------- check ----------
   {
     name: 'check_article',
-    description: 'Publish gate: enforces the editorial rules codified in the "article-writing-standards" standard (citation dual-channel, word count by T1–T7 type, banned words, the three GEO blocks — Summary / Key Takeaways / FAQ / Data Sources — and the research-brief hard check). Read that standard via standards_read before authoring, and run article_draft first to scaffold per-spec.',
+    title: '校验文章（G1–G14 门禁）',
+    annotations: { readOnlyHint: true },
+    structured: true,
+    description: 'Publish gate: enforces the editorial rules codified in the "article-writing-standards" standard (citation dual-channel, word count by T1–T7 type, banned words, the three GEO blocks — Summary / Key Takeaways / FAQ / Data Sources — and the research-brief hard check). Read that standard via resource geo://standard/article-writing-standards before authoring, and run article_draft first to scaffold per-spec.',
     inputSchema: z.object({
       slug: z.string().describe('article slug'),
       site: siteField,
@@ -556,7 +571,7 @@ const tools = [
   {
     name: 'translation_glossary_get',
     description: 'Translation glossary for a target language: merged global + site glossary (brands / phrases / product terms / forbidden words). ' +
-      'Read it via standards_read("translation-standards") once per article, then consult this tool for the concrete terms the harness must apply',
+      'Read it via resource geo://standard/translation-standards once per article, then consult this tool for the concrete terms the harness must apply',
     inputSchema: z.object({
       site: siteField,
       target_lang: z.string().describe('target language (en|zh-hant)'),
@@ -668,6 +683,9 @@ const tools = [
   // ---------- publish ----------
   {
     name: 'publish_draft',
+    title: '发布草稿',
+    annotations: { openWorldHint: true },
+    structured: true,
     description: 'Publish a draft (default draft → WP; can --status=publish directly, must pass the gate first)',
     inputSchema: z.object({
       md_path: z.string().describe('absolute path to the body Markdown'),
@@ -1275,6 +1293,9 @@ const tools = [
   },
   {
     name: 'monitor_report',
+    title: '读取 AI 监测报告',
+    annotations: { readOnlyHint: true },
+    structured: true,
     description: 'Read monitoring results (latest round or a given run_id)',
     inputSchema: z.object({
       site: siteField,
@@ -1664,47 +1685,11 @@ const tools = [
     },
   },
 
-  // ---------- standards (writing & GEO requirements, consumed while authoring) ----------
-  {
-    name: 'standards_list',
-    description:
-      'List the generic writing & GEO standards shipped with the engine (titles, whether a site-specific supplement exists). ' +
-      'Read one with standards_read before authoring an article; see article_draft for a ready-to-use brief.',
-    inputSchema: z.object({}),
-    async run() {
-      try {
-        return ok({ ok: true, standards: t.standards.listStandards() });
-      } catch (e) {
-        return fail(e);
-      }
-    },
-  },
-  {
-    name: 'standards_read',
-    description:
-      'Read a generic standard document (base + any site-specific supplement merged). Names are repository-relative without `.md`, ' +
-      'e.g. "article-writing-standards", "content-strategy", "block-conventions", "templates/skeletons/howto", "templates/research-brief". ' +
-      'This is the canonical way to pull the requirements an article must satisfy.',
-    inputSchema: z.object({
-      name: z.string().describe('standard name without .md, e.g. article-writing-standards'),
-    }),
-    async run(args) {
-      if (!args.name) return fail(new Error('standards_read requires name'));
-      try {
-        const s = t.standards.readStandard(args.name);
-        return ok({
-          ok: true,
-          name: s.name,
-          has_supplement: s.hasSupplement,
-          merged: s.merged,
-        });
-      } catch (e) {
-        return fail(e);
-      }
-    },
-  },
   {
     name: 'article_draft',
+    title: '生成写作 Brief',
+    annotations: { readOnlyHint: true },
+    structured: true,
     description:
       'Assemble a ready-to-use writing brief for a new article: the matched T1–T7 body skeleton, the pre-writing research-brief template, ' +
       'and the full writing standard (base + supplement). The body you author MUST follow this brief; the check_article gate enforces the ' +

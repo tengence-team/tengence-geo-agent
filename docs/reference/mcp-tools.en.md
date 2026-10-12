@@ -83,19 +83,10 @@ Write a Markdown report into `<site>/data/reports/` (path-safe). Auto-bootstraps
 
 ---
 
-## 3. Writing Standards (3)
+## 3. Writing Standards & Resources
 
-### `standards_list`
-List the generic writing & GEO standards shipped with the engine (titles, whether a site-specific supplement exists).
-
-*Parameters:* none.
-
-### `standards_read`
-Read a generic standard document (base + any site-specific supplement merged). Names are repository-relative without `.md`, e.g. `article-writing-standards`, `content-strategy`, `block-conventions`, `templates/skeletons/howto`, `templates/research-brief`.
-
-| Parameter | Type | Req. | Description |
-| --- | --- | --- | --- |
-| `name` | string | yes | Standard name without `.md` (e.g. `article-writing-standards`) |
+### Resource: `geo://standard/*`
+Standards are read via the MCP **Resources** primitive (not tools). The index is the `geo://standard-index` resource; a single standard (base + site supplement merged) is `geo://standard/{name}` — `name` is repository-relative without `.md`, e.g. `article-writing-standards`, `content-strategy`, `block-conventions`, `templates/skeletons/howto`, `templates/research-brief`. Related resources: `geo://site/{key}` (site config), `geo://glossary/{lang}` (glossary, zh-hans|en|zh-hant).
 
 ### `article_draft`
 Assemble a ready-to-use writing brief: the matched **T1–T7 body skeleton**, the pre-writing **research-brief template**, and the full **writing standard** (base + supplement). Call this first, then write the Markdown body, then `check_article`.
@@ -156,7 +147,7 @@ Export an article md + brief from the DB to `<site>/data/inbox` (for rewriting /
 ## 5. Editorial & Translation Gates (3)
 
 ### `check_article`
-Publish gate: enforces the editorial rules codified in `article-writing-standards` (citation dual-channel, word count by T1–T7 type, banned words, the GEO blocks — Summary/Key Takeaways/FAQ/Data Sources — and the research-brief hard check). Read the standard via `standards_read` before authoring, and run `article_draft` first.
+Publish gate: enforces the editorial rules codified in `article-writing-standards` (citation dual-channel, word count by T1–T7 type, banned words, the GEO blocks — Summary/Key Takeaways/FAQ/Data Sources — and the research-brief hard check). Read the standard via resource `geo://standard/{name}` before authoring, and run `article_draft` first.
 
 | Parameter | Type | Req. | Description |
 | --- | --- | --- | --- |

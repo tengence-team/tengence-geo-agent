@@ -31,7 +31,7 @@
 ## L2/L3 consumption map
 
 Higher layers (`harness/` at the repo root) **never copy rule text** — they point at
-these files and let the model fetch them at runtime via `standards_read()`. This table
+these files and let the model fetch them at runtime via the MCP resource `geo://standard/{name}`. This table
 is the mirror of `harness/README.md` §6; keep the two in sync.
 
 | Consumer (L2/L3 asset) | Standards it reads |
