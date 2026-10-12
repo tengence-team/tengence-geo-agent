@@ -80,8 +80,5 @@
     "url": "git+https://github.com/tengence-team/tengence-geo-agent.git"
   },
   "homepage": "https://github.com/tengence-team/tengence-geo-agent",
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0"
-  },
   "mcpName": "com.tengence/geo-agent"
 }

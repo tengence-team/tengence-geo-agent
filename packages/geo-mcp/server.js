@@ -2,18 +2,25 @@
 /**
  * GEO content engine MCP Server factory (@tengence/geo-mcp/server.js)
  * ============================================================================
- * Built on @modelcontextprotocol/sdk (ESM-only) — pulled in from the CJS side via
- * dynamic import. Provides createServer(): registers every tool from tools/registry.js,
- * every Prompt from tools/prompts.js and every Resource from tools/resources.js,
- * and returns { server, registry }.
+ * Built on @modelcontextprotocol/server (SDK v2, ESM-only) — pulled in from the
+ * CJS side via dynamic import. Provides buildServer(): registers every tool from
+ * tools/registry.js, every Prompt from tools/prompts.js and every Resource from
+ * tools/resources.js, and returns an McpServer ready to be served per-request by
+ * the transport layer (stdio / HTTP), per MCP protocol revision 2026-07-28.
  * The transport layer is chosen by the caller — nothing here depends on who the caller is:
- *   - stdio : bin/geo-mcp.js     (any local client that can spawn a process)
- *   - HTTP  : bin/geo-mcp-http.js (any remote caller, bearer-token protected)
+ *   - stdio : bin/geo-mcp.js     (any 2026-07-28 client that can spawn a process)
+ *   - HTTP  : bin/geo-mcp-http.js (any remote 2026-07-28 caller, bearer-token protected)
+ *
+ * Stateless by design (2026-07-28): the server is built fresh per request via the
+ * factory, there is no initialize handshake and no Mcp-Session-Id; every request
+ * carries its own _meta envelope (protocol version / capabilities / identity).
  */
 
-const { tools, TOOL_GROUPS } = require('./tools/registry');
+const { tools, TOOL_GROUPS, LONG_TOOLS } = require('./tools/registry');
 const { prompts } = require('./tools/prompts');
 const { fixedResources, resourceTemplates } = require('./tools/resources');
+const tasks = require('./tools/tasks');
+const { z } = require('zod');
 
 /**
  * Build the server-level instructions (MCP `Implementation.instructions`): the
@@ -76,16 +83,39 @@ function printStartupBanner() {
 }
 
 /**
- * Create the MCP Server with every tool, prompt and resource registered.
- * @returns {Promise<{server: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer, tools: Array}>}
+ * Build a fresh MCP server instance with every tool, prompt and resource registered.
+ * This is the per-request factory consumed by serveStdio / createMcpHandler — the
+ * server is stateless (2026-07-28), so each request (or each stdio connection)
+ * gets its own instance built here. The work root is never inferred from the
+ * client here; it is bound at runtime by the workspace_use tool / SITES_ROOT env.
+ * @returns {Promise<import('@modelcontextprotocol/server').McpServer>}
  */
-async function createServer() {
-  const { McpServer, ResourceTemplate } = await import('@modelcontextprotocol/sdk/server/mcp.js');
-  const server = new McpServer({
-    name: 'tengence-geo-mcp',
-    version: require('./package.json').version,
-    instructions: buildInstructions(tools),
-  });
+async function buildServer() {
+  const { McpServer, ResourceTemplate } = await import('@modelcontextprotocol/server');
+  const server = new McpServer(
+    { name: 'tengence-geo-mcp', version: require('./package.json').version },
+    {
+      instructions: buildInstructions(tools),
+      capabilities: { extensions: { 'io.modelcontextprotocol/tasks': {} } },
+    }
+  );
+
+  // MCP Tasks extension methods. The SDK high-level does not register these method
+  // names, and its wire encoder lets tools/call emit resultType:"task" verbatim for
+  // long-running tools, so the durable task flow (see tools/tasks.js) plugs in here
+  // without rebuilding the server layer. Registered on the low-level Server exposed
+  // as McpServer.server.
+  const core = server.server;
+  const taskParams = z.object({ taskId: z.string() });
+  core.setRequestHandler('tasks/get',
+    { params: taskParams, result: z.any() },
+    (req, ctx) => tasks.tasksGet(req, ctx));
+  core.setRequestHandler('tasks/update',
+    { params: z.object({ taskId: z.string(), inputResponses: z.record(z.string(), z.any()).optional() }), result: z.any() },
+    (req, ctx) => tasks.tasksUpdate(req, ctx));
+  core.setRequestHandler('tasks/cancel',
+    { params: taskParams, result: z.any() },
+    (req, ctx) => tasks.tasksCancel(req, ctx));
 
   for (const tool of tools) {
     server.registerTool(
@@ -97,11 +127,22 @@ async function createServer() {
         outputSchema: tool.outputSchema,
         annotations: tool.annotations,
       },
-      async (args) => {
+      async (args, ctx) => {
         // Structured tools already return structuredContent from their run
         // (registry okStructured); pass the result through untouched — no
         // server-side re-parsing of the text payload.
+        // Long-running tools: when the client declared the Tasks extension, hand the
+        // work to a durable background task and return a resultType:"task" handle
+        // (SDK emits it verbatim); otherwise run synchronously (ordinary clients are
+        // unaffected).
         try {
+          if (LONG_TOOLS.has(tool.name) && tasks.clientDeclaresTasks(ctx)) {
+            return await tasks.createTask(
+              tasks.resolveCurrentAppId(),
+              { name: tool.name },
+              () => tool.run(args || {})
+            );
+          }
           return await tool.run(args || {});
         } catch (e) {
           const message = e && e.message ? e.message : String(e);
@@ -131,61 +172,7 @@ async function createServer() {
     server.registerResource(rt.name, template, rt.config, (uri, variables) => rt.read(uri, variables));
   }
 
-  return { server, tools };
+  return server;
 }
 
-/**
- * Bind the work root from the MCP client's exposed workspace roots (generic,
- * protocol-level — nothing site- or directory-specific lives here).
- *
- * MCP clients that declare the `roots` capability hand the server the directory
- * the user is currently working in (the "workspace root"). We ask for it once at
- * startup and bind the first usable root through the same validated path as the
- * workspace_use tool (activates + persists to state.json). This is what lets a
- * GUI client start this server with zero env config while still getting the
- * user's actual working directory as the work root.
- *
- * Resolution order used elsewhere (site/workspace.js):
- *   1. explicit SITES_ROOT env           (override, automation/multi-root)
- *   2. client roots/list  (this function, MCP-standard workspace mechanism)
- *   3. persisted state.json              (last workspace_use binding)
- *   4. workspace_use tool at runtime     (final fallback, never guessed)
- *
- * @param {import('@modelcontextprotocol/sdk/server/mcp.js').McpServer} server connected server
- * @returns {Promise<string|null>} bound workspace path, or null when the client exposes none
- */
-async function bindFromClientRoots(server) {
-  const t = require('@tengence/geo-sdk');
-  const fs = require('fs');
-  // McpServer wraps the low-level Server (Protocol) in `.server`
-  const core = server.server;
-  const cap = core.getClientCapabilities();
-  if (!cap || !cap.roots || !cap.roots.listChanged) return null;
-  let res;
-  try {
-    const { ListRootsResultSchema } = await import('@modelcontextprotocol/sdk/types.js');
-    res = await core.request({ method: 'roots/list' }, ListRootsResultSchema);
-  } catch (e) {
-    return null; // client declined / protocol error — fall through to state/env
-  }
-  const roots = (res && res.roots) || [];
-  for (const root of roots) {
-    let dir = root && root.uri ? String(root.uri) : '';
-    if (dir.startsWith('file://')) dir = dir.slice('file://'.length);
-    if (!dir) continue;
-    try {
-      if (!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
-        console.error(`[geo-mcp] workspace root not usable (skipped): ${dir}`);
-        continue;
-      }
-      t.workspace.use(dir); // validates, activates, persists to state.json
-      return dir;
-    } catch (e) {
-      console.error(`[geo-mcp] workspace root bind failed (skipped): ${e.message}`);
-      continue;
-    }
-  }
-  return null;
-}
-
-module.exports = { createServer, printStartupBanner, bindFromClientRoots, buildInstructions };
+module.exports = { buildServer, printStartupBanner, buildInstructions, tools };

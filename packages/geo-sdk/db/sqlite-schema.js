@@ -47,6 +47,14 @@ const CHANNEL_TAXONOMY = 'tengence_geo_channel_taxonomy';
  */
 const CHANNEL_SCHEDULE = 'tengence_geo_channel_schedule';
 
+/**
+ * Workspace-local durable state for the geo-mcp MCP Tasks extension
+ * (tengence_geo_mcp_tasks): one row = one long-running tool task handle.
+ * Not part of the MySQL production schema — lives only in the SQLite file,
+ * same as channel_plan / channel_taxonomy / channel_schedule.
+ */
+const MCP_TASKS = 'tengence_geo_mcp_tasks';
+
 // NOTE: v4 (not v3) — some local DBs were already stamped 3 by a transient earlier
 // bump that was rolled back while the committed value stayed 2. The version stamp is
 // only used as a monotonic "DDL already applied" marker (the DDL itself is idempotent,
@@ -66,7 +74,13 @@ const CHANNEL_SCHEDULE = 'tengence_geo_channel_schedule';
 // (no data migration needed; ensureSchema applies the IF NOT EXISTS table).
 // The scheduling rules table for the unified auto-publish executor
 // (channel_publish_due): one row = one (platform, publish_time) slot.
-const SCHEMA_VERSION = 8;
+//
+// v9 (2026-10-13): new table tengence_geo_mcp_tasks — pure ADDITIVE DDL
+// (no data migration needed; ensureSchema applies the IF NOT EXISTS table).
+// Workspace-local durable state for the geo-mcp MCP Tasks extension (long-running
+// tools publish_daily / monitor_run / diagnose_site / channel_publish_due):
+// one row = one task handle (app_id multi-tenant, official Task status vocabulary).
+const SCHEMA_VERSION = 9;
 
 /**
  * channel_plan v7 DDL template (workspace-local publishing TASK table).
@@ -129,6 +143,40 @@ CREATE TABLE IF NOT EXISTS ${tableName} (
   created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
   updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
   UNIQUE (app_id, platform, publish_time)
+);`;
+}
+
+/**
+ * mcp_tasks DDL template (workspace-local geo-mcp MCP Tasks durable state).
+ *
+ * One row = one long-running tool task handle (official Task vocabulary):
+ *   - task_id           durable handle (uuid) — survives client/server restarts
+ *   - status            working|input_required|completed|failed|cancelled
+ *   - ttl_ms            durable lifetime; poll_interval_ms suggested poll cadence
+ *   - progress          JSON progress snapshot (official statusMessage/progress)
+ *   - input_requests    JSON map of outstanding inputRequests (reserved, empty initially)
+ *   - result / error    JSON terminal output (completed) / error (failed)
+ *   - expires_at        TTL expiry, swept by the task manager
+ * Unique key = (app_id, task_id) — multi-tenant durable handle.
+ */
+function mcpTasksDDL(tableName) {
+  return `
+CREATE TABLE IF NOT EXISTS ${tableName} (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id INTEGER NOT NULL DEFAULT 1,
+  task_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT DEFAULT 'working',
+  ttl_ms INTEGER,
+  poll_interval_ms INTEGER,
+  progress TEXT,
+  input_requests TEXT,
+  result TEXT,
+  error TEXT,
+  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
+  expires_at TEXT,
+  UNIQUE (app_id, task_id)
 );`;
 }
 
@@ -520,6 +568,12 @@ CREATE INDEX IF NOT EXISTS idx_channel_taxonomy_name ON ${CHANNEL_TAXONOMY} (app
 ${channelScheduleDDL(CHANNEL_SCHEDULE)}
 CREATE INDEX IF NOT EXISTS idx_channel_schedule_app ON ${CHANNEL_SCHEDULE} (app_id);
 CREATE INDEX IF NOT EXISTS idx_channel_schedule_platform ON ${CHANNEL_SCHEDULE} (app_id, platform, enabled);
+
+-- ========== 20. geo-mcp long-running task state (workspace-local, MCP Tasks) ==========
+${mcpTasksDDL(MCP_TASKS)}
+CREATE INDEX IF NOT EXISTS idx_sqlite_mcp_tasks_app ON ${MCP_TASKS} (app_id);
+CREATE INDEX IF NOT EXISTS idx_sqlite_mcp_tasks_status ON ${MCP_TASKS} (app_id, status);
+CREATE INDEX IF NOT EXISTS idx_sqlite_mcp_tasks_updated ON ${MCP_TASKS} (app_id, updated_at);
 `;
 
-module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN, CHANNEL_TAXONOMY, CHANNEL_SCHEDULE, channelPlanDDL, channelScheduleDDL };
+module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN, CHANNEL_TAXONOMY, CHANNEL_SCHEDULE, MCP_TASKS, channelPlanDDL, channelScheduleDDL, mcpTasksDDL };

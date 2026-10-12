@@ -3179,4 +3179,11 @@ const TOOL_GROUPS = [
 
 const registry = new Map(tools.map((tool) => [tool.name, tool]));
 
-module.exports = { tools, registry, TOOL_GROUPS };
+/**
+ * Long-running tools that may be task-ified under the MCP Tasks extension
+ * (their executor returns resultType:"task" when the client declares the
+ * io.modelcontextprotocol/tasks extension; otherwise they run synchronously).
+ */
+const LONG_TOOLS = new Set(['publish_daily', 'monitor_run', 'diagnose_site', 'channel_publish_due']);
+
+module.exports = { tools, registry, TOOL_GROUPS, LONG_TOOLS };

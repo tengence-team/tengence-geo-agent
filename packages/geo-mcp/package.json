@@ -38,9 +38,11 @@
     "access": "public"
   },
   "dependencies": {
-    "@tengence/geo-sdk": "0.1.1",
+    "@modelcontextprotocol/client": "^2.3.1",
+    "@modelcontextprotocol/node": "^2.1.1",
+    "@modelcontextprotocol/server": "^2.3.1",
     "@tengence/geo-cli": "0.1.1",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@tengence/geo-sdk": "0.1.1",
     "zod": "^3.25 || ^4.0"
   }
 }
