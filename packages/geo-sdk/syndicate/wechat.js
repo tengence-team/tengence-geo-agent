@@ -205,6 +205,63 @@ async function createDraft(accessToken, articles) {
   return json.media_id;
 }
 
+/**
+ * Update ONE article inside a draft-box media_id (draft/update).
+ * ---------------------------------------------------------------------------
+ * Safety: draft/update REPLACES the whole article object — fields omitted by the
+ * caller are CLEARED by WeChat. So this function first reads the current article
+ * from the draft box (draft/batchget no_content=0), merges the caller's patch
+ * over it and submits the COMPLETE article back. Only `patch` fields change;
+ * title / author / digest / content / thumb / flags are all preserved.
+ *
+ * @param {string} mediaId draft box media_id (see listDrafts)
+ * @param {number} index article position in the multi-article message, 0-based
+ * @param {object} patch partial article fields to update
+ *        (title / author / digest / content / content_source_url /
+ *         thumb_media_id / show_cover_pic / need_open_comment / only_fans_can_comment)
+ * @param {{dryRun?:boolean, request?:Function, accessToken?:string}} [opts]
+ *        dryRun reads + merges only (prints the would-be payload, no API write).
+ * @returns {Promise<{dryRun?:boolean, ok?:boolean, media_id:string, index:number, article?:object}>}
+ * @throws media_id not found / index out of range / WeChat API error
+ */
+async function updateDraft(mediaId, index, patch, { dryRun = false, request = httpsRequest, accessToken: injectedToken } = {}) {
+  if (!mediaId) throw new Error('updateDraft requires mediaId');
+  const accessToken = injectedToken || (await getAccessToken());
+  // 1) read the current article (complete) at `index` from the draft box
+  const listBody = JSON.stringify({ offset: 0, count: 20, no_content: 0 });
+  const listRes = await request(
+    `https://api.weixin.qq.com/cgi-bin/draft/batchget?access_token=${accessToken}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    listBody
+  );
+  const listJson = listRes.json || {};
+  if (listJson.errcode && listJson.errcode !== 0) {
+    throw new Error(`draft/batchget failed: ${listJson.errcode} ${listJson.errmsg}`);
+  }
+  const item = (listJson.item || []).find((it) => it.media_id === mediaId);
+  if (!item) throw new Error(`media_id not found in the draft box: ${mediaId}`);
+  const news = ((item.content || {}).news_item || []);
+  const current = news[index];
+  if (!current) {
+    throw new Error(`draft article index ${index} out of range (this draft has ${news.length} articles)`);
+  }
+  // 2) merge the patch over the current article (only patched fields change)
+  const article = { ...current, ...(patch || {}) };
+  // 3) submit draft/update with the COMPLETE article
+  if (dryRun) {
+    console.log(`[dryRun] would update draft ${mediaId}[${index}] "${article.title}"`);
+    return { dryRun: true, media_id: mediaId, index: Number(index), article };
+  }
+  const body = JSON.stringify({ media_id: mediaId, index: Number(index), articles: article });
+  const url = `https://api.weixin.qq.com/cgi-bin/draft/update?access_token=${accessToken}`;
+  const res = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, body);
+  const json = res.json || {};
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`draft/update failed: ${json.errcode} ${json.errmsg}`);
+  }
+  return { ok: true, media_id: mediaId, index: Number(index) };
+}
+
 async function publishDraft(accessToken, mediaId) {
   const body = JSON.stringify({ media_id: mediaId });
   const url = `https://api.weixin.qq.com/cgi-bin/freepublish/submit?access_token=${accessToken}`;
@@ -1190,6 +1247,7 @@ module.exports = {
   prepareArticle,
   applyDraftFlags,
   listDrafts,
+  updateDraft,
   listPublished,
   syncProgressFromWechat,
   massSend,

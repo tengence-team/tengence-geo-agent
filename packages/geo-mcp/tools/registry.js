@@ -3043,6 +3043,48 @@ const tools = [
       }
     },
   },
+  {
+    name: 'wechat_draft_update',
+    description:
+      'Update ONE article inside a WeChat draft-box media_id (draft/update). Safety: draft/update REPLACES the whole ' +
+      'article, so this tool first reads the current article from the draft box, merges ONLY the fields you pass and ' +
+      'submits the complete article back — title/author/digest/content/thumb are preserved when omitted. Use ' +
+      'content_source_url to fix the「阅读原文」link, or title/content to rewrite the article body. Returns the merged ' +
+      'article for verification (dryRun=true reads + merges only, never writes).',
+    inputSchema: z.object({
+      media_id: z.string().describe('draft box media_id (see wechat_status drafts)'),
+      index: z.number().optional().describe('article position in the multi-article message, 0-based (default 0)'),
+      title: z.string().optional().describe('new title (omit to keep current)'),
+      author: z.string().optional().describe('new author (omit to keep current)'),
+      digest: z.string().optional().describe('new digest (omit to keep current)'),
+      content: z.string().optional().describe('new body HTML (omit to keep current)'),
+      content_source_url: z.string().optional().describe('new「阅读原文」link (omit to keep current)'),
+      thumb_media_id: z.string().optional().describe('new cover media id (omit to keep current)'),
+      show_cover_pic: z.number().optional().describe('0|1 show cover inside the article body'),
+      need_open_comment: z.number().optional().describe('0|1 allow comments'),
+      only_fans_can_comment: z.number().optional().describe('0|1 fans-only comments'),
+      dryRun: z.boolean().optional().describe('read + merge only, print the would-be payload, do NOT call draft/update'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        const patch = {};
+        for (const key of ['title', 'author', 'digest', 'content', 'content_source_url', 'thumb_media_id']) {
+          if (args[key] != null) patch[key] = args[key];
+        }
+        for (const key of ['show_cover_pic', 'need_open_comment', 'only_fans_can_comment']) {
+          if (args[key] != null) patch[key] = Number(args[key]);
+        }
+        const result = await t.syndicate.wechat.updateDraft(args.media_id, args.index || 0, patch, {
+          dryRun: !!args.dryRun,
+        });
+        return ok({ ok: true, ...result });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
 ];
 
 const registry = new Map(tools.map((tool) => [tool.name, tool]));
