@@ -96,7 +96,11 @@ async function buildServer() {
     { name: 'tengence-geo-mcp', version: require('./package.json').version },
     {
       instructions: buildInstructions(tools),
-      capabilities: { extensions: { 'io.modelcontextprotocol/tasks': {} } },
+      capabilities: {
+        extensions: { 'io.modelcontextprotocol/tasks': {} },
+        resources: { subscribe: true }, // S7: honor subscriptions/listen resourceSubscriptions so
+        // task terminal-state changes can push notifications/resources/updated.
+      },
     }
   );
 

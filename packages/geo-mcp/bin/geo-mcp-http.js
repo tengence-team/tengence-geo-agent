@@ -23,18 +23,26 @@
 
 const http = require('http');
 const { buildServer, printStartupBanner } = require('../server');
+const taskNotify = require('../tools/task-notify');
 
 const PORT = parseInt(process.env.GEO_MCP_PORT || '8787', 10);
 const TOKEN = process.env.GEO_MCP_TOKEN || '';
 
-// 2026-07-28 routing headers (Mcp-Method / Mcp-Name / MCP-Protocol-Version); no
-// Mcp-Session-Id (stateless). Allow a broad header set so modern clients can probe.
-const CORS = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, Authorization, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Param-*',
-  'Access-Control-Expose-Headers': 'MCP-Protocol-Version, Mcp-Method, Mcp-Name',
-};
+// S8: CORS is OFF by default. MCP endpoints are not CORS-enabled by the SDK, and
+// unconditional permissive headers would be a security regression — CORS belongs to
+// a fronting gateway (which also owns TLS / ACL / routing). For local development
+// without a gateway, set GEO_MCP_CORS_ORIGIN=<origin> to enable CORS scoped to that
+// origin. The 2026-07-28 routing headers below (Mcp-Method / Mcp-Name /
+// MCP-Protocol-Version) are non-simple and MUST be allowed/exposed by the gateway.
+const CORS_ORIGIN = process.env.GEO_MCP_CORS_ORIGIN || '';
+const CORS = CORS_ORIGIN
+  ? {
+      'Access-Control-Allow-Origin': CORS_ORIGIN,
+      'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization, MCP-Protocol-Version, Mcp-Method, Mcp-Name, Mcp-Param-*',
+      'Access-Control-Expose-Headers': 'MCP-Protocol-Version, Mcp-Method, Mcp-Name',
+    }
+  : null;
 
 function unauthorized(res) {
   res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -46,11 +54,15 @@ async function main() {
   const { toNodeHandler } = await import('@modelcontextprotocol/node');
 
   // Strict 2026-07-28, stateless: one factory, a fresh server per request, no session state.
-  const mcp = toNodeHandler(createMcpHandler(() => buildServer(), { legacy: 'reject' }));
+  const mcpHandler = createMcpHandler(() => buildServer(), { legacy: 'reject' });
+  // S7 (方案 A): adopt the transport's notifier so task terminal-state changes publish
+  // the standard notifications/resources/updated to subscriptions/listen subscribers.
+  taskNotify.setNotifier(mcpHandler.notify);
+  const mcp = toNodeHandler(mcpHandler);
 
   const httpServer = http.createServer((req, res) => {
-    // CORS on every response (writeHead merges these unless it names them itself).
-    Object.entries(CORS).forEach(([k, v]) => res.setHeader(k, v));
+    // S8: CORS only when GEO_MCP_CORS_ORIGIN is set (local dev without a gateway).
+    if (CORS) Object.entries(CORS).forEach(([k, v]) => res.setHeader(k, v));
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);

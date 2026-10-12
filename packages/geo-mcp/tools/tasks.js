@@ -19,6 +19,7 @@
 
 const crypto = require('crypto');
 const t = require('@tengence/geo-sdk');
+const taskNotify = require('./task-notify');
 
 const DEFAULT_TTL_MS = 15 * 60 * 1000; // durable lifetime
 const DEFAULT_POLL_MS = 2000; // suggested poll cadence
@@ -109,6 +110,12 @@ async function createTask(appId, meta, workFn) {
       await t.db.withConn((conn) =>
         t.db.mcpTasks.update(conn, appId, taskId, { status: 'failed', error: JSON.stringify({ message }) })
       );
+    } finally {
+      // S7 (方案 A): publish the standard resources/updated change notification for
+      // this task's resource URI. Subscribing clients then fetch the terminal state
+      // via tasks/get instead of blind polling. No-op on the stdio transport (which
+      // exposes no notifier) and when no subscription is open.
+      taskNotify.publishTask(taskId);
     }
   });
 
