@@ -2,25 +2,31 @@
 /**
  * channel-publish-due-ticker — external auto-publish ticker for the GEO agent
  * ============================================================================
- * Calls the UNIFIED auto-publish executor (the engine behind the MCP tool
- * `channel_publish_due`: t.plan.channelSchedule.publishDue) on a fixed interval.
- * It scans the channel_schedule slots, fires every platform whose slot is due NOW
- * (±30 min window, and not already run today), publishes through the same pipeline
- * as channel_publish (juejin / csdn / devto publish for real; wechat stays in the
- * draft box), and prints the published article LINKS.
+ * A PURE MCP CLIENT. It does NOT load the geo-sdk or run the engine directly.
+ * It calls the already-running, persistent GEO MCP server (the encapsulation
+ * layer) over HTTP and invokes the unified auto-publish tool `channel_publish_due`,
+ * which scans channel_schedule slots and fires every platform whose slot is due
+ * NOW (±30 min window, and not already run today), publishing through the same
+ * pipeline as channel_publish (juejin / csdn / devto publish for real; wechat
+ * stays in the draft box). The tool returns the full report (incl. published
+ * article links) as JSON, which this ticker renders and logs.
  *
  * This is the "ONE external ticker" recommended by the tool docs — NOT one cron
  * job per channel. Intended to be driven by launchd (StartInterval 1800) or cron.
  *
- * Config (env):
- *   SITES_ROOT   sites workspace root        (default /Users/tim/tengence/geo-workspace)
- *   DB_DRIVER    sqlite                       (default sqlite)
- *   DB_PATH      sqlite db file              (default ~/.tengence/geo-mcp/geo.sqlite)
- *   SITE         site key to publish for     (default www_tengence_com)
- *   DRY_RUN      1 -> dryRun (no external calls, no writes)
- *   GEO_TICKER_LOG  append log path          (default <repo>/logs/channel-publish-due.log)
+ * Architecture (per project decision 2026-10-12):
+ *   launchd (system node)  ──HTTP──▶  persistent GEO MCP server (launchd, system node)
+ *                                       └─ runs channel_publish_due internally
  *
- * Exit: 0 = normal (incl. nothing due / dry-run); 1 = setup or transport error.
+ * Config (env):
+ *   MCP_BASE     base URL of the MCP server   (default http://127.0.0.1:8787)
+ *   MCP_TOKEN    Bearer token                 (default sk-13e7ea6b5cb82ec6140180057284d86d)
+ *   SITE         site key to publish for      (default www_tengence_com)
+ *   DRY_RUN      1 -> dryRun (no external calls, no writes)
+ *   GEO_TICKER_LOG  append log path           (default <repo>/logs/channel-publish-due.log)
+ *
+ * Exit: 0 = normal (incl. nothing due / dry-run / MCP unreachable handled as warn);
+ *       1 = setup or fatal transport error.
  * ============================================================================
  */
 'use strict';
@@ -30,9 +36,9 @@ const path = require('path');
 const os = require('os');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
-const t = require('@tengence/geo-sdk');
 
-const SITES_ROOT = process.env.SITES_ROOT || '/Users/tim/tengence/geo-workspace';
+const MCP_BASE = (process.env.MCP_BASE || 'http://127.0.0.1:8787').replace(/\/+$/, '');
+const MCP_TOKEN = process.env.MCP_TOKEN || 'sk-13e7ea6b5cb82ec6140180057284d86d';
 const SITE = process.env.SITE || 'www_tengence_com';
 const DRY_RUN = process.env.DRY_RUN === '1' || process.argv.includes('--dry-run');
 const LOG_FILE =
@@ -50,8 +56,6 @@ function acquireLock() {
     }
     if (prev && prev.pid && prev.ts) {
       const ageMin = (Date.now() - prev.ts) / 60000;
-      // still-running previous instance? (kill -0 style check via /proc not portable on mac,
-      // so fall back to a time guard: a run should never take >25 min)
       if (ageMin < 25) {
         return false;
       }
@@ -60,13 +64,11 @@ function acquireLock() {
     fs.writeFileSync(LOCK_FILE, JSON.stringify({ pid: process.pid, ts: Date.now() }));
     return true;
   } catch (e) {
-    // If we cannot lock, still proceed (better to run than to silently skip).
     return true;
   }
 }
 
 function cstStamp(d = new Date()) {
-  // Beijing time (UTC+8) for human-friendly logs
   const beijing = new Date(d.getTime() + 8 * 3600 * 1000);
   const p = (n) => String(n).padStart(2, '0');
   return (
@@ -85,11 +87,94 @@ function appendLog(line) {
 }
 
 /**
+ * Minimal MCP Streamable-HTTP client (JSON-RPC 2.0 over POST /messages).
+ * Mirrors the server's expected handshake: initialize -> notifications/initialized
+ * -> tools/call. Returns the raw tool result object.
+ */
+async function callChannelPublishDue() {
+  const headers = (sessionId) => {
+    const h = {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+      Authorization: `Bearer ${MCP_TOKEN}`,
+    };
+    if (sessionId) h['Mcp-Session-Id'] = sessionId;
+    return h;
+  };
+
+  const post = async (body, sessionId) => {
+    const res = await fetch(`${MCP_BASE}/messages`, {
+      method: 'POST',
+      headers: headers(sessionId),
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(60000),
+    });
+    const sid = res.headers.get('mcp-session-id') || sessionId;
+    const text = await res.text();
+    let data;
+    if (/^\s*event:/.test(text) || text.includes('\ndata:')) {
+      const lines = text.split('\n').filter((l) => l.startsWith('data:'));
+      data = JSON.parse(lines[lines.length - 1].slice(5).trim());
+    } else {
+      data = text ? JSON.parse(text) : null;
+    }
+    return { data, sid };
+  };
+
+  // 1) initialize
+  const init = await post({
+    jsonrpc: '2.0',
+    id: 1,
+    method: 'initialize',
+    params: {
+      protocolVersion: '2025-06-18',
+      capabilities: {},
+      clientInfo: { name: 'geo-channel-ticker', version: '1.0' },
+    },
+  });
+  const sid = init.sid;
+  if (!sid) {
+    throw new Error('MCP initialize 未返回 session-id（服务不可用或鉴权失败）');
+  }
+  // 2) initialized notification
+  await post({ jsonrpc: '2.0', method: 'notifications/initialized' }, sid);
+  // 3) tools/call channel_publish_due
+  const call = await post(
+    {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'channel_publish_due',
+        arguments: { site: SITE, dryRun: !!DRY_RUN },
+      },
+    },
+    sid
+  );
+
+  const result = call.data && call.data.result;
+  if (!result) {
+    throw new Error('MCP 返回异常: ' + JSON.stringify(call.data));
+  }
+  if (result.isError) {
+    throw new Error('MCP 工具执行失败: ' + (result.content || []).map((c) => c.text || '').join(''));
+  }
+  // ok() serializes the report as JSON.stringify(report, null, 2)
+  const text = (result.content || []).map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Fallback: if the server ever returns a non-JSON payload, surface as-is.
+    return { _raw: text, checked: 0, due: [], results: [] };
+  }
+}
+
+/**
  * Render the publishDue report into human-readable lines (pure: no I/O, no SDK).
  * Exported so it can be unit-tested with a synthetic report (incl. the URL-display
  * branch) without triggering any real external publish.
  * @param {object} report  the publishDue report
- * @param {{site:string, dryRun:boolean}} opts
+ * @param {{site:string, dryRun:boolean, elapsed?:string}} opts
  * @returns {string[]} lines
  */
 function renderReport(report, opts) {
@@ -171,17 +256,8 @@ async function main() {
     console.log(s);
   };
 
-  // 1) bind workspace + site (mirrors the MCP tool's withSite())
-  t.workspace.use(SITES_ROOT);
-  const siteObj = t.site.loadSite(SITE, { domain: SITE });
-  const siteKey = siteObj.siteKey;
-
-  // 2) run the unified executor
-  const report = await t.plan.channelSchedule.publishDue({
-    dryRun: DRY_RUN,
-    siteKey,
-    appId: Number(process.env.APP_ID || 1),
-  });
+  // 1) call the persistent MCP server (the encapsulation layer)
+  const report = await callChannelPublishDue();
 
   const secs = ((Date.now() - started) / 1000).toFixed(1);
   const rendered = renderReport(report, { site: SITE, dryRun: DRY_RUN, elapsed: secs });
@@ -192,7 +268,7 @@ async function main() {
   return 0;
 }
 
-module.exports = { renderReport, main };
+module.exports = { renderReport, main, callChannelPublishDue };
 
 // Auto-run only when executed directly (not when required by a test).
 if (require.main === module) {
