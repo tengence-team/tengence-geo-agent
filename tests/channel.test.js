@@ -420,3 +420,62 @@ test('nextDue: wechat no longer hijacked by calendar rows (derived like every pl
     });
   }
 });
+
+// ==================== dev.to language regression (2026-10-12) ====================
+// dev.to is an international channel: the publish pipeline MUST take the 'en'
+// article row, never the zh-hans default. Regression: channel_plan recorded
+// lang=en while the zh-hans body was actually published.
+
+test('devto: publishFromSlugs sends the ENGLISH row (lang=en), never zh-hans', async () => {
+  const { withConn } = require('../packages/geo-sdk/db/connection');
+  const oldKey = process.env.DEVTO_API_KEY;
+  const oldFetch = globalThis.fetch;
+  process.env.DEVTO_API_KEY = 'test-devto-key';
+  let sentBody = null;
+
+  globalThis.fetch = async (url, opts) => {
+    const u = String(url);
+    if (u.includes('/api/articles')) {
+      if ((opts && opts.method) === 'PUT' || (opts && opts.method) === 'DELETE') {
+        return { ok: false, status: 404, json: async () => ({}) };
+      }
+      sentBody = JSON.parse(opts ? opts.body : '{}');
+      return { ok: true, status: 201, json: async () => ({ id: 90001, url: 'https://dev.to/tengence/x-temp' }) };
+    }
+    return oldFetch(url, opts);
+  };
+
+  try {
+    await withConn(async (conn) => {
+      // same slug, two language rows — zh-hans MUST NOT be used for dev.to
+      await conn.query(
+        `INSERT INTO tengence_geo_articles (app_id, slug, title, lang, content_longtext, target_keywords, status)
+         VALUES (1, 'devto-lang-regression', '中文标题', 'zh-hans', '# 中文标题\n中文正文内容', '中文,SEO', 'publish')`
+      );
+      await conn.query(
+        `INSERT INTO tengence_geo_articles (app_id, slug, title, lang, content_longtext, target_keywords, status)
+         VALUES (1, 'devto-lang-regression', 'English Regression Title', 'en', '# English Regression Title\nEnglish body text', 'seo,ai search', 'publish')`
+      );
+    });
+
+    const res = await t.syndicate.channel.publishToChannel({
+      platform: 'devto',
+      slugs: ['devto-lang-regression'],
+      asDraft: true,
+      dryRun: false,
+      siteKey: 'tengence_test',
+    });
+    assert.equal(res.ok, true, `publish should succeed: ${JSON.stringify(res)}`);
+    assert.ok(sentBody, 'dev.to API must be called');
+    assert.equal(sentBody.article.title, 'English Regression Title', 'dev.to must receive the ENGLISH title');
+    assert.ok(!/[\u4e00-\u9fff]/.test(sentBody.article.body_markdown), 'dev.to body must NOT contain Chinese characters');
+    assert.ok(sentBody.article.body_markdown.includes('English body text'), 'dev.to body must contain the English content');
+  } finally {
+    if (oldKey === undefined) delete process.env.DEVTO_API_KEY; else process.env.DEVTO_API_KEY = oldKey;
+    globalThis.fetch = oldFetch;
+    await withConn(async (conn) => {
+      await conn.query(`DELETE FROM tengence_geo_articles WHERE slug = 'devto-lang-regression'`);
+      await conn.query(`DELETE FROM tengence_geo_channel_plan WHERE slug = 'devto-lang-regression'`);
+    });
+  }
+});

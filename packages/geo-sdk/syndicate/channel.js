@@ -293,7 +293,14 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
   await t.db.withConn(async (conn) => {
     for (const slug of toPublish) {
       try {
-        const article = await articleFromDb(conn, appId, slug, SITE_DOMAIN);
+        // dev.to is an international channel and MUST always publish the English
+        // row ('en'); every other channel keeps the default zh-hans content. When
+        // the en row is missing, articleFromDb throws and the per-slug catch below
+        // records the failure — it never falls back to Chinese (regression fixed
+        // 2026-10-12: previously the en row was marked in channel_plan but the
+        // zh-hans content was actually published).
+        const lang = platform === 'devto' ? 'en' : 'zh-hans';
+        const article = await articleFromDb(conn, appId, slug, SITE_DOMAIN, lang);
         const dir = exportDir(site.siteDir, platform);
         fs.mkdirSync(dir, { recursive: true });
         const mdPath = path.join(dir, `${slug}.md`);
