@@ -406,12 +406,15 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // title is in the front matter above; drop any leading "# Title" from
           // the body so the exported file never shows the title twice.
           fs.writeFileSync(mdPath, `---\n${yaml.dump(fm, { lineWidth: -1 }).trim()}\n---\n\n${stripLeadingTitle(article.contentMd, article.title).trim()}\n`, 'utf8');
-          const res = await publishDevto({ mdPath, dryRun });
+          // coverImage: the blog's featured image (absolute URL). dev.to re-hosts
+          // it to its own CDN at publish time (main_image field), so a broken
+          // source never leaves a broken cover.
+          const res = await publishDevto({ mdPath, dryRun, coverImage: article.featuredImage || null });
           appendLog(site.siteDir, { action: dryRun ? 'dry-run' : 'publish', platform, slug, ok: true, detail: res });
-          // publishDevto is DRAFT-FIRST (dev.to has no review pipeline; dashboard
-          // publish is manual) — mark it explicitly so the caller logs "draft",
-          // never "published". Verified live 2026-10-11: drafts return 404 publicly.
-          results.push({ slug, ok: true, published: false, draftId: res && res.id, detail: res });
+          // dev.to publishes LIVE (2026-10-12): no draft-first anymore, no review
+          // pipeline. `published:true` marks the result as a live article so the
+          // caller logs "published", never "draft".
+          results.push({ slug, ok: true, published: true, draftId: res && res.id, detail: res });
         } else if (platform === 'csdn') {
           // Reuses the SAME upstream dedup as every other platform (filterUnpublished,
           // run once at the top of publishFromSlugs) — no platform-local re-check.

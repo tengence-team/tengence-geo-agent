@@ -21,10 +21,10 @@
  * asDraft policy (2026-10-11): wechat keeps the DRAFT-BOX mode (recordWechatIssue
  * terminal state = draft) — the 原创声明/赞赏 flags cannot be set via any WeChat
  * API and must be toggled manually before sending, so the scheduler must never
- * auto-send wechat. juejin / csdn publish for real (asDraft=false). devto is ALSO
- * draft-first (publishDevto creates a draft; dev.to has no review pipeline, the
- * dashboard publish is manual — verified live 2026-10-11), so devto outcomes are
- * logged as "draft", never "published".
+ * auto-send wechat. juejin / csdn publish for real (asDraft=false). devto ALSO
+ * publishes LIVE (2026-10-12: no draft-first — publishDevto sends published:true
+ * with the article's cover image; dev.to has no review pipeline), so devto
+ * outcomes are logged as "published".
  *
  * Audit (审核) integration (2026-10-11, plan A — merged into the unified executor):
  * publishDue runs the review-check loop FIRST (step ①) via channel.syncStatuses
@@ -224,7 +224,7 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
               ? `tags: ${r.tags.join(', ')}`
               : null;
           // r.published is the platform's own answer (juejin/csdn = !asDraft,
-          // devto always false = draft-first) — it wins over wentLive.
+          // devto true since 2026-10-12 = live publish) — it wins over wentLive.
           const status = !r.ok ? 'failed' : r.published === false ? 'draft' : wentLive && !r.publishGated ? 'published' : 'draft';
           try {
             await channel.recordPublish({

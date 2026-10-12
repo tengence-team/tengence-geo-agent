@@ -17,12 +17,14 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Publish a local markdown article to Dev.to as a draft
- * @param {{mdPath:string, dryRun?:boolean}} opts
+ * Publish a local markdown article to Dev.to (LIVE, not draft)
+ * @param {{mdPath:string, dryRun?:boolean, coverImage?:string}} opts
+ *        coverImage — absolute URL of the article's cover image; dev.to re-hosts
+ *        it to its own CDN at publish time (field: main_image).
  * @returns {Promise<{dryRun?:boolean, id?:number, url?:string}>}
  * @throws missing file / no front matter / API failure (every error path except dry-run)
  */
-async function publishDevto({ mdPath, dryRun = false }) {
+async function publishDevto({ mdPath, dryRun = false, coverImage = null }) {
   const API_KEY = process.env.DEVTO_API_KEY;
   if (!API_KEY) {
     console.error('❌ DEVTO_API_KEY not set (in sites/tengence/.env)');
@@ -116,14 +118,15 @@ async function publishDevto({ mdPath, dryRun = false }) {
     article: {
       title: title,
       body_markdown: cleanBody,
-      published: false, // draft first; publish after manual review in the dashboard
+      published: true, // live publish (2026-10-12): no draft-first, publish directly
       canonical_url: canonicalUrl,
       tags: devtoTags.length > 0 ? devtoTags : ['seo', 'marketing'],
       description: fmValue('meta_description') || `Learn about ${title}`,
     }
   };
+  if (coverImage) payload.article.main_image = coverImage;
 
-  console.log('\n🚀 Publishing to Dev.to (draft)...');
+  console.log('\n🚀 Publishing to Dev.to (live)...');
 
   const res = await fetch('https://dev.to/api/articles', {
     method: 'POST',
@@ -139,8 +142,8 @@ async function publishDevto({ mdPath, dryRun = false }) {
     throw new Error('DEVTO_API_ERROR');
   }
   console.log(`✅ Success! Dev.to article ID: ${data.id}`);
-  console.log(`   Draft link: ${data.url}/edit`);
-  console.log(`   Status: draft (log into the Dev.to dashboard, review the content, then click Publish)`);
+  console.log(`   Article link: ${data.url}`);
+  console.log(`   Status: published (live)`);
   return { id: data.id, url: data.url };
 }
 

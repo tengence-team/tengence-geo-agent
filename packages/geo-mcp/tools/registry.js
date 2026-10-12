@@ -34,11 +34,11 @@ const t = require('@tengence/geo-sdk');
  * INDEPENDENT publishing calendar and drives the shared slug-based dedup.
  * wechat is excluded: it keeps a real per-issue calendar imported from its plan doc.
  *
- * devto IS included (2026-10-11): publishDevto is DRAFT-FIRST (dashboard publish is
+ * devto IS included (2026-10-11): publishDevto was DRAFT-FIRST (dashboard publish is
  * manual; dev.to has no review pipeline), so the log must record the draft —
- * otherwise nextDue would re-create a duplicate draft every run. The channel_publish
- * status rule uses r.published (devto always false) so devto rows are logged as
- * "draft", never "published" — verified live 2026-10-11 (drafts 404 publicly).
+ * otherwise nextDue would re-create a duplicate draft every run. Since 2026-10-12
+ * dev.to publishes LIVE (published:true + cover image), so the status rule
+ * (r.published) now logs devto rows as "published".
  */
 // 'aliyun' is included even though its publish is human-gated: the log is what the
 // slug-based dedup reads, so a draft-only run must still be recorded as "draft"

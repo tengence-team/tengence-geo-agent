@@ -156,10 +156,10 @@ const DEFAULT_DISPATCHED = new Set(['published', 'reviewing']);
  * in the WeChat drafts box look "not yet sent" → nextDue kept re-offering them
  * (24 articles from 第2–9期 were queued for a second send).
  *
- * devto is the SAME case (2026-10-11, verified live): publishDevto creates a DRAFT
- * (`published:false`, dashboard publish is manual — dev.to has NO review pipeline,
- * so draft-first is the human-gated step). Its terminal state is also `draft`;
- * without it nextDue would re-create a duplicate draft every run.
+ * devto publishes LIVE since 2026-10-12 (`published:true` + cover image; dev.to
+ * has NO review pipeline). Its rows reach `published`; keeping `draft` in the
+ * dispatched set preserves idempotence for legacy draft rows from before the
+ * switch (no duplicate re-send).
  *
  * juejin/csdn keep the default on purpose: there a `draft` is only an intermediate
  * step on the way to a live article, so it must stay eligible for a retry.

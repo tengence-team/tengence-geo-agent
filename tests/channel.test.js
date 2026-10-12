@@ -421,12 +421,13 @@ test('nextDue: wechat no longer hijacked by calendar rows (derived like every pl
   }
 });
 
-// ==================== dev.to language regression (2026-10-12) ====================
+// ==================== dev.to language + live-publish regression (2026-10-12) ====================
 // dev.to is an international channel: the publish pipeline MUST take the 'en'
 // article row, never the zh-hans default. Regression: channel_plan recorded
-// lang=en while the zh-hans body was actually published.
+// lang=en while the zh-hans body was actually published. Since 2026-10-12 it
+// also publishes LIVE (published:true) with the article's cover image.
 
-test('devto: publishFromSlugs sends the ENGLISH row (lang=en), never zh-hans', async () => {
+test('devto: publishFromSlugs sends the ENGLISH row (lang=en), live + cover image', async () => {
   const { withConn } = require('../packages/geo-sdk/db/connection');
   const oldKey = process.env.DEVTO_API_KEY;
   const oldFetch = globalThis.fetch;
@@ -453,8 +454,8 @@ test('devto: publishFromSlugs sends the ENGLISH row (lang=en), never zh-hans', a
          VALUES (1, 'devto-lang-regression', '中文标题', 'zh-hans', '# 中文标题\n中文正文内容', '中文,SEO', 'publish')`
       );
       await conn.query(
-        `INSERT INTO tengence_geo_articles (app_id, slug, title, lang, content_longtext, target_keywords, status)
-         VALUES (1, 'devto-lang-regression', 'English Regression Title', 'en', '# English Regression Title\nEnglish body text', 'seo,ai search', 'publish')`
+        `INSERT INTO tengence_geo_articles (app_id, slug, title, lang, content_longtext, target_keywords, featured_image, status)
+         VALUES (1, 'devto-lang-regression', 'English Regression Title', 'en', '# English Regression Title\nEnglish body text', 'seo,ai search', 'https://www.tengence.com/blog/static/images/2026/09/regression.webp', 'publish')`
       );
     });
 
@@ -470,6 +471,12 @@ test('devto: publishFromSlugs sends the ENGLISH row (lang=en), never zh-hans', a
     assert.equal(sentBody.article.title, 'English Regression Title', 'dev.to must receive the ENGLISH title');
     assert.ok(!/[\u4e00-\u9fff]/.test(sentBody.article.body_markdown), 'dev.to body must NOT contain Chinese characters');
     assert.ok(sentBody.article.body_markdown.includes('English body text'), 'dev.to body must contain the English content');
+    assert.equal(sentBody.article.published, true, 'dev.to must publish LIVE (no draft-first)');
+    assert.equal(
+      sentBody.article.main_image,
+      'https://www.tengence.com/blog/static/images/2026/09/regression.webp',
+      'dev.to must receive the article cover image (main_image)'
+    );
   } finally {
     if (oldKey === undefined) delete process.env.DEVTO_API_KEY; else process.env.DEVTO_API_KEY = oldKey;
     globalThis.fetch = oldFetch;
