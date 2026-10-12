@@ -51,9 +51,7 @@ const PUBLISH_LOG_PLATFORMS = ['juejin', 'csdn', 'aliyun', 'tencent', 'devto'];
 // zh-hk / zh-tw, any casing) would be written to the DB **as-is** and silently
 // re-pollute plan/articles rows. Every tool whose input carries a language code
 // and writes rows must reject legacy codes at its entry.
-const LANG_OK = new Set(['zh-hans', 'en', 'zh-hant']);
-const LANG_LEGACY = new Set(['zh-cn', 'en-us', 'zh-hk', 'zh-tw', 'zh-sg', 'zh-mo']);
-/** @returns {string|null} rejection message, or null when the code is valid. */
+const { LANG_OK, LANG_LEGACY } = require('./languages');/** @returns {string|null} rejection message, or null when the code is valid. */
 function langReject(lang) {
   const v = String(lang == null ? '' : lang).trim().toLowerCase();
   if (v === '') return null;
@@ -135,9 +133,24 @@ function ok(data) {
   return { content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] };
 }
 
-function fail(err) {
+/**
+ * Like ok(), but also exposes the parsed payload as MCP `structuredContent`
+ * (machine-readable channel) so clients can consume it without string-parsing.
+ * Structured tools return this on their success branch; server.js passes it
+ * through untouched (no server-side re-parsing).
+ */
+function okStructured(data) {
   return {
-    content: [{ type: 'text', text: JSON.stringify({ ok: false, error: err.message }, null, 2) }],
+    content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+    structuredContent: data,
+  };
+}
+
+/** Wrap an error as MCP text content with isError; normalizes non-Error throws. */
+function fail(err) {
+  const message = err && err.message ? err.message : String(err);
+  return {
+    content: [{ type: 'text', text: JSON.stringify({ ok: false, error: message }, null, 2) }],
     isError: true,
   };
 }
@@ -264,7 +277,7 @@ const tools = [
     }),
     async run(args) {
       try {
-        return ok(t.workspace.use(args.path, { create: !!args.create }));
+        return okStructured(t.workspace.use(args.path, { create: !!args.create }));
       } catch (e) {
         return fail(e);
       }
@@ -286,7 +299,7 @@ const tools = [
     async run(args) {
       try {
         t.workspace.require();
-        return ok(t.site.initSite(args));
+        return okStructured(t.site.initSite(args));
       } catch (e) {
         return fail(e);
       }
@@ -305,7 +318,7 @@ const tools = [
     async run() {
       const bound = t.workspace.current();
       if (!bound) {
-        return ok({
+        return okStructured({
           ok: false,
           bound: false,
           sites: [],
@@ -325,11 +338,12 @@ const tools = [
           return { key, error: e.message };
         }
       });
-      return ok({ ok: true, bound: true, workspace: bound, sites, sites_root: t.site.SITES_ROOT });
+      return okStructured({ ok: true, bound: true, workspace: bound, sites, sites_root: t.site.SITES_ROOT });
     },
   },
   {
     name: 'site_status',
+    title: '站点状态',
     description: 'Site status: config paths, .env readiness, DB driver and SQLite init state',
     inputSchema: z.object({ site: siteField }),
     async run(args) {
@@ -360,6 +374,7 @@ const tools = [
   // ---------- article ----------
   {
     name: 'article_list',
+    title: '文章列表',
     description: 'List articles (articles table), with status/lang/limit filters',
     inputSchema: z.object({
       site: siteField,
@@ -386,6 +401,7 @@ const tools = [
   },
   {
     name: 'wp_post_get',
+    title: '查询 WP 文章',
     description:
       'Read-only WordPress post lookup (id / slug / status / link / date / modified, and the ' +
       'full body HTML with include_content=true). ' +
@@ -497,7 +513,7 @@ const tools = [
       if (args.lang) cliArgs.push('--lang', args.lang);
       if (args.research_path) cliArgs.push('--research', args.research_path);
       const r = runCli('article-ingest', cliArgs);
-      return ok({
+      return okStructured({
         ok: r.code === 0,
         exit_code: r.code,
         output: r.stdout || r.stderr,
@@ -506,6 +522,7 @@ const tools = [
   },
   {
     name: 'article_export',
+    title: '导出文章',
     description: 'Export an article md + brief from the DB to the site data/inbox (for rewriting / translation)',
     inputSchema: z.object({
       slug: z.string().describe('article slug'),
@@ -550,7 +567,7 @@ const tools = [
           lang: args.lang || null,
           site: S.siteKey,
         });
-        return ok({
+        return okStructured({
           ok: result.ok,
           slug: result.slug,
           rows: result.rows,
@@ -570,6 +587,7 @@ const tools = [
   // ---------- translation (multilingual v1) ----------
   {
     name: 'translation_glossary_get',
+    title: '读取翻译术语表',
     description: 'Translation glossary for a target language: merged global + site glossary (brands / phrases / product terms / forbidden words). ' +
       'Read it via resource geo://standard/translation-standards once per article, then consult this tool for the concrete terms the harness must apply',
     inputSchema: z.object({
@@ -595,6 +613,7 @@ const tools = [
   },
   {
     name: 'check_translation',
+    title: '校验译文（T 系列门禁）',
     description: 'Mechanical gate for a translated article (T1–T9): structure/blocks/numbering, link-set & image-set & number-set parity with the source, ' +
       'Simplified-Chinese & CJS residue, forbidden terms, per-section length, title & meta_description lengths. ' +
       'The harness translates with its own LLM and runs this before article_ingest --lang',
@@ -697,11 +716,12 @@ const tools = [
       const cliArgs = [args.md_path, '--site', cliSite(args)];
       if (args.status) cliArgs.push('--status', args.status);
       const r = runCli('publish-draft', cliArgs);
-      return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
+      return okStructured({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
     },
   },
   {
     name: 'publish_from_db',
+    title: '从库发布',
     description: 'Publish an article from the DB to WordPress (--force updates an existing article). ' +
       'For translations (en / zh-hant) the zh-hans source article\'s publish + update time is inherited by default ' +
       '(via the plugin dates API); pass sync_source_dates=false to opt out.',
@@ -726,6 +746,7 @@ const tools = [
   },
   {
     name: 'publish_update_article',
+    title: '更新已发布文章',
     description: 'Bypass update of an existing article (title/content/status + sync SEO/GEO meta). ' +
       'When meta_title / meta_description / post_title is provided, runs meta-only mode: updates ONLY those fields ' +
       '(meta_title → DB seo.title + WP seo_meta_title; meta_description → DB seo.meta_description + WP seo_meta_description, 165–175 chars hard gate; ' +
@@ -799,6 +820,7 @@ const tools = [
   },
   {
     name: 'publish_daily',
+    title: '每日到期发布',
     description: 'Run the daily promotion task (promotes due drafts to publish by plan publish_order; default 1/day). ' +
       'Optional date sets the promoted article publish/modified time (YYYY-MM-DDTHH:MM:SS, site timezone). ' +
       'Optional slug switches to SLUG MODE: publish that slug with every language version it has in the draft box ' +
@@ -822,6 +844,7 @@ const tools = [
   },
   {
     name: 'publish_update_fields',
+    title: '更新文章字段',
     description:
       'Update ANY article attribute through ONE entry point. Fields are routed to the only API that can actually write them:\n' +
       '  • WP native (/wp/v2): title, content, excerpt, slug, status, categories, tags, sticky, featured_media (media ID)\n' +
@@ -1127,6 +1150,7 @@ const tools = [
   // ---------- plan ----------
   {
     name: 'plan_list',
+    title: '内容计划列表',
     description: 'Article plan table list (status/batch/category/node/lang filters). Each language is its own row ' +
       '(zh-hans | en | zh-hant); pass lang to inspect one language only.',
     inputSchema: z.object({
@@ -1156,6 +1180,7 @@ const tools = [
   },
   {
     name: 'plan_import',
+    title: '导入内容计划',
     description: 'Import/update the plan table (idempotent upsert by (slug, lang)). ' +
       'Two modes: (a) no `rows` — DB-only maintenance (backfill article_id / wp_post_id / ' +
       'published_url / featured_image, reconcile status from the articles table, assign missing ' +
@@ -1219,6 +1244,7 @@ const tools = [
   },
   {
     name: 'plan_mark_status',
+    title: '标记计划状态',
     description: 'Update a plan row status (todo/written/queued/published/archived)',
     inputSchema: z.object({
       slug: z.string().describe('article slug'),
@@ -1245,6 +1271,7 @@ const tools = [
   // ---------- image ----------
   {
     name: 'image_acquire',
+    title: '采集配图',
     description: 'Auto image pipeline (search → red-line filter → download → WebP crop → upload to WP media library)',
     inputSchema: z.object({
       query: z.string().describe('image search keyword'),
@@ -1268,6 +1295,7 @@ const tools = [
   // ---------- monitor ----------
   {
     name: 'monitor_run',
+    title: '运行 AI 可见性监测',
     description: 'Run GEO monitoring (one round of site prompts × models; results persisted)',
     inputSchema: z.object({
       site: siteField,
@@ -1306,7 +1334,7 @@ const tools = [
         const S = withSite(args);
         const store = require('@tengence/geo-sdk/monitor/store');
         const results = await store.readResults(S, args.run_id ? { runId: args.run_id } : undefined);
-        return ok({ ok: true, count: (results || []).length, results: results || [] });
+        return okStructured({ ok: true, count: (results || []).length, results: results || [] });
       } catch (e) {
         return fail(e);
       }
@@ -1316,6 +1344,7 @@ const tools = [
   // ---------- db ----------
   {
     name: 'db_init',
+    title: '初始化数据库',
     description: 'Explicitly initialize the database (sqlite idempotent table creation / mysql DDL; --drop rebuilds)',
     inputSchema: z.object({
       site: siteField,
@@ -1330,6 +1359,7 @@ const tools = [
   },
   {
     name: 'db_status',
+    title: '数据库状态',
     description: 'Database status: driver, path, schema version, table list, missing tables',
     inputSchema: z.object({ site: siteField }),
     async run() {
@@ -1349,6 +1379,7 @@ const tools = [
   // ---------- search / inclusion submission ----------
   {
     name: 'search_gsc_stats',
+    title: '查询 GSC 流量统计',
     description:
       'Read Google Search Console Search Analytics data: clicks / impressions / CTR / average position, ' +
       'grouped by query (default), page, date, country or device. This is the ONLY Google source for ' +
@@ -1382,6 +1413,7 @@ const tools = [
   },
   {
     name: 'search_gsc_inspect',
+    title: 'GSC 网址检查',
     description:
       'Query one URL\'s Google indexing status (URL Inspection API, read-only): verdict, coverageState, ' +
       'indexingState, lastCrawlTime, googleCanonical. Use it to check whether a specific article page is ' +
@@ -1403,6 +1435,7 @@ const tools = [
   },
   {
     name: 'search_submit_gsc',
+    title: 'GSC 收录提交',
     description: 'Submit the sitemap to Google Search Console (soft-fail)',
     inputSchema: z.object({
       site: siteField,
@@ -1423,6 +1456,7 @@ const tools = [
   },
   {
     name: 'search_submit_indexnow',
+    title: 'IndexNow 收录提交',
     description: 'Submit URLs to IndexNow (requires INDEXNOW_KEY)',
     inputSchema: z.object({
       url: z.string().describe('URLs to submit (multiple allowed, comma-separated)'),
@@ -1447,6 +1481,7 @@ const tools = [
   },
   {
     name: 'search_submit_baidu',
+    title: '百度收录提交',
     description:
       'Submit URLs to Baidu normal inclusion (requires BAIDU_TOKEN / BAIDU_SITE). ' +
       'Two modes: pass url for an explicit list, or all=true to push the sitemap incrementally — ' +
@@ -1482,6 +1517,7 @@ const tools = [
   // ---------- webmaster (搜索引擎站长后台管理域; separate from search/) ----------
   {
     name: 'webmaster_bing_status',
+    title: 'Bing 站长状态',
     description:
       'Read Bing Webmaster console data (verified sites / URL submission quota / query stats / crawl issues). Requires BING_WEBMASTER_API_KEY in the site .env. Note: Bing trimmed its JSON API on 2026-08-31 (GetPages/GetSitemaps/GetTrafficStats/GetUrlSubmissionStatus now 404).',
     inputSchema: z.object({
@@ -1516,6 +1552,7 @@ const tools = [
   },
   {
     name: 'webmaster_bing_submit',
+    title: 'Bing 收录提交',
     description:
       'Write to Bing Webmaster: submit URL(s) (comma-separated = batch, ≤10000 per call). Requires BING_WEBMASTER_API_KEY in the site .env.',
     inputSchema: z.object({
@@ -1546,6 +1583,7 @@ const tools = [
   // ---------- diagnose (site GEO/SEO diagnosis) ----------
   {
     name: 'diagnose_site',
+    title: '站点 GEO 诊断',
     description:
       'Full GEO/SEO site diagnosis: domain (DNS incl. CNAME chain / TLS cert / WHOIS), transport & server fingerprint (CMS/framework/platform/CDN), HTTP/3, robots.txt (incl. Allow/Disallow conflicts), sitemap (all child sitemaps, language distribution, lastmod freshness), homepage + representative pages (meta, H1..H6, JSON-LD, OG, images/alt, links, mixed content), i18n (per-language homepage hreflang symmetry, 404 localization, article coverage, language switcher), CDN cache hit-rate sampling, static asset cache policy, subdomain health sweep, admin/backend exposure sweep, external-resource health, performance (TTFB stability, LCP candidate, resource hints) and security (CSP parse, SAN usage, SRI) checks, plus a GEO extended pack (data-point citation density, date signals, author byline, authoritative-source citations, entity consistency, llms.txt structure, static-HTML content, AI-content disclosure, Q&A answer blocks). Returns an overall 0-100 score with letter grade and per-dimension breakdown. Bootstraps the site on first use. All probes are read-only (GET/HEAD), bounded by a request budget, and soft-fail.',
     inputSchema: z.object({
@@ -1592,6 +1630,7 @@ const tools = [
   },
   {
     name: 'report_write',
+    title: '写监测报告',
     description:
       'Write a Markdown report into the site data/reports/ directory (path-safe: filename is basenamed and confined to the reports dir). Auto-bootstraps the site on first use.',
     inputSchema: z.object({
@@ -1634,6 +1673,7 @@ const tools = [
   // ---------- site_geo_plan_skill (site-geo-plan skill spec, MCP-managed) ----------
   {
     name: 'site_geo_plan_skill',
+    title: '站点 GEO 实施方案',
     description:
       'Read-only access to the site-geo-plan skill specification (SKILL.md + references/plan-template.md) ' +
       'that governs detailed GEO/SEO implementation plan generation (multi-part: 上篇技术修复/中篇关键词与内容/' +
@@ -1668,6 +1708,7 @@ const tools = [
   // ---------- util / diagnostics ----------
   {
     name: 'util_ping',
+    title: '服务连通性测试',
     description:
       'Connectivity self-check: SDK version, driver, internal data directory, bound workspace and site count',
     inputSchema: z.object({}),
@@ -1706,7 +1747,7 @@ const tools = [
       try {
         const brief = t.standards.buildDraftBrief({ type: args.type || 'guide', topic: args.topic });
         if (args.topic) brief.topic = args.topic;
-        return ok(brief);
+        return okStructured(brief);
       } catch (e) {
         return fail(e);
       }
@@ -1715,6 +1756,7 @@ const tools = [
   // ---------- cross-platform channel ----------
   {
     name: 'channel_list',
+    title: '平台状态列表',
     description:
       'List all external content platforms in the syndicate registry: API type (official|cookie|none), status (ready|pending|manual), ' +
       'capabilities (multi-article merge, per-platform limits, draft/cover/tags) and the full platform rewrite rules (styles). ' +
@@ -1740,6 +1782,7 @@ const tools = [
   },
   {
     name: 'channel_style_get',
+    title: '读取平台改写规则',
     description:
       'Return the FULL platform style / rewrite rules for ONE platform (wechat / juejin / blog / …). ' +
       'This is the RULES half of the rewrite surface: the server only serves the rules, the harness/Skill does the actual rewriting. ' +
@@ -1761,6 +1804,7 @@ const tools = [
   },
   {
     name: 'channel_check',
+    title: '平台连接检查',
     description:
       'Validate a title/body against a platform\'s style rules — the 校验 (validation) half. Deterministic, no content generation. ' +
       'Returns errors (HARD: title length / forbidden words / body length / removeBlocks) and warnings ' +
@@ -1786,6 +1830,7 @@ const tools = [
   },
   {
     name: 'channel_publish',
+    title: '平台发布',
     description:
       'Publish/export to one external platform. Mode A: pass slugs[] and the server reads the DB and runs the platform pipeline ' +
       '(wechat drafts box — preview in mp.weixin.qq.com before mass-sending; juejin draft → publish; csdn draft → publish; ' +
@@ -1922,6 +1967,7 @@ const tools = [
   },
   {
     name: 'channel_plan_next',
+    title: '下一到期平台发布',
     description:
       'Per-platform publishing calendar: return the next article to publish for a platform plus all calendar rows ' +
       '(status/period/topic/weekday/slugs). Each platform has its OWN rows in the same channel_plan table. ' +
@@ -1957,6 +2003,7 @@ const tools = [
   },
   {
     name: 'channel_plan_mark',
+    title: '标记平台发布状态',
     description:
       'Update a channel_plan row status (todo | draft | published | paused) and optionally record its draft ids (media ids). ' +
       'Call after channel_publish to persist the created draft (e.g. wechat media_id) and keep the calendar in sync.',
@@ -1981,6 +2028,7 @@ const tools = [
   },
   {
     name: 'juejin_status',
+    title: '掘金状态',
     description:
       'Read the Juejin (掘金) backend for this site: the draft box (article_draft/list_by_user) and the published list ' +
       '(article/list_by_user). Read-only. Requires JUEJIN_COOKIE + JUEJIN_UID in the site .env. Use it to verify before ' +
@@ -2018,6 +2066,7 @@ const tools = [
   },
   {
     name: 'juejin_draft_delete',
+    title: '删除掘金草稿',
     description:
       'Delete a Juejin draft (article_draft/delete). IRREVERSIBLE — pass confirm=true only after verifying the draft id via ' +
       'juejin_status. Requires JUEJIN_COOKIE + JUEJIN_UID in the site .env.',
@@ -2039,6 +2088,7 @@ const tools = [
   },
   {
     name: 'juejin_article_delete',
+    title: '删除掘金文章',
     description:
       'Delete a published Juejin article (article/delete). IRREVERSIBLE — pass confirm=true only after verifying the article id ' +
       'via juejin_status. Requires JUEJIN_COOKIE + JUEJIN_UID in the site .env.',
@@ -2060,6 +2110,7 @@ const tools = [
   },
   {
     name: 'csdn_status',
+    title: 'CSDN 状态',
     description:
       'Read the CSDN blog backend for this site: the draft box and the published list ' +
       '(blog/phoenix/console/v1/article/list with status=draft / all_v2). Read-only. Requires CSDN_COOKIE in the site .env. ' +
@@ -2098,6 +2149,7 @@ const tools = [
   },
   {
     name: 'csdn_article_delete',
+    title: '删除 CSDN 文章',
     description:
       'Delete a CSDN article (blog/phoenix/console/v1/article/del). IRREVERSIBLE — pass confirm=true only after verifying the ' +
       'article id via csdn_status. Requires CSDN_COOKIE in the site .env. NOTE: this removes it from CSDN only; the local ' +
@@ -2122,6 +2174,7 @@ const tools = [
   },
   {
     name: 'channel_plan_reconcile',
+    title: '对账平台计划',
     description:
       'Reconcile a platform channel_plan with what is ACTUALLY published on that platform (platform=juejin | csdn). ' +
       'This SEEDS the publish plan with already-published articles — we do NOT bulk-import the blog plan (the table logs ' +
@@ -2157,6 +2210,7 @@ const tools = [
   // ---------- auto-publish scheduling rules (channel_schedule) ----------
   {
     name: 'channel_audit_check',
+    title: '平台合规审计',
     description:
       'Sync channel_plan statuses against the LIVE platform audit (审核) state — the review-check loop. ' +
       'For juejin: article/list_by_user audit_status (2=通过→published, 1=审核中→reviewing, 0/3=未通过→review_failed). ' +
@@ -2193,6 +2247,7 @@ const tools = [
   },
   {
     name: 'channel_schedule_list',
+    title: '平台排期列表',
     description:
       'List the auto-publish scheduling rules (table tengence_geo_channel_schedule): one row = one (platform, publish_time) ' +
       'slot, with count (articles per fire), enabled and last_run_at (day-level re-fire guard). ' +
@@ -2212,6 +2267,7 @@ const tools = [
   },
   {
     name: 'channel_schedule_get',
+    title: '平台排期详情',
     description:
       'Get one channel_schedule slot by id (see channel_schedule_list rows). Returns the slot or null when it does not exist.',
     inputSchema: z.object({
@@ -2228,6 +2284,7 @@ const tools = [
   },
   {
     name: 'channel_schedule_set',
+    title: '设置平台排期',
     description:
       'Create or update one auto-publish scheduling slot (upsert by platform + publish_time). ' +
       'publish_time is "HH:MM" (zero-padded, local time, non-整点 recommended to avoid platform top-of-hour congestion). ' +
@@ -2255,6 +2312,7 @@ const tools = [
   },
   {
     name: 'channel_schedule_del',
+    title: '删除平台排期',
     description:
       'Delete a channel_schedule slot — by id, or by the unique key (platform + publish_time). ' +
       'Returns the number of deleted rows. Use enabled=0 on channel_schedule_set instead if you want to pause, not delete.',
@@ -2281,6 +2339,7 @@ const tools = [
   },
   {
     name: 'channel_publish_due',
+    title: '到期平台内容发布',
     description:
       'UNIFIED auto-publish executor: scan the channel_schedule slots and publish on every platform whose slot is due NOW ' +
       '(publish_time within ±15 minutes — a 30-minute external tick always lands in the window) and has NOT run today ' +
@@ -2306,6 +2365,7 @@ const tools = [
   // ---------- external-platform taxonomy dictionary (channel_taxonomy) ----------
   {
     name: 'channel_taxonomy_sync',
+    title: '同步平台类目',
     description:
       'Refresh the cached dictionary of an EXTERNAL platform\'s own taxonomy (category + tag id/name) into the workspace ' +
       'table channel_taxonomy. Currently juejin: 8 categories + ~725 tags fetched from the platform APIs. The dictionary is ' +
@@ -2331,6 +2391,7 @@ const tools = [
   },
   {
     name: 'channel_taxonomy_list',
+    title: '平台类目列表',
     description:
       'Read the cached external-platform taxonomy dictionary (channel_taxonomy) — the platform\'s OWN categories and tags ' +
       'with their ids. Filter by kind (category|tag); look one up exactly with name=, or by prefix with prefix= (prefix ' +
@@ -2376,6 +2437,7 @@ const tools = [
   },
   {
     name: 'channel_taxonomy_resolve',
+    title: '解析平台类目',
     description:
       'Preview how OUR taxonomy maps onto a platform\'s (article_plan.category/tags → platform category_id/tag_ids) WITHOUT ' +
       'publishing. Returns the chosen ids/names plus a per-item origin showing which fallback layer fired (alias / exact / ' +
@@ -2411,6 +2473,7 @@ const tools = [
   // (tengence-wordpress-plugin modules/multilingual/RestTermNames.php).
   {
     name: 'term_names_list',
+    title: '术语名列表',
     description:
       'List the multilingual display-name table for WP categories & tags (plugin option tengence_ml_term_names). ' +
       'taxonomy optional: omit for both category and post_tag, or pass category|post_tag to filter. Read-only.',
@@ -2430,6 +2493,7 @@ const tools = [
   },
   {
     name: 'article_terms_sync',
+    title: '同步文章类目',
     description:
       'Read and/or set an article\'s WordPress classification (category 类目 + post_tag 标签) using TERM SLUGS ' +
       '(the same keys the plan table and article front matter use), not raw term IDs.\n' +
@@ -2568,6 +2632,7 @@ const tools = [
   },
   {
     name: 'term_name_get',
+    title: '查询术语名',
     description:
       'Read the multilingual display names of ONE WP term (GET /term-names/{taxonomy}/{slug}): returns original_name ' +
       'plus the configured per-language names. Read-only.',
@@ -2588,6 +2653,7 @@ const tools = [
   },
   {
     name: 'term_name_set',
+    title: '设置术语名',
     description:
       'Set (UPSERT) the multilingual display names of ONE category/tag term — PUT /term-names/{taxonomy}/{slug} with ' +
       '{"names":{"en":"GEO & AI Search","zh-hans":"GEO与AI搜索","zh-hant":"GEO與AI搜尋"}}. Idempotent partial update: ' +
@@ -2621,6 +2687,7 @@ const tools = [
   },
   {
     name: 'term_name_delete',
+    title: '删除术语名',
     description:
       'Delete the multilingual display names of ONE WP term (DELETE /term-names/{taxonomy}/{slug}). Without lang the ' +
       'whole entry is removed; pass lang (en / zh-hans / zh-hant or en / zh-hans / zh-hant) to remove only that language. ' +
@@ -2653,6 +2720,7 @@ const tools = [
   },
   {
     name: 'term_names_batch',
+    title: '批量设置术语名',
     description:
       'Batch-set multilingual display names for many WP terms in one call (POST /term-names/batch). Body shape: ' +
       '{"category":{"<slug>":{"<lang>":"<name>",...}},"post_tag":{...}} — pass categories and/or tags. Merge semantics ' +
@@ -2688,6 +2756,7 @@ const tools = [
   },
   {
     name: 'author_names_list',
+    title: '作者名列表',
     description:
       'List the multilingual display names for all WP authors (GET /author-names): configured per-language names plus ' +
       'the original display_names. Read-only.',
@@ -2704,6 +2773,7 @@ const tools = [
   },
   {
     name: 'author_name_get',
+    title: '查询作者名',
     description:
       'Read the multilingual display names of ONE WP author (GET /author-names/{id}): returns display_name (original) ' +
       'plus the configured per-language names. Read-only.',
@@ -2723,6 +2793,7 @@ const tools = [
   },
   {
     name: 'author_name_set',
+    title: '设置作者名',
     description:
       'Set (UPSERT) the multilingual display names of ONE WP author — PUT /author-names/{id} with ' +
       '{"names":{"en":"John Doe","zh-hans":"张三"}}. Idempotent partial update; an EMPTY STRING ("") for a language ' +
@@ -2749,6 +2820,7 @@ const tools = [
   },
   {
     name: 'author_name_delete',
+    title: '删除作者名',
     description:
       'Delete the multilingual display names of ONE WP author (DELETE /author-names/{id}). Without lang the whole entry ' +
       'is removed; pass lang (en / zh-hans / zh-hant or en / zh-hans / zh-hant) to remove only that language. The WP user ' +
@@ -2775,6 +2847,7 @@ const tools = [
   },
   {
     name: 'author_names_batch',
+    title: '批量设置作者名',
     description:
       'Batch-set multilingual display names for many WP authors in one call (POST /author-names/batch). Body shape: ' +
       '{"authors":{"<id>":{"<lang>":"<name>",...}}} — author ids are numeric strings. Merge semantics per author (empty ' +
@@ -2802,6 +2875,7 @@ const tools = [
   // ---------- wechat backend read-back & progress reconciliation ----------
   {
     name: 'wechat_status',
+    title: '微信公众号状态',
     description:
       'Read the WeChat official-account backend: the draft box (draft/batchget — media_id + titles) and the mass-sent list ' +
       '(freepublish/batchget — article_id + titles). Read-only. Requires WECHAT_APP_ID/SECRET in the site .env and the ' +
@@ -2821,6 +2895,7 @@ const tools = [
   },
   {
     name: 'wechat_stats',
+    title: '微信公众号统计',
     description:
       'Read official-account statistics from the WeChat backend (datacube/*, served WITHOUT the /cgi-bin/ prefix — ' +
       'the /cgi-bin/datacube/* variant is blocked by the egress proxy in this environment). Returns: user growth ' +
@@ -2869,6 +2944,7 @@ const tools = [
   },
   {
     name: 'wechat_sync_progress',
+    title: '公众号同步进度',
     description:
       'Reconcile the channel_plan calendar with the real WeChat backend and auto-fix the DB: draft rows whose media_id is ' +
       'missing from the draft box and not found in the publish list are rolled back to todo (draft_ids cleared); draft rows ' +
@@ -2893,6 +2969,7 @@ const tools = [
   },
   {
     name: 'wechat_mass_preview',
+    title: '公众号群发预览',
     description:
       'Send a draft (media_id from the draft box) to one user as a preview (message/mass/preview). Requires a verified ' +
       'account; pass openid (touser) or wxname (towxname). Use this to check layout before mass-sending.',
@@ -2920,6 +2997,7 @@ const tools = [
   },
   {
     name: 'wechat_mass_send',
+    title: '公众号群发',
     description:
       'Mass-send (PUSH to followers) a draft via message/mass/sendall (all followers or one tag) or message/mass/send ' +
       '(specific openids). Subscription accounts get 1 mass-send per day. After a successful send the draft is consumed ' +
@@ -2962,6 +3040,7 @@ const tools = [
   },
   {
     name: 'wechat_mass_status',
+    title: '公众号群发状态',
     description: 'Query a mass-send task status (message/mass/get, msg_id from wechat_mass_send).',
     inputSchema: z.object({
       msg_id: z.number().describe('mass-send task msg_id'),
@@ -2980,6 +3059,7 @@ const tools = [
   },
   {
     name: 'wechat_article_delete',
+    title: '删除公众号文章',
     description:
       'Delete a published article (freepublish/delete, article_id from wechat_status published). IRREVERSIBLE — verify the ' +
       'article_id first; index (1-based) deletes one article of a multi-article message, omit to delete the whole message.',
@@ -3009,6 +3089,7 @@ const tools = [
   },
   {
     name: 'wechat_draft_publish',
+    title: '发布公众号草稿',
     description:
       'Publish a draft box media_id to the account homepage via freepublish/submit (NO push to followers — the draft is ' +
       'consumed and moves to the published list, where it is visible in the account homepage). Use for the "发布" step; ' +
@@ -3030,6 +3111,7 @@ const tools = [
   },
   {
     name: 'wechat_draft_update',
+    title: '更新公众号草稿',
     description:
       'Update ONE article inside a WeChat draft-box media_id (draft/update). Safety: draft/update REPLACES the whole ' +
       'article, so this tool first reads the current article from the draft box, merges ONLY the fields you pass and ' +
@@ -3072,6 +3154,29 @@ const tools = [
   },
 ];
 
+/**
+ * Canonical tool groupings — single source of truth for "which tool belongs to
+ * which domain". server.js aggregates the LIVE tool list through these matchers
+ * into the server instructions, so the group listing never drifts from the
+ * actually-registered tools. Order matters: first matcher wins. A tool that
+ * matches nothing lands in "Uncategorized" and needs a rule added here.
+ */
+const TOOL_GROUPS = [
+  { group: 'Workspace & Site', match: /^(workspace_use|site_|db_|diagnose_site)/ },
+  {
+    group: 'Content authoring & gate',
+    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|check_article|check_translation|translation_glossary_get|wp_post_get)/,
+  },
+  { group: 'Publishing (WordPress)', match: /^publish_/ },
+  { group: 'Search inclusion & analytics', match: /^(search_|webmaster_)/ },
+  { group: 'AI visibility monitoring', match: /^(monitor_|report_write)/ },
+  { group: 'Cross-platform syndication', match: /^(channel_|juejin_|csdn_|wechat_)/ },
+  { group: 'Multi-language term/author names', match: /^(term_name|term_names|author_name|author_names)/ },
+  { group: 'Planning & content calendar', match: /^plan_/ },
+  { group: 'Media & assets', match: /^image_/ },
+  { group: 'Utility', match: /^util_/ },
+];
+
 const registry = new Map(tools.map((tool) => [tool.name, tool]));
 
-module.exports = { tools, registry };
+module.exports = { tools, registry, TOOL_GROUPS };

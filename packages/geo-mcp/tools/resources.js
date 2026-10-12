@@ -21,22 +21,40 @@
  */
 
 const t = require('@tengence/geo-sdk');
+const { LANG_LIST } = require('./languages');
 
-/** Only these languages are exposed as glossary resources. */
-const GLOSSARY_LANGS = ['zh-hans', 'en', 'zh-hant'];
+/** Only these languages are exposed as glossary resources (shared language constant). */
+const GLOSSARY_LANGS = LANG_LIST;
 
-/** Scrub a loaded site: drop credential-bearing fields (env, envPath) and internals. */
+/** Non-secret subset of site.yaml (whitelist). */
+function safeSiteFields(site) {
+  return { domain: site.domain || null, lang: site.lang || null };
+}
+
+/** Non-secret subset of wordpress.yaml (whitelist). */
+function safeWpFields(wp) {
+  return { host: wp.host || null, type: wp.type || null };
+}
+
+/**
+ * Whitelist a loaded site for resource exposure — only fields known to be
+ * non-secret are kept (domain/lang; wordpress host/type). Credentials (.env:
+ * env/envPath) and any custom secret dropped into site.yaml / wordpress.yaml
+ * are never included: this is a whitelist, not a blacklist subtraction.
+ */
 function siteSummary(loaded) {
   const site = (loaded && loaded.site && loaded.site.site) || {};
-  const wordpress = (loaded && loaded.wordpress) || {};
+  const wp = (loaded && loaded.wordpress) || {};
+  const safeSite = safeSiteFields(site);
+  const safeWp = safeWpFields(wp);
   return {
     siteKey: loaded.siteKey,
     siteDir: loaded.siteDir,
     configDir: loaded.configDir,
-    domain: site.domain || null,
-    lang: site.lang || null,
-    site: site,
-    wordpress: wordpress, // non-secret wordpress config (host/type), no credentials
+    domain: safeSite.domain,
+    lang: safeSite.lang,
+    site: safeSite,
+    wordpress: safeWp,
   };
 }
 
@@ -136,12 +154,18 @@ const resourceTemplates = [
     },
     read(_uri, variables) {
       const name = String(variables.name || '');
+      let text;
+      try {
+        text = readStandardText(name);
+      } catch (e) {
+        throw new Error(`Unknown standard "${name}". Available standards are listed via geo://standard-index.`);
+      }
       return {
         contents: [
           {
             uri: `geo://standard/${name}`,
             mimeType: 'text/markdown',
-            text: readStandardText(name),
+            text,
           },
         ],
       };
@@ -167,7 +191,12 @@ const resourceTemplates = [
     },
     read(_uri, variables) {
       const key = String(variables.key || '');
-      const loaded = t.site.loadSite(key);
+      let loaded;
+      try {
+        loaded = t.site.loadSite(key);
+      } catch (e) {
+        throw new Error(`Unknown site "${key}". Sites are listed via geo://sites.`);
+      }
       return {
         contents: [
           {

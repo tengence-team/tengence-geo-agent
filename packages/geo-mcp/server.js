@@ -11,35 +11,42 @@
  *   - HTTP  : bin/geo-mcp-http.js (any remote caller, bearer-token protected)
  */
 
-const { tools } = require('./tools/registry');
+const { tools, TOOL_GROUPS } = require('./tools/registry');
 const { prompts } = require('./tools/prompts');
 const { fixedResources, resourceTemplates } = require('./tools/resources');
 
 /**
- * Server-level instructions (MCP `Implementation.instructions`): the protocol's
- * endorsed mechanism for grouping tools and steering how a client uses them.
+ * Build the server-level instructions (MCP `Implementation.instructions`): the
+ * protocol's endorsed mechanism for grouping tools and steering how a client
+ * uses them. The TOOL GROUPS listing is aggregated from the registry's TOOL_GROUPS
+ * matchers against the LIVE tool list, so it can never drift from what is really
+ * registered (no hand-maintained tool inventory here).
  * Kept lean on purpose — deep rules live in resources (geo://standard/*) loaded
  * on demand, not here, to avoid burning context.
  */
-const INSTRUCTIONS = [
-  'You are the Tengence GEO/SEO content engine MCP server. The work root is NOT assumed: call workspace_use once per environment, then operate on the bound site.',
-  '',
-  'TOOL GROUPS (read each tool description before calling):',
-  '- Workspace/Site: workspace_use, site_init, site_list, site_status, diagnose_site, site_geo_plan_skill, db_status.',
-  '- Content authoring & gate: article_draft -> write body -> check_article; article_ingest; check_translation; translation_glossary_get; article_export.',
-  '- Publishing (WordPress): publish_draft, publish_from_db, publish_daily, publish_update_article, publish_update_fields.',
-  '- Search inclusion: search_submit_gsc / search_submit_indexnow / search_submit_baidu, search_gsc_stats / search_gsc_inspect, webmaster_bing_*.',
-  '- AI monitoring: monitor_run, monitor_report, report_write.',
-  '- Cross-platform syndication: channel_list / channel_publish / channel_plan_* / channel_schedule_* / channel_taxonomy_* (platforms: wechat official API; juejin & csdn cookie-gated).',
-  '- Multi-language term/author names: term_name_*, author_name_* (WordPress category/tag/author display names).',
-  '- Reference data: read via resources geo://standard/*, geo://site/*, geo://glossary/* — standards are NOT a system prompt; load only what a task needs.',
-  '',
-  'CANONICAL PIPELINE for a new article:',
-  'workspace_use -> site_init (if no site) -> article_draft(type, topic) -> (author body following the brief) -> check_article -> article_ingest -> publish_draft.',
-  'For multi-language, also run check_translation + translation_glossary_get, then publish with language codes zh-hans | en | zh-hant only.',
-  '',
-  'WHEN NOT TO CALL: do not call check_article on a translation row (translation rows skip the zh writing gate); do not guess a workspace or site — when multiple sites exist, pass an explicit site argument; publishing and mass-send require explicit user confirmation before executing.',
-].join('\n');
+function buildInstructions(toolsList) {
+  const groups = TOOL_GROUPS.map((g) => {
+    const names = toolsList.filter((t) => g.match.test(t.name)).map((t) => t.name);
+    return `- ${g.group}: ${names.join(', ')}`;
+  }).join('\n');
+  const uncategorized = toolsList
+    .filter((t) => !TOOL_GROUPS.some((g) => g.match.test(t.name)))
+    .map((t) => t.name);
+  const uncategorizedLine = uncategorized.length ? `\n- Uncategorized: ${uncategorized.join(', ')}` : '';
+  return [
+    'You are the Tengence GEO/SEO content engine MCP server. The work root is NOT assumed: call workspace_use once per environment, then operate on the bound site.',
+    '',
+    'TOOL GROUPS (read each tool description before calling):',
+    groups + uncategorizedLine,
+    '- Reference data: read via resources geo://standard/*, geo://site/*, geo://glossary/* — standards are NOT a system prompt; load only what a task needs.',
+    '',
+    'CANONICAL PIPELINE for a new article:',
+    'workspace_use -> site_init (if no site) -> article_draft(type, topic) -> (author body following the brief) -> check_article -> article_ingest -> publish_draft.',
+    'For multi-language, also run check_translation + translation_glossary_get, then publish with language codes zh-hans | en | zh-hant only.',
+    '',
+    'WHEN NOT TO CALL: do not call check_article on a translation row (translation rows skip the zh writing gate); do not guess a workspace or site — when multiple sites exist, pass an explicit site argument; publishing and mass-send require explicit user confirmation before executing.',
+  ].join('\n');
+}
 
 /** Derive a readable display title from a snake_case tool name (fallback). */
 function humanize(name) {
@@ -77,7 +84,7 @@ async function createServer() {
   const server = new McpServer({
     name: 'tengence-geo-mcp',
     version: require('./package.json').version,
-    instructions: INSTRUCTIONS,
+    instructions: buildInstructions(tools),
   });
 
   for (const tool of tools) {
@@ -91,23 +98,15 @@ async function createServer() {
         annotations: tool.annotations,
       },
       async (args) => {
+        // Structured tools already return structuredContent from their run
+        // (registry okStructured); pass the result through untouched — no
+        // server-side re-parsing of the text payload.
         try {
-          const r = await tool.run(args || {});
-          // Structured results: when the tool opted in, mirror the parsed payload
-          // into structuredContent so clients can consume it without string parsing.
-          if (tool.structured && r && !r.isError && r.content && r.content[0] && r.content[0].type === 'text') {
-            let parsed;
-            try {
-              parsed = JSON.parse(r.content[0].text);
-            } catch (_) {
-              parsed = undefined;
-            }
-            if (parsed !== undefined) return { ...r, structuredContent: parsed };
-          }
-          return r;
+          return await tool.run(args || {});
         } catch (e) {
+          const message = e && e.message ? e.message : String(e);
           return {
-            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: e.message }, null, 2) }],
+            content: [{ type: 'text', text: JSON.stringify({ ok: false, error: message }, null, 2) }],
             isError: true,
           };
         }
@@ -189,4 +188,4 @@ async function bindFromClientRoots(server) {
   return null;
 }
 
-module.exports = { createServer, printStartupBanner, bindFromClientRoots, INSTRUCTIONS };
+module.exports = { createServer, printStartupBanner, bindFromClientRoots, buildInstructions };

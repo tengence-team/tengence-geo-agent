@@ -24,6 +24,13 @@ function msg(text) {
   return [{ role: 'user', content: { type: 'text', text } }];
 }
 
+/** Resource URI constants — single source of truth for template text. */
+const RES = {
+  articleWritingStandards: 'geo://standard/article-writing-standards',
+  skeletonFor: (type) => `geo://standard/templates/skeletons/${type}`,
+  researchBrief: 'geo://standard/templates/research-brief',
+};
+
 const prompts = [
   {
     name: 'write_geo_article',
@@ -49,8 +56,8 @@ const prompts = [
         description: '撰写一篇 GEO 文章的完整指引',
         messages: msg(
           `请产出一篇 GEO 文章。类型=article(${type})，语言=${language}，站点=${args.site || '(自动选择)'}。\n` +
-            `步骤：1) 读取标准 resource geo://standard/article-writing-standards，骨架 geo://standard/templates/skeletons/${type}，` +
-            `以及前置 research brief geo://standard/templates/research-brief；` +
+            `步骤：1) 读取标准 resource ${RES.articleWritingStandards}，骨架 ${RES.skeletonFor(type)}，` +
+            `以及前置 research brief ${RES.researchBrief}；` +
             `也可先调 article_draft(type=${type}, topic=${args.topic || ''}) 生成现成 brief。` +
             `2) 按骨架写 Markdown 正文，包含七个块：Summary、Key Takeaways、FAQ、Data Sources、Related Reading、Get Started、About。` +
             `3) 交付前内部先过 check_article 的 G1–G14 门禁，不通过就修订。` +
