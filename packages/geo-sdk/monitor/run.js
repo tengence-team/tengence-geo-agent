@@ -74,6 +74,7 @@ async function runMonitor({
   attempts,
   answerFn,
   store: storeImpl,
+  onProgress,
 } = {}) {
   if (!runId) throw new Error('runMonitor: missing runId (YYYYMMDD)');
   const cfg = loadMonitorConfig(site);
@@ -109,6 +110,14 @@ async function runMonitor({
   const impl = storeImpl || store;
   const modelSummaries = [];
   const allFlags = [];
+
+  // Optional progress reporting (MCP long-task progress), reported once per model.
+  let pStep = 0;
+  const progress = (detail) => {
+    if (typeof onProgress !== 'function') return;
+    pStep = Math.min(pStep + 1, providers.length);
+    onProgress({ step: pStep, total: providers.length, stage: '模型', detail, percent: Math.round((pStep / providers.length) * 100) });
+  };
 
   for (const provider of providers) {
     const model = modelOf(provider);
@@ -268,6 +277,7 @@ async function runMonitor({
       flagged: results.filter((r) => r.accuracy === 'flagged').length,
       avgScore: Math.round(results.reduce((s, r) => s + r.score, 0) / results.length),
     });
+    progress(`${provider.key} 完成`);
   }
 
   return { runId, models: modelSummaries, flags: allFlags };

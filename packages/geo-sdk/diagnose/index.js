@@ -147,11 +147,30 @@ function linksFallback(rootParsed, baseUrl, max) {
  *          evidence: { rootPage, robots, sitemap, dns, fingerprint, pages, probe404, … },
  *          checks: [...] }
  */
-async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep = true, maxRequests = 700 } = {}) {
+async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep = true, maxRequests = 700, onProgress } = {}) {
   if (!url) throw new Error('diagnose_site requires url');
   const parsed = siteKeyFromUrl(url);
   const key = siteKey || parsed.key;
   const S = loadSite(key, { autoInit: true, domain: parsed.domain });
+
+  // --- optional progress reporting (MCP long-task progress). Called once per main
+  //     phase with { step, total, stage, detail, percent }; safe to omit. ---
+  const STAGES = [
+    '抓取首页',
+    'robots/sitemap/dns/404 探测',
+    '首页解析与指纹',
+    '代表页采样',
+    'GEO/scale 探针与语言/资源',
+    '扩展探针',
+    '零请求计算与推导',
+    '合规检查与汇总',
+  ];
+  let pStep = 0;
+  const progress = (detail) => {
+    if (typeof onProgress !== 'function') return;
+    pStep = Math.min(pStep + 1, STAGES.length);
+    onProgress({ step: pStep, total: STAGES.length, stage: STAGES[pStep - 1], detail, percent: Math.round((pStep / STAGES.length) * 100) });
+  };
 
   resetRequestStats();
   const requestsUsed = () => getRequestStats().get + getRequestStats().head;
@@ -170,6 +189,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
   }
   evidence.rootPage = rootPage;
   const baseUrl = rootPage.finalUrl || url;
+  progress('确定基准 URL');
 
   // When a WAF hijacks the homepage (final response left the target host, e.g.
   // jumped to waf.xxx.com/verification), infrastructure probes (robots/sitemap/
@@ -208,6 +228,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
     ? evidence.robots.sitemaps
     : SITEMAP_CANDIDATES;
   evidence.sitemap = await probeSitemaps(sitemapCandidates, probeBase);
+  progress('robots.txt / sitemap / 404 / DNS 探测完成');
 
   // ---- homepage parse + fingerprint (needed early for link fallback) ----
   // 首页抓取失败时此处先置空，待代表页抓取完成后兜底（见 pages 段之后），
@@ -215,6 +236,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
   evidence.rootParsed = rootPage.error ? null : parsePage(rootPage.body, baseUrl);
   evidence.rootPageFallback = !!rootPage.error;
   evidence.fingerprint = fingerprint(rootPage.headers || {}, rootPage.body || '');
+  progress('解析首页与指纹');
 
   // ---- representative pages: sample, never crawl the whole site ----
   // priority: user-specified extraPages → sitemap cluster sample → homepage link fallback
@@ -245,6 +267,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
     });
   }
   evidence.pages = pages;
+  progress('代表页采样完成');
 
   // 首页抓取失败时用任一成功抓取页兜底 rootParsed，避免 GEO 单页检查全盘误报。
   if (!evidence.rootParsed) {
@@ -326,6 +349,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
     .map((h) => { try { return new URL('https://' + h).href; } catch { return null; } })
     .filter(Boolean)
     .slice(0, 2);
+  progress('GEO/scale 探针与语言/静态资源完成');
 
   // ---- extended probe pack (deep=true): parallel, bounded by the request budget.
   //      Every probe is HEAD-first / soft-fail; if the budget is nearly gone the
@@ -362,6 +386,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
     };
   }
   const deepEv = deepResults || {};
+  progress('扩展探针完成');
 
   // ---- zero-request computations (run regardless of deep; pure parsing/derivation) ----
   evidence.cnameChain = dnsInfo.cnameChain;
@@ -414,6 +439,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
       qaBlocks: qaBlocks(parsedPages),
     };
   }
+  progress('零请求计算与 GEO 推导完成');
 
   // ---- TTFB samples across repeated homepage fetches (for the stability check) ----
   evidence.ttfbSamples = [rootPage.ttfbMs, ...((deepEv.cdnHits && deepEv.cdnHits.samples) || []).map((s) => s.ttfbMs)].filter((v) => typeof v === 'number' && v > 0);
@@ -473,6 +499,7 @@ async function runDiagnosis({ url, siteKey, extraPages = [], maxPages = 4, deep 
 
   // ---- cookie flags (Set-Cookie from the final response) ----
   evidence.cookieFlags = parseCookieFlags(rootPage.rawCookies || []);
+  progress('合规检查与报告汇总');
 
   // ---- checks ----
   const reqHost = (() => {

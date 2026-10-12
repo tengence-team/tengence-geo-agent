@@ -121,7 +121,7 @@ async function del(key, { appId = DEFAULT_APP_ID() } = {}) {
  * @returns {Promise<object>} report:
  *   { ok, now, checked, due, results: [{platform, publish_time, status, detail}], skipped_today }
  */
-async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = DEFAULT_APP_ID() } = {}) {
+async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = DEFAULT_APP_ID(), onProgress } = {}) {
   const { publishToChannel } = require('../syndicate/channel');
   const schedule = await list({ appId });
   const day = localDay(now);
@@ -157,7 +157,21 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
   }
 
   const results = [];
+  // Optional progress reporting (MCP long-task progress), reported once per due
+  // platform as processing starts (safe to omit; continue branches can't skip it).
+  const totalPlatforms = Math.max(1, due.length);
+  let pStep = 0;
   for (const s of due) {
+    pStep += 1;
+    if (typeof onProgress === 'function') {
+      onProgress({
+        step: pStep,
+        total: totalPlatforms,
+        stage: '平台',
+        detail: `${s.platform} 发布处理中`,
+        percent: Math.round((pStep / totalPlatforms) * 100),
+      });
+    }
     const asDraft = AS_DRAFT_BY_PLATFORM[s.platform] === true;
     try {
       const next = await channel.nextDue(s.platform, { count: s.count || 1, register: !dryRun });

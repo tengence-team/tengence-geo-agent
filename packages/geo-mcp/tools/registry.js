@@ -832,13 +832,17 @@ const tools = [
       count: z.number().optional().describe('how many articles to promote in queue mode (default: wordpress.publish.per_day, usually 1)'),
       dry_run: z.boolean().optional().describe('report only, do not write'),
     }),
-    async run(args) {
+    async run(args, ctx) {
       const cliArgs = ['--site', cliSite(args)];
       if (args.slug) cliArgs.push('--slug', args.slug);
       if (args.count) cliArgs.push('--count', String(args.count));
       if (args.date) cliArgs.push('--date', args.date);
       if (args.dry_run) cliArgs.push('--dry-run');
+      // promote-daily runs as a synchronous child process (spawnSync), so no
+      // mid-run progress is observable; report start + end only.
+      if (ctx && ctx.onProgress) ctx.onProgress({ step: 1, total: 2, stage: '发布', detail: '开始执行 promote-daily', percent: 0 });
       const r = runCli('promote-daily', cliArgs);
+      if (ctx && ctx.onProgress) ctx.onProgress({ step: 2, total: 2, stage: '发布', detail: `promote-daily 退出码 ${r.code}`, percent: 100 });
       return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
     },
   },
@@ -1303,7 +1307,7 @@ const tools = [
       models: z.array(z.string()).optional().describe('subset of model keys'),
       layers: z.array(z.string()).optional().describe('subset of layers'),
     }),
-    async run(args) {
+    async run(args, ctx) {
       try {
         const S = withSite(args);
         const runId = args.run_id || new Date().toISOString().slice(0, 10).replace(/-/g, '');
@@ -1312,6 +1316,7 @@ const tools = [
           runId,
           models: args.models,
           layers: args.layers,
+          onProgress: ctx && ctx.onProgress,
         });
         return ok({ ok: true, run_id: runId, result: res });
       } catch (e) {
@@ -1610,7 +1615,7 @@ const tools = [
         .optional()
         .describe('total outbound request budget across the run, redirects counted (default 700; optional probes are skipped once exhausted)'),
     }),
-    async run(args) {
+    async run(args, ctx) {
       if (!args.url) return fail(new Error('diagnose_site requires url'));
       try {
         useWorkspace(args);
@@ -1621,6 +1626,7 @@ const tools = [
           maxPages: args.max_pages,
           deep: args.deep !== false,
           maxRequests: args.max_requests || 700,
+          onProgress: ctx && ctx.onProgress,
         });
         return ok(res);
       } catch (e) {
@@ -2352,10 +2358,10 @@ const tools = [
       dryRun: z.boolean().optional().describe('print the due plan only, no external calls, no writes'),
       site: siteField,
     }),
-    async run(args) {
+    async run(args, ctx) {
       try {
         withSite(args);
-        const res = await t.plan.channelSchedule.publishDue({ dryRun: !!args.dryRun, siteKey: args.site });
+        const res = await t.plan.channelSchedule.publishDue({ dryRun: !!args.dryRun, siteKey: args.site, onProgress: ctx && ctx.onProgress });
         return ok(res);
       } catch (e) {
         return fail(e);

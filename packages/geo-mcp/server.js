@@ -144,10 +144,12 @@ async function buildServer() {
             return await tasks.createTask(
               tasks.resolveCurrentAppId(),
               { name: tool.name },
-              () => tool.run(args || {})
+              // S-进度: the durable task gives workFn an onProgress callback which the
+              // long tool surfaces via its run(args, ctx) second argument.
+              (onProgress) => tool.run(args || {}, { onProgress })
             );
           }
-          return await tool.run(args || {});
+          return await tool.run(args || {}, {});
         } catch (e) {
           const message = e && e.message ? e.message : String(e);
           return {

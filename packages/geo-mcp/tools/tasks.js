@@ -99,9 +99,24 @@ async function createTask(appId, meta, workFn) {
     })
   );
 
+  // S-进度: bridge progress updates from the long-running work (SDK onProgress) to the
+  // durable task.progress + the resources/updated change notification. Fire-and-forget
+  // so progress reporting never blocks the task lifecycle. Phase cadence is low (a few
+  // per run: diagnose ~8 phases, monitor per-model, channel per-platform), so no throttling.
+  const onProgress = (p) => {
+    try {
+      t.db
+        .withConn((conn) => t.db.mcpTasks.update(conn, appId, taskId, { progress: JSON.stringify(p) }))
+        .then(() => taskNotify.publishTask(taskId))
+        .catch(() => {});
+    } catch {
+      /* progress reporting must never break the run */
+    }
+  };
+
   setImmediate(async () => {
     try {
-      const result = await workFn();
+      const result = await workFn(onProgress);
       await t.db.withConn((conn) =>
         t.db.mcpTasks.update(conn, appId, taskId, { status: 'completed', result: JSON.stringify(result) })
       );
