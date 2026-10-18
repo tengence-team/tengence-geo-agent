@@ -4,7 +4,7 @@
  * Locks in the MCP capability-surface refactor (Instructions / Prompts /
  * Resources / structuredContent / tool titles & groups) and the follow-up
  * hardening so they cannot silently regress:
- *   - 77 tools, all titled, no standards_* tools (standards are resources now)
+ *   - 78 tools, all titled, no standards_* tools (standards are resources now)
  *   - TOOL_GROUPS cover every tool (no Uncategorized), and buildInstructions
  *     lists every tool (the instructions listing never drifts from the live set)
  *   - batch-A tools carry structured:true
@@ -20,8 +20,8 @@ const { prompts } = require('../packages/geo-mcp/tools/prompts');
 const { fixedResources, resourceTemplates, GLOSSARY_LANGS } = require('../packages/geo-mcp/tools/resources');
 const { buildInstructions } = require('../packages/geo-mcp/server.js');
 
-test('registry: 77 tools, all titled, no standards_* tools', () => {
-  assert.equal(tools.length, 77);
+test('registry: 78 tools, all titled, no standards_* tools', () => {
+  assert.equal(tools.length, 78);
   assert.ok(tools.every((t) => !!t.title), 'every tool must have a title');
   assert.ok(!tools.some((t) => t.name.startsWith('standards_')), 'no legacy standards tools');
 });
