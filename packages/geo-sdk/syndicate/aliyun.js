@@ -437,7 +437,7 @@ async function publishArticle({
 
 /** Delete a draft. */
 async function deleteDraft(aid) {
-  const res = await request(`/articleDraft/deleteDraft?aid=${encodeURIComponent(aid)}`, { method: 'POST' });
+  const res = await request(`/articleDraft/deleteDraft?aid=${encodeURIComponent(aid)}`, { method: 'GET' });
   const u = unwrap(res);
   if (!u.ok) throw new Error(`Aliyun deleteDraft failed: ${u.code} ${u.msg}`);
   return u.data;

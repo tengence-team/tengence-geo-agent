@@ -189,11 +189,31 @@ async function createDraft(title, tagIds = [], categoryId = null, coverImage = '
   return request(url, { method: 'POST', headers: jHeaders('https://juejin.cn/editor/drafts/new') }, payload);
 }
 
+// Juejin's publish endpoint validates brief_content (简介) length and rejects
+// out-of-range values with err_no:2 参数错误 — empirically the accepted window
+// is [30, 150] characters (create/update do NOT validate; publish does). A
+// one-line "> **摘要**：..." of 155 chars, or a very short article, both fall
+// outside it, so clamp the brief into range before it is sent.
+const JUEJIN_BRIEF_MIN = 30;
+const JUEJIN_BRIEF_MAX = 150;
+
 // Extract brief content from blockquote
 function extractBrief(content) {
   const match = content.match(/^> \*\*摘要\*\*：(.+)$/m);
-  if (match) return match[1].trim();
-  return content.replace(/^#.+\n/, '').substring(0, 100).trim();
+  let brief = match ? match[1].trim() : content.replace(/^#.+\n/, '').substring(0, 100).trim();
+  if (brief.length > JUEJIN_BRIEF_MAX) {
+    brief = brief.slice(0, JUEJIN_BRIEF_MAX);
+  } else if (brief.length < JUEJIN_BRIEF_MIN) {
+    // Too short: pad from the body (the 摘要 line itself removed first so the
+    // brief does not repeat itself).
+    const body = content
+      .replace(/^> \*\*摘要\*\*：.*\n?/m, '')
+      .replace(/^#.+\n/, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    brief = `${brief} ${body}`.trim().slice(0, JUEJIN_BRIEF_MAX);
+  }
+  return brief;
 }
 
 // Drop the leading "# Title" H1 from a body markdown.
