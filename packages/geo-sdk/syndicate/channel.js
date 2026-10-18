@@ -45,6 +45,25 @@ const { articleUrl, appendUtm, rewriteMarkdownUtm, langFor } = require('./utm');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
 
+/**
+ * Normalize a platform failure into the standard result shape so the downstream
+ * recordPublish / channel_plan persistence can capture the REAL rejection reason
+ * (platform err_no/err_msg, stage, cover/tags context) instead of a generic string.
+ * Channels may return `error` as a string or an object {code, message, raw?}; also
+ * honor res.code/res.message. `context` (cover/tags) is lifted when present.
+ * @returns {{slug, ok:false, failed:true, stage, error:object, context?, detail, title}}
+ */
+function failResult(slug, res, title) {
+  const r = res || {};
+  const stage = r.stage || 'unknown';
+  let error = r.error;
+  if (typeof error === 'string') error = { message: error };
+  if (!error || typeof error !== 'object') {
+    error = { code: r.code, message: r.message || r.error || stage };
+  }
+  return { slug, ok: false, failed: true, stage, error, context: r.context, detail: res, title: title || r.title };
+}
+
 /** Export root: <siteDir>/data/channel-export/<platform>/<slug>.md */
 function exportDir(siteDir, platform) {
   return path.join(siteDir, 'data', 'channel-export', platform);
@@ -388,7 +407,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           });
           if (res.failed) {
             failed += 1;
-            results.push({ slug, ok: false, stage: res.stage, detail: res, title });
+            results.push(failResult(slug, res, title));
           } else {
             // expose articleId so the caller can record it in channel_plan.draft_ids.
             // `published` distinguishes a LIVE article from a mere draft — the publish
@@ -463,7 +482,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           });
           if (res.failed) {
             failed += 1;
-            results.push({ slug, ok: false, stage: res.stage, detail: res, title: article.title });
+            results.push(failResult(slug, res, article.title));
           } else {
             // identical shape to the juejin branch so channel_plan logging is uniform
             results.push({
@@ -514,7 +533,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           });
           if (res.failed) {
             failed += 1;
-            results.push({ slug, ok: false, stage: res.stage, detail: res, title: article.title });
+            results.push(failResult(slug, res, article.title));
           } else {
             // identical shape to the csdn branch so channel_plan logging is uniform
             results.push({
@@ -581,7 +600,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           });
           if (res.failed) {
             failed += 1;
-            results.push({ slug, ok: false, stage: res.stage, detail: res, title: article.title });
+            results.push(failResult(slug, res, article.title));
           } else {
             // identical shape to the csdn branch so channel_plan logging is uniform
             results.push({
@@ -764,7 +783,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
 
         if (res.failed) {
           failed += 1;
-          juejinResults.push({ slug: article.slug, ok: false, stage: res.stage, detail: res, title });
+          juejinResults.push(failResult(article.slug, res, title));
         } else {
           juejinResults.push({
             slug: article.slug,
@@ -831,7 +850,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
 
         if (res.failed) {
           failed += 1;
-          csdnResults.push({ slug: article.slug, ok: false, stage: res.stage, detail: res, title: article.title });
+          csdnResults.push(failResult(article.slug, res, article.title));
         } else {
           csdnResults.push({
             slug: article.slug,
@@ -878,7 +897,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
 
         if (res.failed) {
           failed += 1;
-          aliyunResults.push({ slug: article.slug, ok: false, stage: res.stage, detail: res, title: article.title });
+          aliyunResults.push(failResult(article.slug, res, article.title));
         } else {
           aliyunResults.push({
             slug: article.slug,
@@ -953,7 +972,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
 
         if (res.failed) {
           failed += 1;
-          tencentResults.push({ slug: article.slug, ok: false, stage: res.stage, detail: res, title: article.title });
+          tencentResults.push(failResult(article.slug, res, article.title));
         } else {
           tencentResults.push({
             slug: article.slug,

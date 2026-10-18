@@ -624,7 +624,7 @@ async function publishCsdn({
 
   if (publish && !resolvedTags.length) {
     console.log('❌ CSDN requires at least 1 tag to publish (400 请设置文章标签)');
-    return { failed: true, stage: 'tags', title };
+    return { failed: true, stage: 'tags', title, error: { code: 'CSDN_TAGS_REQUIRED', message: 'CSDN requires at least 1 tag to publish (400 请设置文章标签)' } };
   }
 
   // 封面：CSDN 只认自家图床，外链（博客特色图）必须先转存；已经是 CDN 的直接用。
@@ -665,7 +665,13 @@ async function publishCsdn({
   const u = unwrap(resp);
   if (!u.ok) {
     console.log(`❌ CSDN save failed: ${JSON.stringify(resp, null, 2)}`);
-    return { failed: true, stage: 'save', title, error: u.msg, cookieExpired: u.cookieExpired };
+    return {
+      failed: true,
+      stage: 'save',
+      title,
+      error: { code: u.code != null ? String(u.code) : u.cookieExpired ? 'COOKIE_EXPIRED' : null, message: u.msg },
+      cookieExpired: u.cookieExpired,
+    };
   }
 
   const data = u.data || {};

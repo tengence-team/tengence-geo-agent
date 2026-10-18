@@ -1957,7 +1957,9 @@ const tools = [
                 status,
                 draftId: r.draftId || (r.detail && r.detail.draftId),
                 notes: status === 'published' ? (taxNote || devtoUrl) : null,
-                error: r.ok ? null : r.error || (r.detail && (r.detail.err || r.detail.message)) || r.stage,
+                error: r.ok ? null : r.error || (r.detail && (r.detail.err || r.detail.error || r.detail.message)) || r.stage,
+                stage: r.ok ? null : r.stage || (r.detail && r.detail.stage),
+                context: r.ok ? null : r.context || (r.detail && r.detail.context),
               });
             } catch (logErr) {
               // logging failure must not mask the publish result
@@ -2148,6 +2150,62 @@ const tools = [
           cookieExpired: !!res.cookieExpired,
         });
         return ok({ ok: true, drafts: shape(drafts), published: shape(published), counts: published.counts || {} });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_plan_status',
+    title: '渠道发布状态/错误查询',
+    description:
+      'Query channel_plan publishing-task rows with their OUTCOME + FAILURE DETAIL (read-only). Returns, per row: ' +
+      'status, error_code, error_message, error_stage, error_detail, error_context, error_raw, failed_at, draft_ids, ' +
+      'article_id, notes, updated_at. Use this to find WHY a dispatch failed — e.g. Juejin returns err_no/err_msg — ' +
+      'instead of the generic "publishToChannel returned not-ok" that the live publish log used to swallow. ' +
+      'Filter by platform / slug / status / lang; limit caps rows (default 50, ascending by id).',
+    inputSchema: z.object({
+      platform: z.string().optional().describe('filter to one platform (juejin / csdn / aliyun / tencent / devto / wechat)'),
+      slug: z.string().optional().describe('filter to one article slug (exact match, applied in-memory)'),
+      status: z.string().optional().describe('filter by status: failed | published | draft | reviewing | review_failed | deleted | todo | paused'),
+      lang: z.string().optional().describe('language filter (default zh-hans; devto=en)'),
+      limit: z.number().optional().describe('max rows (default 50)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const appId = Number(process.env.APP_ID || 1);
+        const rows = await t.db.withConn(async (conn) =>
+          t.db.channelPlan.list(conn, appId, {
+            platform: args.platform,
+            status: args.status,
+            lang: args.lang,
+            limit: args.limit || 50,
+          })
+        );
+        const filtered = args.slug ? rows.filter((r) => r.slug === args.slug) : rows;
+        return ok({
+          ok: true,
+          count: filtered.length,
+          rows: filtered.map((r) => ({
+            id: r.id,
+            platform: r.platform,
+            slug: r.slug,
+            lang: r.lang,
+            status: r.status,
+            draft_ids: r.draft_ids,
+            article_id: r.article_id,
+            error_code: r.error_code || null,
+            error_message: r.error_message || null,
+            error_stage: r.error_stage || null,
+            error_detail: r.error_detail || null,
+            error_context: r.error_context || null,
+            error_raw: r.error_raw || null,
+            failed_at: r.failed_at || null,
+            notes: r.notes || null,
+            updated_at: r.updated_at || null,
+          })),
+        });
       } catch (e) {
         return fail(e);
       }

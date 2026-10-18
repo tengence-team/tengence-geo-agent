@@ -512,7 +512,12 @@ async function publishJuejin({ mdFile = null, contentMd = null, title = null, pu
   const createResult = await createDraft(title, resolvedTagIds, resolvedCategoryId, coverImage);
   if (createResult.err_no !== 0) {
     console.log(`❌ Create failed: ${JSON.stringify(createResult, null, 2)}`);
-    return { failed: true, stage: 'create' };
+    return {
+      failed: true,
+      stage: 'create',
+      error: { code: createResult.err_no, message: createResult.err_msg, raw: JSON.stringify(createResult).slice(0, 400) },
+      context: { coverImage, tagIds: resolvedTagIds, categoryId: resolvedCategoryId },
+    };
   }
   const draftId = createResult.data.id;
   const articleId = createResult.data.article_id;
@@ -523,7 +528,14 @@ async function publishJuejin({ mdFile = null, contentMd = null, title = null, pu
   if (updateResult.err_no !== 0) {
     // fix: do NOT publish a draft whose body failed to save
     console.log(`❌ Body write failed: ${JSON.stringify(updateResult, null, 2)}`);
-    return { failed: true, stage: 'update', draftId, articleId };
+    return {
+      failed: true,
+      stage: 'update',
+      draftId,
+      articleId,
+      error: { code: updateResult.err_no, message: updateResult.err_msg, raw: JSON.stringify(updateResult).slice(0, 400) },
+      context: { coverImage, tagIds: resolvedTagIds, categoryId: resolvedCategoryId },
+    };
   }
   console.log(`✅ Body written!`);
   console.log(`🔗 Edit link: https://juejin.cn/editor/drafts/${draftId}`);
@@ -538,7 +550,14 @@ async function publishJuejin({ mdFile = null, contentMd = null, title = null, pu
       console.log(`🔗 Article link: https://juejin.cn/post/${publishedArticleId}`);
     } else {
       console.log(`❌ Publish failed: ${JSON.stringify(pubResult, null, 2)}`);
-      return { failed: true, stage: 'publish', draftId, articleId };
+      return {
+        failed: true,
+        stage: 'publish',
+        draftId,
+        articleId,
+        error: { code: pubResult.err_no, message: pubResult.err_msg, raw: JSON.stringify(pubResult).slice(0, 400) },
+        context: { coverImage, tagIds: resolvedTagIds, categoryId: resolvedCategoryId },
+      };
     }
   }
 

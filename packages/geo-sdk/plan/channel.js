@@ -224,22 +224,69 @@ async function filterUnpublished(platform, slugs) {
  *          notes?:string, error?:string}} rec
  * @returns {Promise<{ok:boolean, platform:string, slug:string, lang:string, status:string}>}
  */
+/** Local-time "YYYY-MM-DD HH:MM:SS" (matches the schema's strftime localtime default). */
+function nowLocalStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 async function recordPublish(rec) {
   if (!rec || !rec.platform || !rec.slug) throw new Error('recordPublish requires platform + slug');
   const appId = DEFAULT_APP_ID();
   const lang = rec.lang || defaultLangFor(rec.platform);
+
+  // Normalize the error into structured columns so a failed dispatch records the REAL
+  // platform rejection (Juejin err_no/err_msg, stage, cover/tags context) instead of a
+  // generic note. `rec.error` may be a string or an object {code, message, raw?, stage?, context?}.
+  let errorCode = null;
+  let errorMessage = null;
+  let errorStage = null;
+  let errorDetail = null;
+  const err = rec.error;
+  if (err) {
+    if (typeof err === 'string') {
+      errorMessage = err.slice(0, 1000);
+    } else if (typeof err === 'object') {
+      errorCode = err.code != null ? String(err.code) : null;
+      errorMessage = err.message != null ? String(err.message) : null;
+      errorStage = err.stage || null;
+      const detailObj = {};
+      if (err.raw !== undefined) detailObj.raw = err.raw;
+      // Context (cover image / resolved tag ids / category) may arrive inside the error
+      // object OR as a sibling rec.context (the executor lifts r.context from the channel
+      // module's return); take whichever is present.
+      const ctx = err.context !== undefined ? err.context : rec.context;
+      if (ctx !== undefined) detailObj.context = ctx;
+      if (Object.keys(detailObj).length) errorDetail = JSON.stringify(detailObj).slice(0, 2000);
+    }
+  }
+  errorStage = errorStage || rec.stage || null;
+
+  const status = rec.status || 'failed';
+  // Stamp failed_at only on a genuine failure that carries an error; keep a prior
+  // failed_at when re-recording the same failing row (do not overwrite with null).
+  const failedAt = status === 'failed' && (errorCode || errorMessage) ? nowLocalStamp() : rec.failed_at || null;
+
+  const notes = rec.notes || (errorMessage ? `error: ${errorMessage.slice(0, 200)}` : null);
+
   await withConn(async (conn) => {
     await repo.upsert(conn, appId, {
       platform: rec.platform,
       slug: rec.slug,
       lang,
       topic: rec.title || rec.slug,
-      status: rec.status || 'failed',
+      status,
       draft_ids: rec.draftId ? [rec.draftId] : [],
-      notes: rec.error ? `error: ${String(rec.error).slice(0, 200)}` : rec.notes || null,
+      notes,
+      error_code: errorCode,
+      error_message: errorMessage,
+      error_stage: errorStage,
+      error_detail: errorDetail,
+      failed_at: failedAt,
     });
   });
-  return { ok: true, platform: rec.platform, slug: rec.slug, lang, status: rec.status || 'failed' };
+  return { ok: true, platform: rec.platform, slug: rec.slug, lang, status };
 }
 
 /**

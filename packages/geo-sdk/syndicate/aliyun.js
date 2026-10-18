@@ -592,7 +592,7 @@ async function publishAliyun({
       ...result,
       failed: true,
       stage: 'publish',
-      error: pub.msg,
+      error: { code: pub.code, message: pub.msg },
       code: pub.code,
       publishGated: gated,
     };

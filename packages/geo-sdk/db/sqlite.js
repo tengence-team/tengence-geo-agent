@@ -108,6 +108,12 @@ function ensureSchema(db) {
   ensureColumnType(db, CHANNEL_PLAN, 'article_id', 'TEXT');
   // multilingual v1: translation-group UUID shared by the languages of one article
   ensureColumnType(db, TABLES.articles, 'translation_group', 'TEXT');
+  // v10: channel_plan error columns (real platform rejection detail, e.g. Juejin err_no/err_msg)
+  ensureColumnType(db, CHANNEL_PLAN, 'error_code', 'TEXT');
+  ensureColumnType(db, CHANNEL_PLAN, 'error_message', 'TEXT');
+  ensureColumnType(db, CHANNEL_PLAN, 'error_stage', 'TEXT');
+  ensureColumnType(db, CHANNEL_PLAN, 'error_detail', 'TEXT');
+  ensureColumnType(db, CHANNEL_PLAN, 'failed_at', 'TEXT');
 
   const version = Number(db.pragma('user_version', { simple: true }));
   if (version >= SCHEMA_VERSION) return { applied: false, version };

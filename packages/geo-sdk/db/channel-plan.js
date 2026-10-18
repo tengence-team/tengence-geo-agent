@@ -51,7 +51,20 @@ function normalizeRow(row) {
   }
   if (!Array.isArray(draftIds)) draftIds = [];
   const articleId = row.article_id != null ? String(row.article_id) : null;
-  return { ...row, draft_ids: draftIds, article_id: articleId };
+  // Parse the JSON error_detail (written by recordPublish on failure) into convenient
+  // sub-fields so consumers (channel_plan_status) get structured context + raw payload.
+  let errorRaw = null;
+  let errorContext = null;
+  if (row.error_detail && typeof row.error_detail === 'string') {
+    try {
+      const o = JSON.parse(row.error_detail);
+      errorRaw = o.raw || null;
+      errorContext = o.context || null;
+    } catch (_) {
+      // not valid JSON — the raw string is still returned via error_detail
+    }
+  }
+  return { ...row, draft_ids: draftIds, article_id: articleId, error_raw: errorRaw, error_context: errorContext };
 }
 
 /**
@@ -115,6 +128,7 @@ async function upsert(conn, appId, row) {
       `UPDATE ${CHANNEL_PLAN}
          SET period = ?, topic = ?, weekday = ?, status = ?, draft_ids = ?,
              notes = ?, schedule_at = ?,
+             error_code = ?, error_message = ?, error_stage = ?, error_detail = ?, failed_at = ?,
              updated_at = NOW()
        WHERE app_id = ? AND id = ?`,
       [
@@ -125,6 +139,11 @@ async function upsert(conn, appId, row) {
         draftJson,
         row.notes !== undefined ? row.notes : existing.notes,
         row.schedule_at !== undefined ? row.schedule_at : existing.schedule_at,
+        row.error_code !== undefined ? row.error_code : existing.error_code,
+        row.error_message !== undefined ? row.error_message : existing.error_message,
+        row.error_stage !== undefined ? row.error_stage : existing.error_stage,
+        row.error_detail !== undefined ? row.error_detail : existing.error_detail,
+        row.failed_at !== undefined ? row.failed_at : existing.failed_at,
         appId,
         existing.id,
       ]
@@ -133,8 +152,9 @@ async function upsert(conn, appId, row) {
   }
   const [result] = await conn.query(
     `INSERT INTO ${CHANNEL_PLAN}
-       (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids, notes, schedule_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (app_id, platform, slug, lang, period, topic, weekday, status, draft_ids, notes, schedule_at,
+        error_code, error_message, error_stage, error_detail, failed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     [
       appId,
       row.platform,
@@ -147,6 +167,11 @@ async function upsert(conn, appId, row) {
       draftJson,
       row.notes || null,
       row.schedule_at || null,
+      row.error_code || null,
+      row.error_message || null,
+      row.error_stage || null,
+      row.error_detail || null,
+      row.failed_at || null,
     ]
   );
   return { id: Number(result.insertId), action: 'insert' };

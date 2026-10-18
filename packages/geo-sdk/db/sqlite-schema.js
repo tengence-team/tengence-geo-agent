@@ -80,7 +80,14 @@ const MCP_TASKS = 'tengence_geo_mcp_tasks';
 // Workspace-local durable state for the geo-mcp MCP Tasks extension (long-running
 // tools publish_daily / monitor_run / diagnose_site / channel_publish_due):
 // one row = one task handle (app_id multi-tenant, official Task status vocabulary).
-const SCHEMA_VERSION = 9;
+//
+// v10 (2026-10-18): channel_plan gains 5 error columns — error_code / error_message /
+// error_stage / error_detail(JSON) / failed_at — so a failed multi-platform dispatch
+// records the real platform rejection (e.g. Juejin err_no/err_msg) instead of a generic
+// "publishToChannel returned not-ok". Pure ADDITIVE (5 nullable TEXT columns); the
+// existing DBs get them via ensureColumnType (idempotent ALTER) and fresh DBs via the
+// DDL above.
+const SCHEMA_VERSION = 10;
 
 /**
  * channel_plan v7 DDL template (workspace-local publishing TASK table).
@@ -111,6 +118,11 @@ CREATE TABLE IF NOT EXISTS ${tableName} (
   draft_ids TEXT,
   article_id TEXT,
   notes TEXT,
+  error_code TEXT,
+  error_message TEXT,
+  error_stage TEXT,
+  error_detail TEXT,
+  failed_at TEXT,
   schedule_at TEXT,
   created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
   updated_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),

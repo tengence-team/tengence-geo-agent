@@ -493,7 +493,7 @@ async function publishTencent({
 
   if (problems.length) {
     console.log(`❌ 腾讯云投稿前校验未通过：\n   - ${problems.join('\n   - ')}`);
-    return { failed: true, stage: 'validate', error: problems.join('; '), title, titleTrimmed };
+    return { failed: true, stage: 'validate', error: { message: problems.join('; ') }, title, titleTrimmed };
   }
 
   if (dryRun) {
@@ -562,7 +562,7 @@ async function publishTencent({
     };
   } catch (e) {
     console.log(`❌ Tencent Cloud publish failed: ${e.message}`);
-    return { ...result, failed: true, stage: 'publish', error: e.message };
+    return { ...result, failed: true, stage: 'publish', error: { code: e.code != null ? String(e.code) : null, message: e.message }, context: { coverUrl, tagIds: resolvedTagIds } };
   }
 }
 

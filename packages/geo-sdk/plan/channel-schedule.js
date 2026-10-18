@@ -43,6 +43,28 @@ const channel = require('./channel'); // nextDue / recordWechatIssue / recordPub
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
 
 /**
+ * Collect the REAL per-article failure reasons from a publishToChannel result so the
+ * unified executor can echo them immediately (instead of a generic "not-ok"). Each
+ * failed result carries `error` (object {code, message}) + `stage` from
+ * syndicate/channel.failResult; fall back to the raw detail for older shapes.
+ */
+function collectPublishErrors(pub) {
+  const all = (pub && pub.results) || [];
+  const failed = all.filter((r) => !r.ok);
+  if (!failed.length) return pub && pub.error ? pub.error : 'publishToChannel returned not-ok';
+  return {
+    summary: `${failed.length} of ${all.length} failed`,
+    platform: pub && pub.platform,
+    errors: failed.map((r) => ({
+      slug: r.slug,
+      stage: r.stage || (r.detail && r.detail.stage),
+      error: r.error || (r.detail && (r.detail.err || r.detail.error || r.detail.message)) || r.stage,
+      context: r.context || (r.detail && r.detail.context),
+    })),
+  };
+}
+
+/**
  * Fire-window in minutes: a slot whose publish_time is within ±FIRE_WINDOW_MIN of
  * `now` is due. The external ticker granularity drives this:
  *   - Doubao cron jobs have a hard MINIMUM interval of 1 hour (minExecInterval
@@ -196,7 +218,9 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
       const fired = { platform: s.platform, publish_time: s.publish_time, count: s.count, asDraft, ok: !!pub.ok };
       if (!pub.ok) {
         fired.status = 'failed';
-        fired.detail = pub.error || 'publishToChannel returned not-ok';
+        // Surface the REAL per-article failure reasons (platform err_no/err_msg, stage,
+        // cover/tags context) instead of a generic "not-ok".
+        fired.detail = collectPublishErrors(pub);
         results.push(fired);
         continue;
       }
@@ -248,7 +272,9 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
               status,
               draftId: r.draftId || (r.detail && r.detail.draftId),
               notes: status === 'published' ? taxNote : null,
-              error: r.ok ? null : r.error || (r.detail && (r.detail.err || r.detail.message)) || r.stage,
+              error: r.ok ? null : r.error || (r.detail && (r.detail.err || r.detail.error || r.detail.message)) || r.stage,
+              stage: r.ok ? null : r.stage || (r.detail && r.detail.stage),
+              context: r.ok ? null : r.context || (r.detail && r.detail.context),
             });
           } catch (logErr) {
             console.error('[channel_publish_due] recordPublish failed:', logErr.message);
