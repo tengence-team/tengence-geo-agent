@@ -144,7 +144,24 @@ function check({ platform, title, body }) {
     //     unrestricted when maxBrandLinks < 0 (「相关阅读」/ 引用不限条数)
     // Third-party citations are never counted.
     const el = rw.externalLinks;
-    if (el && el.maxBrandLinks != null) {
+    if (el && el.mode === 'none') {
+      // Zero-link hard rule (CSDN 2026-10-27): ANY hyperlink in the body is an
+      // error. Images (<img> / ![alt](…)) are explicitly exempt — CSDN keeps them,
+      // so they must not trip this check.
+      const noImg = String(b)
+        .replace(/!\[[^\]]*\]\([^)]*\)/g, '') // drop image markdown first
+        .replace(/<img\b[^>]*>/gi, ''); // drop <img> tags
+      const hasLink =
+        /(?<!\!)\[[^\]]+\]\([^)]*\)/.test(noImg) || // markdown hyperlink (not image)
+        /https?:\/\/[^\s)"'<>]+/.test(noImg) || // bare URL
+        /<a\s[^>]*href/i.test(noImg); // HTML anchor
+      if (hasLink) {
+        errors.push(
+          'CSDN 禁止任何链接（含站内文章页、第三方引用、markdown 链接、裸 URL、<a> 标签）：' +
+          '请删除全部链接，相关阅读改为纯文本罗列标题、数据来源仅留出处名（图片保留）'
+        );
+      }
+    } else if (el && el.maxBrandLinks != null) {
       const pats = Array.isArray(el.brandDomainPatterns) ? el.brandDomainPatterns : [];
       const urls = String(b).match(/https?:\/\/[^\s)"']+/g) || [];
       const brandHits = urls.filter((u) => pats.some((d) => d && u.includes(d)));

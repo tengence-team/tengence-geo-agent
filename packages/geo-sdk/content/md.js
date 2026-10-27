@@ -1359,6 +1359,37 @@ function removeImageByUrl(content, img) {
   return text.replace(new RegExp(`!\\[${escAlt}\\]\\(${esc}\\)`, 'g'), '');
 }
 
+/**
+ * Strip ALL hyperlinks from a markdown body, keeping images intact (2026-10-27).
+ * Single source of truth for the CSDN zero-link policy — used by both the
+ * server-side Mode A publish pipeline (publishCsdn) and the harness Mode B rewrite
+ * so they can never drift.
+ *   - markdown hyperlink  [text](url)     → text   (image markdown ![alt](url) kept)
+ *   - HTML anchor         <a ...>text</a> → text
+ *   - bare URL            https://…       → removed
+ *   - image markdown/HTML ![alt](url) / <img> → kept unchanged
+ * @param {string} md
+ * @returns {string}
+ */
+function stripAllLinks(md) {
+  if (!md) return md;
+  // 1) protect images so the passes below don't touch them
+  const imgs = [];
+  let s = String(md)
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, (m) => { imgs.push(m); return '\u0000IMG' + (imgs.length - 1) + '\u0000'; })
+    .replace(/<img\b[^>]*>/gi, (m) => { imgs.push(m); return '\u0000IMG' + (imgs.length - 1) + '\u0000'; });
+  // 2) markdown hyperlinks → visible text
+  s = s.replace(/\[[^\]]+\]\([^)]*\)/g, (m) => m.replace(/^\[([^\]]*)\]\(.*\)$/, '$1'));
+  // 3) HTML anchors → inner text
+  s = s.replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, '$1');
+  // 4) bare URLs → removed (collapse surrounding whitespace to a single space to
+  //    avoid a double-space gap or word-merge)
+  s = s.replace(/\s?https?:\/\/[^\s)"'<>]+\s?/g, ' ');
+  // 5) restore images
+  s = s.replace(/\u0000IMG(\d+)\u0000/g, (_, i) => imgs[Number(i)]);
+  return s;
+}
+
 module.exports = {
   siteDomain,
   isExternalUrl,
@@ -1421,4 +1452,6 @@ module.exports = {
   normalizeArticleUrlForCompare,
   articlePrefixIssues,
   ctaPipeIssues,
+  // 2026-10-27 CSDN zero-link policy: strip ALL hyperlinks, keep images
+  stripAllLinks,
 };

@@ -646,13 +646,16 @@ async function publishCsdn({
     }
   }
 
-  const contentHtml = mdToCsdnHtml(bodyMd);
+  // CSDN 零外链红线（2026-10-27）：出站前剥离正文全部超链接（图片保留）。
+  // 仅影响 CSDN payload，绝不改动 DB 原文。
+  const bodyMdStripped = mdmod.stripAllLinks(bodyMd);
+  const contentHtml = mdToCsdnHtml(bodyMdStripped);
   console.log(`📤 ${articleId ? 'Updating' : 'Creating'} on CSDN (${publish ? 'publish' : 'draft'})...`);
 
   const resp = await saveArticle({
     title,
     contentHtml,
-    contentMd: bodyMd,
+    contentMd: bodyMdStripped,
     tags: resolvedTags,
     description,
     publish,

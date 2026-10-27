@@ -47,21 +47,23 @@ rewrite:
     - "商务合作"
     - "点击购买"
   keepBlocks: ["关键要点", "常见问题", "数据来源", "相关阅读"]
-  # 站外品牌链接控制（来源：CSDN 审核「广告-诱导外链」）
-  # 原则：区分「编辑性延伸阅读」与「营销转化导流」——
-  #   前者（指向本站已发布文章正文）允许，后者（首页/产品页/定价/注册/控制台/CTA 落地页）一律禁止。
+  # 站外链接控制（来源：CSDN 审核「广告-诱导外链」）
+  # 2026-10-27 升级为「零外链」：正文禁止任何链接——含站内文章页、产品页、
+  # 第三方引用、markdown 链接、裸 URL、<a> 标签一律删除；仅保留图片（<img> /
+  # ![alt](图)）。相关阅读改为纯文本罗列标题，数据来源去 URL 仅留出处名。
   externalLinks:
-    # -1 = 不限制条数（『相关阅读』与引用皆不限）；≥0 则为上限
+    # mode: none = 零外链（CSDN 硬红线）。styleCheck 会据此对正文任何链接报 error；
+    # publishCsdn 管线也会在出站前 stripAllLinks() 兜底，保证 Mode A 直发也零链接。
+    mode: none
+    # 以下字段保留为历史/文档参考（mode=none 时不再区分品牌/转化，统一按零链接处理）：
     maxBrandLinks: -1
     brandDomainPatterns: ["tengence.com"]
     allowCitations: true
-    # 允许保留的本站链接：必须是文章正文页（编辑性引用），其余路径一律 error
     brandLinkAllowedPatterns:
       - "tengence.com/blog/article/"
       - "tengence.com/zh-hans/blog/article/"
       - "tengence.com/zh-hant/blog/article/"
       - "tengence.com/en/blog/article/"
-    # 禁止出现的转化/营销类路径或主机（命中即 error，即使数量未超上限）
     brandLinkDeniedPatterns:
       - "console."
       - "app."
@@ -76,9 +78,8 @@ rewrite:
       - "/product"
       - "/solution"
       - "/about"
-    # 位置建议：集中在文末（warnings 提示，不拦截）
     brandLinkTailOnly: true
-    note: "本站文章链接（/blog/article/）条数不限，建议集中在文末『相关阅读』；首页/产品/定价/注册/控制台等转化链接一律删除；第三方权威引用条数同样不限"
+    note: "CSDN 正文零外链：任何 https:// 链接、markdown [text](url)、<a> 标签均删除；相关阅读改为纯文本罗列标题，数据来源去 URL 仅留出处名；图片（<img> / ![alt](图)）保留。"
   body:
     minChars: 800
     maxChars: 20000
@@ -96,7 +97,7 @@ rewrite:
     - "首段交代背景与解决的问题"
     - "保留代码块/表格/数据来源"
     - "删除品牌营销块与 CTA（removeBlocks / forbiddenPhrases 全清空）"
-    - "本站链接仅限 /blog/article/ 文章页；相关阅读与第三方引用条数不限，转化链接（首页/产品/定价/注册/控制台）为 0"
+    - "零外链：删除正文全部链接（站内文章页、产品页、第三方引用、markdown 链接、裸 URL、<a> 标签）；相关阅读改为纯文本罗列标题、数据来源去 URL 仅留出处名；图片保留"
     - "标签 1-5 个精准"
   # 审核红线：来自 CSDN 创作中心审核规则（社区规范 / 反垃圾反广告）
   #   实测驳回文案：『广告-诱导外链』
@@ -112,7 +113,7 @@ rewrite:
         clause: "广告-诱导外链"
         text: "文章含营销推广、站外引流（转化类外链、CTA 引导）会被判『广告-诱导外链』"
         penalty: "审核不通过（status=6），重发仍触发"
-        do: "删除品牌营销块（关于通智云/关于我们）、立即行动 CTA；移除 console./contact/product 等转化外链；仅保留 /blog/article/ 文章页与第三方权威引用"
+        do: "删除品牌营销块（关于通智云/关于我们）、立即行动 CTA；删除正文全部链接（含站内文章页、第三方引用），相关阅读/数据来源改为纯文本罗列，图片保留"
     coverNote: "封面图必须转存到 CSDN 自家 CDN（i-blog.csdnimg.cn）；直接用外链作封面无效。重发（is_new=0 + article_id）须回传 coverImages，否则封面被清空。"
   notes: |
     - api: cookie —— 非官方 OpenAPI。CSDN 未开放写作类公开接口，走的是创作中心自身的
@@ -127,4 +128,4 @@ rewrite:
     - 封面图须转存 CSDN CDN，重发须回传 coverImages。
     - 标题可用『XX 怎么做？』句式（检索友好），但避免标题党。
     - 技术教程结构；保留代码/表格/数据来源。
-    - 文末可保留官网原文链接（本站 /blog/article/ 文章页，指向编辑性引用）。
+    - 零外链：正文不保留任何链接（含站内文章页与第三方引用）；相关阅读改为纯文本罗列标题、数据来源去 URL 仅留出处名，图片保留。
