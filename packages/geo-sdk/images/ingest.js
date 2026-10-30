@@ -138,4 +138,87 @@ async function ingestExternalImage(localPath, opts = {}) {
   return { wpMediaId, wpUrl, imageId: saved.id || null, reused: false };
 }
 
-module.exports = { ingestExternalImage };
+/**
+ * Register an already-uploaded, site-owned featured image into the own image library.
+ * ============================================================================
+ * 2026-10-30 fix (featured-image uniqueness recurrence): the owned-URL branch in
+ * publish/index.js's resolveFeaturedFromUrl resolved the WP media id but NEVER
+ * registered the image (no pHash, no tengence_geo_images row). That left every
+ * owned-domain featured image invisible to the perceptual-dedupe library, so two
+ * articles could end up with the same photo and the dedup would never catch it.
+ *
+ * This function closes that gap: it downloads the owned image, computes its pHash,
+ * and upserts a library row keyed by pHash (so one physical media == one row,
+ * regardless of CDN/webp-vs-jpg URL variation), then links the article. The
+ * pHash-based lookup doubles as a guard: if a near-identical image is already in
+ * the library (e.g. the very same photo acquired via Unsplash), we link to that
+ * existing row instead of creating a duplicate.
+ *
+ * Degrades gracefully: download / hash failure only logs and returns null — it
+ * must never break the publish of the article itself.
+ *
+ * @param {string} productionUrl  the owned (site-domain) image URL actually used
+ * @param {number} wpMediaId      resolved WP media id (from resolveWpMediaIdByUrl)
+ * @param {number} articleId      article id to link
+ * @param {object} [opts]
+ * @returns {Promise<number|null>} library image id, or null on degraded failure
+ */
+async function registerOwnedFeaturedImage(productionUrl, wpMediaId, articleId, opts = {}) {
+  if (!wpMediaId || !articleId) return null;
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const t = require('../index');
+  const {
+    computeImagePhash,
+    getImageByPhash,
+    saveImage,
+    saveArticleImage,
+  } = t.images;
+
+  const tmp = path.join(os.tmpdir(), `owned-feat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`);
+  let imageId = null;
+  try {
+    await t.content.http.download(productionUrl, tmp, { timeout: 30000 });
+    const phash = await computeImagePhash(tmp);
+
+    const dup = await getImageByPhash(phash, 8);
+    if (dup) {
+      imageId = dup.id;
+      // backfill/previous registrations may not have stamped wp_media_id; fix it so
+      // this row can participate in the dedup-hard-floor (ingestExternalImage only
+      // rejects near-dups when dup.wp_media_id is set).
+      if (!dup.wp_media_id && wpMediaId) {
+        const { createConnection } = require('../db/connection');
+        const conn = await createConnection();
+        try {
+          await conn.query(
+            'UPDATE tengence_geo_images SET wp_media_id = ?, image_hash = ? WHERE id = ?',
+            [wpMediaId, phash, dup.id]
+          );
+        } finally {
+          await conn.end();
+        }
+      }
+    } else {
+      const saved = await saveImage({
+        original_url: productionUrl,
+        source_platform: 'wordpress',
+        wp_media_id: wpMediaId,
+        image_hash: phash,
+        alt_text: (opts.alt || '').slice(0, 255),
+      });
+      imageId = saved.id;
+    }
+    await saveArticleImage(articleId, imageId, 'featured', 0);
+  } catch (e) {
+    // non-fatal: registration is a best-effort safety net, never block publish
+    console.error(`  ⚠️ registerOwnedFeaturedImage failed for ${productionUrl}: ${e.message}`);
+    return null;
+  } finally {
+    try { fs.unlinkSync(tmp); } catch {}
+  }
+  return imageId;
+}
+
+module.exports = { ingestExternalImage, registerOwnedFeaturedImage };

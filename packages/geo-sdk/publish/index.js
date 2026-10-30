@@ -269,6 +269,16 @@ async function resolveFeaturedFromUrl(url, articleId, dryRun = false) {
     };
   }
   const wpMediaId = await resolveWPMediaId(url);
+  // 2026-10-30 fix: register the owned featured image into the dedupe library so it
+  // is no longer invisible to perceptual dedupe (root cause of the cross-article
+  // featured-image duplication). Dry-run and missing-media degrade gracefully.
+  if (!dryRun && wpMediaId) {
+    try {
+      await s.t.images.registerOwnedFeaturedImage(url, wpMediaId, articleId, { alt: 'featured' });
+    } catch (e) {
+      s.logger(`  ⚠️ owned featured registration skipped (non-fatal): ${e.message}`);
+    }
+  }
   return { id: wpMediaId, productionUrl: url };
 }
 

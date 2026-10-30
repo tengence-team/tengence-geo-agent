@@ -500,5 +500,6 @@ module.exports = {
 
   // shared ingest core (batch 7 on 2026-09-14: shared by publish-from-db's
   // processImages and acquire)
-  ingestExternalImage: require('./ingest').ingestExternalImage
+  ingestExternalImage: require('./ingest').ingestExternalImage,
+  registerOwnedFeaturedImage: require('./ingest').registerOwnedFeaturedImage
 };
