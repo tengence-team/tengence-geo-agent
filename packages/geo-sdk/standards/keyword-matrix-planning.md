@@ -61,8 +61,9 @@ earns a slot.
 
 - With multiple product lines, distribute article coverage across all of them; no
   single line may monopolize a batch.
-- Record the intended share per line in the matrix (e.g. 35/36/29) and verify the
-  final counts before registration.
+- Record the intended share per line in the matrix (a count or percentage per
+  product line that sums to the batch total) and verify the final counts before
+  registration.
 
 ## 6. Volume / KD backfill
 
