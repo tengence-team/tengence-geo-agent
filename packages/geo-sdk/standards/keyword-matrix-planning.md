@@ -102,6 +102,11 @@ Backfill search volume and competition with a free tool before locking the matri
 - **P2**: long-tail nurture / future topics.
 - Evidence (GSC cluster match) may promote a row at review time; the promotion must
   be recorded in the matrix.
+- **Brand-term defense is an explicit responsibility**: each matrix must state who
+  owns the brand terms — this batch's new articles, or an earlier phase's published
+  pages. A new brand-keyword article is only allowed when no prior page already owns
+  the term (cannibalization); otherwise the batch's brand-mention internal links
+  should point at the owning page to push it into the top 3.
 
 ## 10. Deliverable artifacts — CSV schema & MD report
 
@@ -118,7 +123,7 @@ decision records.
 | | slug | yes | kebab-case, unique across ALL batches, shared by all languages | article_draft, WP |
 | | title | yes | primary-language writing topic (shared by translations) | H1 candidate |
 | | head keyword | yes | one primary keyword per article | title / lead |
-| | zh-hans gloss | yes | zh-hans rendering of the head keyword | translation keyword alignment |
+| | zh-hans gloss | yes | zh-hans rendering of the head keyword, **calibrated against GSC localized queries (per-language dimension)** | translation keyword alignment |
 | B Topic | intent | yes | I / C / N / T | skeleton routing |
 | | type | yes | T1–T7 | skeleton selection |
 | | word count | yes | primary-language length (site language gate) | length gate |
@@ -137,7 +142,10 @@ decision records.
 
 Hard rules: a row with any required field missing is **not registrable**; `slug`
 must be globally unique; a head-keyword + intent collision with any prior batch is
-a gate error; evidence columns must never be fabricated.
+a gate error; evidence columns must never be fabricated. The zh-hans gloss must be
+verified against GSC query data pulled **per language** — a head keyword whose
+translation misses the actually-searched localized term is a coverage gap, not a
+word choice.
 
 ### 10.2 MD report sections (for human review)
 
