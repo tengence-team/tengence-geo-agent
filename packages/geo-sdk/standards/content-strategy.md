@@ -100,6 +100,10 @@ the same time. Never write two versions.
 - **L2 / L3 long-tail terms**: cover them one article at a time; this is the bulk of the
   work.
 
+> The full execution spec — GSC-evidence selection, batch deduplication, multi-language
+> sizing, product-line balance, volume/KD backfill, internal-link planning, taxonomy and
+> priority tiers — is in `keyword-matrix-planning.md`.
+
 ## 4. Single-article template SOP
 
 ### 4.1 Template selection (T1–T7)

@@ -43,6 +43,7 @@
 # 规则来源（必须读，不要背诵）
 
 - 体裁优先级与铁律、内容红线 → `geo://standard/content-strategy`
+- 关键词矩阵完整执行规范（GSC 证据选词/去重/三语口径/均衡/量级回填/内链/标签/优先级）→ `geo://standard/keyword-matrix-planning`
 - 模板选择表（T1–T7 → 字数区间）→ `geo://standard/content-strategy`
 - 站点自身补充规则 → 以 `site-profile.md` 约定的补充文件为准
 

@@ -8,16 +8,18 @@
 ## Load order (progressive, do not load everything at once)
 
 1. `INDEX.md` (this file) — pick what you need
-2. `article-writing-standards.md` — when writing or gate-checking an article
-3. the matching skeleton in `templates/skeletons/`
-4. `templates/research-brief.md` — before writing the body
-5. `block-conventions.md` — when block parsing or rendering behaves unexpectedly
+2. `keyword-matrix-planning.md` — when planning a topic matrix (with `content-strategy`)
+3. `article-writing-standards.md` — when writing or gate-checking an article
+4. the matching skeleton in `templates/skeletons/`
+5. `templates/research-brief.md` — before writing the body
+6. `block-conventions.md` — when block parsing or rendering behaves unexpectedly
 
 ## Files
 
 | File | Contents | Status |
 |---|---|---|
 | `content-strategy.md` | Content strategy: formats ranked by AI-citation probability, dual-engine model, keyword-matrix method, production pipeline, three-level quality gates, refresh & retirement | done |
+| `keyword-matrix-planning.md` | Keyword-matrix execution spec: GSC-evidence selection, batch deduplication, multi-language sizing, product-line balance, volume/KD backfill, internal-link planning, taxonomy, priority tiers | done |
 | `article-writing-standards.md` | The writing execution spec: deliverable, body skeleton, front matter, citation and internal-link rules, content-quality bar, plus the G1–G14 editorial gates | done |
 | `search-engine-integration.md` | Search-engine integration: indexing baselines, domestic & overseas engines, automatic push channels, indexing-quality optimization, entity & authority signals | done |
 | `llm-visibility-monitoring.md` | LLM monitoring: AI-crawler policy, model priority lists, AI search engines, GEO visibility dimensions, content engineering for citability | done |
@@ -36,7 +38,7 @@ is the mirror of `harness/README.md` §6; keep the two in sync.
 
 | Consumer (L2/L3 asset) | Standards it reads |
 |---|---|
-| `harness/work-modes/topic-planning.md` | `content-strategy` |
+| `harness/work-modes/topic-planning.md` | `content-strategy`, `keyword-matrix-planning` |
 | `harness/work-modes/writing-gate.md` | `article-writing-standards`, `block-conventions`, `templates/research-brief`, `templates/skeletons/<type>` |
 | `harness/work-modes/publishing.md` | `content-platform-integration`, `block-conventions` |
 | `harness/work-modes/monitoring.md` | `llm-visibility-monitoring`, `search-engine-integration` |
