@@ -86,6 +86,10 @@ Backfill search volume and competition with a free tool before locking the matri
 - URL form is the site's same-language pattern (locale prefix + canonical path); no
   cross-language hops, no bare URLs.
 - Anchor text uses a natural keyword phrase of the target article, never "click here".
+- **Target by GSC evidence, not only by topic**: when prior-phase pages are live,
+  prioritize links toward the pages that actually rank (impressions / position /
+  clicks observed), and keep a keyword → single owning page map so the new batch
+  never opens a second target page for an already-owned term.
 
 ## 8. Taxonomy and labels
 
