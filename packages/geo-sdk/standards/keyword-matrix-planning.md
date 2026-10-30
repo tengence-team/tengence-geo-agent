@@ -102,3 +102,54 @@ Backfill search volume and competition with a free tool before locking the matri
 - **P2**: long-tail nurture / future topics.
 - Evidence (GSC cluster match) may promote a row at review time; the promotion must
   be recorded in the matrix.
+
+## 10. Deliverable artifacts — CSV schema & MD report
+
+A matrix ships as **two files with the same base name**: a CSV that drives the
+machine pipeline (registration, drafting, publishing, linking) and an MD report that
+a human reviews. The CSV is the single source of truth; the MD renders it plus the
+decision records.
+
+### 10.1 CSV schema (one row per article, primary-language authored)
+
+| Group | Field | Required | Meaning / values | Consumed by |
+|---|---|---|---|---|
+| A Identity | ID | yes | phase + sequence (A01…) | traceability, ordering |
+| | slug | yes | kebab-case, unique across ALL batches, shared by all languages | article_draft, WP |
+| | title | yes | primary-language writing topic (shared by translations) | H1 candidate |
+| | head keyword | yes | one primary keyword per article | title / lead |
+| | zh-hans gloss | yes | zh-hans rendering of the head keyword | translation keyword alignment |
+| B Topic | intent | yes | I / C / N / T | skeleton routing |
+| | type | yes | T1–T7 | skeleton selection |
+| | word count | yes | primary-language length (site language gate) | length gate |
+| | batch | yes | 1..N | scheduling |
+| | priority | yes | P0 / P1 / P2 | capacity planning |
+| C Product & publishing | product line | yes | routed product / capability (site supplement enum) | balance quota, CTA routing |
+| | brand-mention points | yes | ≥2 natural mentions (placement convention) | writing execution |
+| | category | yes | WP category (reuse existing first) | WP registration |
+| | tags | yes | ≤3: 1 product + 1–2 topic (whitelist) | WP registration |
+| D Evidence | GSC demand evidence | yes | observed query / impressions / position / clicks + window | selection, promotion audit |
+| | monthly volume | recommended | Keyword Planner measured range; "unknown" if none | volume assessment |
+| | competition | recommended | Keyword Planner tier; "unknown" if none | KD assessment |
+| E Dedup | dedup note | yes | differentiation from prior batches (replaced / merged / differentiated) | cannibalization gate |
+| F Internal links | internal link 1–3 | yes | slugs of 3 already-published articles | Related Reading |
+| | early-phase internal link | batches 2+ | slug of an already-published same-phase article | Related Reading |
+
+Hard rules: a row with any required field missing is **not registrable**; `slug`
+must be globally unique; a head-keyword + intent collision with any prior batch is
+a gate error; evidence columns must never be fabricated.
+
+### 10.2 MD report sections (for human review)
+
+| # | Section | Must contain |
+|---|---|---|
+| 1 | Overview | phase, total article count, language sizing (N authored × L translations), product-line quotas, batch cadence, GSC data window |
+| 2 | Categories & tags | category list, tag whitelist incl. additions for this phase, per-article tag rule |
+| 3 | Demand-evidence summary | Top-N GSC hits, how evidence drove selection / promotions |
+| 4 | Full matrix | the CSV rendered as a readable table |
+| 5 | Dedup notes | replaced / merged / differentiated dispositions + writing red lines |
+| 6 | Review & adjustment log | promotions / demotions / keyword swaps with date and basis (audit trail) |
+| 7 | Internal-link plan | rules, mapping statistics (machine-generated + human-checked), writing-time actions |
+| 8 | Volume / KD backfill | tool, location / language / currency scope, result summary, "unknown" marking |
+| 9 | Registration plan | batch scheduling, registration actions, confirmation status |
+| 10 | Risks & open items | unresolved decisions, dependencies, open questions |
