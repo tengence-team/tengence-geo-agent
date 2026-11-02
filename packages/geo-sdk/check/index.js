@@ -315,7 +315,13 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     ['Tengence misdescribed as "search engine"', prodAsEngine, prodAsEngine === 0],
     ['FAQ answers with A: prefix', badA, badA === 0],
     ['front-matter seo four fields', [hasSeoTitle, hasFocusKeyword, hasKeywords, mdl > 0].filter(Boolean).length + '/4', hasSeoTitle && hasFocusKeyword && hasKeywords && mdl > 0],
-    ['front-matter featured_image (featured-image hard check, §5-②)', hasFeaturedImage ? 'present' : 'missing', hasFeaturedImage],
+    // 5th element alwaysHard: the featured image is a content-completeness gate, not a
+    // legacy-format rule — a missing featured image means the live page has no cover.
+    // Re-publishing an article that already sits on WP must NOT let this row go soft
+    // (previously it was demoted with every editorial row when isPublished was true,
+    // which let plan-driven articles publish without a featured image). See the
+    // isPublished demotion loop below, which skips rows with the alwaysHard marker.
+    ['front-matter featured_image (featured-image hard check, §5-②)', hasFeaturedImage ? 'present' : 'missing', hasFeaturedImage, hasFeaturedImage, true],
     ['meta_description chars', mdl, mdl >= 165 && mdl <= 175],
     ['takeaway count (body/meta effective)', effTakeaways.length, effTakeaways.length >= 5],
     ['FAQ pair count (body/meta effective)', effFaq.length, effFaq.length >= 5],
@@ -339,8 +345,13 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // isPublished note). Reporting is preserved; the hard verdict is dropped so the row
   // can be re-published (translation_group, metadata fixes) without rewriting a body
   // that is already live. First-time publishes (no wp_post_id) are unaffected.
+  // Rows marked alwaysHard (5th element, currently the featured_image completeness
+  // gate) stay hard even when isPublished — a missing featured image means the live
+  // page has no cover, which is a real defect, not a legacy-format artifact.
   if (isPublished) {
-    for (const row of rows) row[3] = true;
+    for (const row of rows) {
+      if (!row[4]) row[3] = true;
+    }
   }
 
   // Soft warnings (no publish block, cleanup advice only; homepage/channel-level
