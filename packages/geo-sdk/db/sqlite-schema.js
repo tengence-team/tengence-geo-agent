@@ -446,6 +446,7 @@ CREATE INDEX IF NOT EXISTS idx_sqlite_aimg_article ON ${TABLES.articleImages} (a
 CREATE INDEX IF NOT EXISTS idx_sqlite_aimg_type ON ${TABLES.articleImages} (app_id, image_type);
 CREATE INDEX IF NOT EXISTS idx_sqlite_aimg_status ON ${TABLES.articleImages} (app_id, status);
 CREATE INDEX IF NOT EXISTS idx_sqlite_aimg_position ON ${TABLES.articleImages} (app_id, article_id, position_order);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sqlite_aimg_link ON ${TABLES.articleImages} (app_id, article_id, image_id, \`position\`);
 
 -- ========== 14. GEO monitor - raw answers ==========
 CREATE TABLE IF NOT EXISTS ${TABLES.geoMonitorAnswers} (

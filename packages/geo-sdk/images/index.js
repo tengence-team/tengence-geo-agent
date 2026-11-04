@@ -318,10 +318,19 @@ async function saveArticleImage(articleId, imageId, position = 'content', displa
   const conn = await getConnection();
   try {
     if (driver() === 'sqlite') {
+      // The table has no UNIQUE constraint on (article_id, image_id), so a bare
+      // ON CONFLICT(article_id, image_id) fails ("no PRIMARY KEY or UNIQUE constraint").
+      // Emulate a proper upsert: drop any existing (app_id, article_id, image_id, position)
+      // link first, then insert. This guarantees a single link row per slot and works
+      // regardless of whether the optional unique index exists.
+      await conn.query(
+        `DELETE FROM tengence_geo_article_images
+          WHERE app_id = ? AND article_id = ? AND image_id = ? AND \`position\` = ?`,
+        [appId(), articleId, imageId, position]
+      );
       await conn.query(
         `INSERT INTO tengence_geo_article_images (article_id, app_id, image_id, position, display_order)
-         VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT(article_id, image_id) DO UPDATE SET display_order = excluded.display_order`,
+         VALUES (?, ?, ?, ?, ?)`,
         [articleId, appId(), imageId, position, displayOrder]
       );
     } else {
