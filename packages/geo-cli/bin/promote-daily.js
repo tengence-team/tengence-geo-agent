@@ -215,8 +215,21 @@ async function promoteTranslations(slug, sourcePostId) {
         console.log(`    ⚠ 译文 ${row.lang} (wp${row.wp_post_id}) 不存在，跳过`);
         continue;
       }
-      if (before.status !== 'publish') {
-        await t.wp.posts.update(row.wp_post_id, { status: 'publish' }, { siteKey: SITE_KEY });
+      // Unified publish core: clamp → update → verify → per-language plan write-back.
+      const r = await t.publish.promoteToPublish(
+        { wp: t.wp, plan: t.plan },
+        {
+          postId: row.wp_post_id,
+          slug,
+          lang: row.lang,
+          siteKey: SITE_KEY,
+          domain: SITE.site.domain || 'tengence.com',
+          log: (m) => console.log(m),
+        },
+      );
+      if (!r.ok) {
+        console.log(`    ⚠ 译文 ${row.lang} (wp${row.wp_post_id}) 上线失败（仅记录）: ${r.reason}`);
+        continue;
       }
       // Dates last: any status/content write refreshes post_modified to now.
       if (srcDates) {
@@ -231,16 +244,13 @@ async function promoteTranslations(slug, sourcePostId) {
           { siteKey: SITE_KEY }
         );
       }
-      const after = await t.wp.posts.get(row.wp_post_id, '?_fields=id,slug,status,link', {
-        siteKey: SITE_KEY,
-      });
       done.push({
         lang: row.lang,
         wp_post_id: row.wp_post_id,
-        link: after && after.link,
-        status: after && after.status,
+        link: r.link,
+        status: 'publish',
       });
-      console.log(`    ✓ 译文同步上线 ${row.lang} (wp${row.wp_post_id}) → ${after && after.link}`);
+      console.log(`    ✓ 译文同步上线 ${row.lang} (wp${row.wp_post_id}) → ${r.link}`);
     } catch (e) {
       console.log(`    ⚠ 译文 ${row.lang} (wp${row.wp_post_id}) 上线失败（仅记录）: ${e.message}`);
     }
@@ -287,6 +297,8 @@ async function itemsFromSlugs(slugs) {
 /**
  * Promote one article — and every language version of its slug — through the full gate:
  * draft check → internal links → gate re-check → promote → translations → plan → push.
+ * The publish flip itself goes through the unified core t.publish.promoteToPublish
+ * (clamp → update → verify → per-language plan write-back), never hand-rolled here.
  *
  * @param {object} item {slug, wp_post_id, title, category, matrix_code, publish_order}
  * @param {{dryRun?:boolean, publishDate?:string|null}} opts
@@ -307,16 +319,28 @@ async function promoteOne(item, { dryRun = false, publishDate = null } = {}) {
   }
   if (!post || post.status === 'publish') {
     const reason = !post ? 'WP post does not exist' : 'already publish';
-    console.log(`    ⚠ ${reason}; marking the plan as published and skipping.`);
-    await t.plan.markPublished(item.slug, {
-      wpPostId: item.wp_post_id,
-      publishedUrl:
-        (post && post.link) ||
-        `https://www.${SITE.site.domain || 'tengence.com'}/blog/article/${item.slug}/`,
-    });
-    return { status: 'skipped', item, reason };
+    if (!post) {
+      console.log(`    ⚠ ${reason}; marking the plan as published and skipping.`);
+      await t.plan.markPublished(item.slug, {
+        wpPostId: item.wp_post_id,
+        publishedUrl:
+          `https://www.${SITE.site.domain || 'tengence.com'}/blog/article/${item.slug}/`,
+      }, { lang: 'zh-hans' });
+      return { status: 'skipped', item, reason };
+    }
+    // Source is already live. Its translations may still be parked (draft/future) —
+    // e.g. a partial run — so promote them too instead of returning early.
+    // (promoteTranslations routes each one through the unified core, which writes
+    // the per-language plan rows only after a verified publish.)
+    console.log(`    ⚠ ${reason}; checking & promoting translations`);
+    const translations = await promoteTranslations(item.slug, item.wp_post_id);
+    if (!translations.length) console.log(`    - 无译文行（或译文未入库）`);
+    return { status: 'skipped', item, url: post.link, translations, reason };
   }
-  if (post.status !== 'draft') {
+  // `future` = WP parked a future-dated "publish" as scheduled/hidden. It is a draft
+  // in disguise; run it through the same promote flow (status publish + clamped date
+  // below converts it to a real, visible publish).
+  if (!['draft', 'future'].includes(post.status)) {
     console.log(`    ✗ Abnormal status (${post.status}), skipping.`);
     return { status: 'skipped', item, reason: `abnormal status: ${post.status}` };
   }
@@ -355,41 +379,33 @@ async function promoteOne(item, { dryRun = false, publishDate = null } = {}) {
     return { status: 'skipped', item, reason: 'dry-run' };
   }
 
-    // step 5: promote (source first, then its translations — same run, same article)
-    try {
-      const promotePatch = { status: 'publish' };
-      if (publishDate) { promotePatch.date = publishDate; promotePatch.modified = publishDate; }
-      await t.wp.posts.update(item.wp_post_id, promotePatch, { siteKey: SITE_KEY });
-    } catch (e) {
-      console.log(`    ✗ Promote to publish failed: ${e.message}`);
-      return { status: 'skipped', item, reason: `promote to publish failed: ${e.message}` };
-    }
-    console.log(`    ✓ Promoted to publish`);
-
-    // Re-read: a draft's link is the ?p=ID form, only a published post exposes the
-    // canonical permalink (which now carries the language prefix, e.g. /zh-hans/...).
-    let liveLink = `https://www.${SITE.site.domain || 'tengence.com'}/blog/article/${item.slug}/`;
-    try {
-      const live = await t.wp.posts.get(item.wp_post_id, '?_fields=id,slug,status,link', {
+    // step 5: promote the SOURCE post through the unified publish core:
+    // clamp (past-or-now only) → update → verify the real WP status → per-language
+    // plan write-back. `future` sources are converted here too (their parked date
+    // is pre-read and clamped to now by the core).
+    const srcLang = item.lang || 'zh-hans';
+    const promoted = await t.publish.promoteToPublish(
+      { wp: t.wp, plan: t.plan },
+      {
+        postId: item.wp_post_id,
+        slug: item.slug,
+        lang: srcLang,
+        publishDate,
         siteKey: SITE_KEY,
-      });
-      if (live && live.link) liveLink = live.link;
-    } catch (e) {
-      console.warn(`    ⚠️ 读取 canonical link 失败，回退拼接 URL: ${e.message}`);
+        domain: SITE.site.domain || 'tengence.com',
+        log: (m) => console.log(m),
+      },
+    );
+    if (!promoted.ok) {
+      console.log(`    ✗ ${promoted.reason}`);
+      return { status: 'skipped', item, reason: promoted.reason };
     }
+    const url = promoted.link;
 
-    // step 5.1: translations go live together with the source
+    // step 5.1: translations go live together with the source (each through the
+    // same unified core — verified publish + its own per-language plan row)
     const translations = await promoteTranslations(item.slug, item.wp_post_id);
     if (!translations.length) console.log(`    - 无译文行（或译文未入库），仅上线源文`);
-
-    // step 6: write back the plan (queued → published)
-    const url = liveLink;
-    try {
-      await t.plan.markPublished(item.slug, { wpPostId: item.wp_post_id, publishedUrl: url });
-      console.log(`    ✓ Plan updated: ${item.slug} → published`);
-    } catch (e) {
-      console.warn(`    ⚠️ Plan write-back failed: ${e.message}`);
-    }
 
     // step 7: inclusion push (IndexNow: every language; Baidu: zh-hans only)
     await submitUrls([url, ...translations.map((x) => x.link)], url);

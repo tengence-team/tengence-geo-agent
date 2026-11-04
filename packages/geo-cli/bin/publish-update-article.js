@@ -560,15 +560,49 @@ async function main() {
 
   let result;
   try {
-    result = await t.wp.posts.update(postId, {
-      title,
-      content: htmlContent,
-      status: options.status,
-    });
+    // Future-dated posts: a bare status=publish update on a post whose post_date
+    // lies in the future gets coerced straight back to `future` by WP core. Clamp
+    // the slot to now for that conversion case only (normal re-publishes keep
+    // their original date). Unified with the promote core (2026-11-05).
+    const patch = { title, content: htmlContent, status: options.status };
+    if (options.status === 'publish') {
+      try {
+        const cur = await t.wp.posts.get(postId, '?_fields=id,status,date,date_gmt');
+        if (cur) {
+          const cand = cur.date_gmt
+            ? `${String(cur.date_gmt).trim().replace(' ', 'T')}Z`
+            : cur.date;
+          if (cand && t.publish.isFutureDate(cand)) {
+            const now = t.publish.formatLocalDate(new Date());
+            console.log(`  ⚠ Post is future-dated (${cur.date}); clamping the publish slot to now (${now})`);
+            patch.date = now;
+            patch.modified = now;
+          }
+        }
+      } catch (e) {
+        console.log(`  ⚠ Could not pre-read the post date (${e.message}); proceeding without a date`);
+      }
+    }
+    result = await t.wp.posts.update(postId, patch);
     console.log('  ✓ Article updated!');
   } catch (e) {
     console.log(`  ✗ Update failed: ${e.message}`);
     process.exit(1);
+  }
+
+  // Verify the REAL status after the write (2026-11-05 unification): WP can park a
+  // future-dated status=publish request as `future`; report it, never assume success.
+  if (options.status === 'publish') {
+    try {
+      const live = await t.publish.verifyPublished(t.wp, postId);
+      if (live.status && live.status !== 'publish') {
+        console.log(`  ⚠️ WARNING: WP reports status='${live.status}' (not publish) — the post is NOT live`);
+      } else if (live.status === 'publish') {
+        console.log(`  ✓ Verified live: WP status=publish${live.link ? ` → ${live.link}` : ''}`);
+      }
+    } catch (e) {
+      console.log(`  ⚠️ Could not verify the live status: ${e.message}`);
+    }
   }
 
   // meta is written separately via the plugin API (skipped when empty; keeping live

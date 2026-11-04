@@ -320,21 +320,11 @@ async function main() {
   const wpPostId = publishResult.id;
   console.log(`  ✅ WP post ID: ${wpPostId}`);
 
-  console.log('\n[5/7] Backfilling the article plan table...');
-  let planWrite;
-  if (options.status === 'publish') {
-    planWrite = await t.plan.markPublished(slug, {
-      wpPostId,
-      publishedUrl: `https://www.${SITE.site.domain}/blog/article/${slug}/`,
-    });
-  } else {
-    planWrite = await t.plan.markQueued(slug, { articleId, wpPostId });
-  }
-  if (!planWrite.updated) {
-    console.error(`❌ Plan write-back failed: ${slug} not found`);
-    process.exit(1);
-  }
-  console.log(`  ✅ Plan updated: ${slug} → ${options.status === 'publish' ? 'published' : 'queued'} (article_id=${articleId}, wp_post_id=${wpPostId})`);
+  // [5/7] plan write-back: publishArticle itself is the single plan writer — it
+  // verifies the real WP status and updates only this article's own (slug, lang)
+  // row (2026-11-05 unification). The old slug-wide markPublished here used to
+  // flip EVERY language row of the slug with the source's post id (drift source).
+  console.log('\n[5/7] Plan write-back handled by publishArticle (verified, per-language)');
 
   console.log('\n[6/7] db-register syncs categories/tags...');
   console.log(`\n$ tengence-geo taxonomy.js db-register --slugs=${slug}${siteFlag}`);

@@ -39,6 +39,8 @@
 const fs = require('fs');
 const path = require('path');
 
+const promote = require('./promote');
+
 /** Max tags per article (was taxonomy.yaml rules.max_tags_per_article; now a constant) */
 const MAX_TAGS_PER_ARTICLE = 3;
 
@@ -970,6 +972,16 @@ async function publishArticle(connection, articleId, options = {}) {
     featured_media: featuredMediaId, // strategy B: standalone featured image
   };
 
+  // Future-dated posts: WP core coerces status=publish with a future post_date into
+  // `future` (scheduled, hidden). When promoting an existing future-dated post,
+  // clamp its date to now so the flip to publish actually sticks (2026-11-05).
+  if (status === 'publish' && existing && promote.isFutureDate(existing.date_gmt || existing.date)) {
+    const now = promote.formatLocalDate(new Date());
+    s.logger(`  ⚠ Post ${existing.id} is future-dated (${existing.date}); clamping the publish slot to now (${now}) so WP keeps it publish`);
+    postData.date = now;
+    postData.modified = now;
+  }
+
   if (featuredImage) {
     s.logger(`  Featured image: ${featuredImage.productionUrl || `media ID ${featuredImage.id}`}`);
   } else if (uploadedImages.length > 0) {
@@ -1098,9 +1110,18 @@ async function publishArticle(connection, articleId, options = {}) {
   s.logger(`  ✓ DB updated`);
 
   // 8.5 write back the article plan table (the single write entry for plan status/URL;
-  // idempotent)
+  // idempotent). Verify the REAL WP status first — never trust the request alone:
+  // WP can park a future-dated status=publish request as `future` (2026-11-05 drift fix).
   try {
-    if (result.status === 'publish') {
+    let liveStatus = result.status;
+    try {
+      const live = await promote.verifyPublished(s.t.wp, result.id);
+      if (live.status) liveStatus = live.status;
+      if (live.link) result.link = live.link;
+    } catch (e) {
+      s.logger(`  ⚠️ Could not re-read the live status (${e.message}); trusting the REST response`);
+    }
+    if (liveStatus === 'publish') {
       // Target the row for THIS article's language: a translation publishes its own
       // post id onto its own (app_id, slug, lang) row, never onto the zh-hans row.
       await s.t.plan.markPublished(article.slug, {
@@ -1269,4 +1290,11 @@ module.exports = {
   loadTaxonomyWhitelist,
   publishArticle,
   getDraftArticleIds,
+  // unified promote-to-publish core (2026-11-05): the single draft→publish action
+  promoteToPublish: promote.promoteToPublish,
+  verifyPublished: promote.verifyPublished,
+  confirmPlanPublished: promote.confirmPlanPublished,
+  clampToPastOrNow: promote.clampToPastOrNow,
+  isFutureDate: promote.isFutureDate,
+  formatLocalDate: promote.formatLocalDate,
 };
