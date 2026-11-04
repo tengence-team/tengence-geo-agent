@@ -18,6 +18,7 @@ const path = require('path');
 const t = require('../packages/geo-sdk');
 const { parseGeoBlocks, buildPostHtml } = require('../packages/geo-sdk/content/md');
 const { tools, registry } = require('../packages/geo-mcp/tools/registry');
+const { computeSubstance, isNonSpecificPage, isGenericPadding } = require('../packages/geo-sdk/check');
 
 // ==================== standards module ====================
 
@@ -130,7 +131,96 @@ test('parseGeoBlocks (ZH regression): Chinese headings still parse', () => {
   assert.deepEqual(p.citations, [{ title: '来源', url: 'https://example.com/b' }]);
 });
 
-// ==================== MCP registry ====================
+// ==================== G17-4/5/6 substantive-content gate (2026-11-04) ====================
+// Pure-function tests for the gate that separates "skeleton-only / hollow" articles
+// from developed ones. The 42-article batch (2026-11-04 accident) passed citations +
+// length floor but was empty under the semantic standard: sections were 1–2 sentences
+// and the citation block was 7/7 Wikipedia + platform homepages.
+
+const zhSec = (n) => '这是该小节的展开内容，包含可核验的事实、具体数据与决策性结论。'.repeat(n);
+const enWords = (n) => Array(n).fill('substantive').join(' ');
+
+test('computeSubstance (zh skeleton): 1–2 sentence sections → far below 50% expansion', () => {
+  const md = `# T\n\n## 一、什么是 GEO\n\nGEO 是生成式引擎优化。\n\n## 二、为什么重要\n\n因为 AI 概览引用来源。\n\n## 三、如何实施\n\n需要结构化数据。\n\n## 四、衡量效果\n\n用 Search Console 跟踪。\n\n## 五、常见误区\n\n不要堆砌关键词。\n\n## Key Takeaways\n\n- 要点\n\n## 数据来源\n\n- [Wikipedia](https://en.wikipedia.org/wiki/Search_engine_optimization)\n- [OpenAI](https://openai.com/)\n- [Perplexity](https://www.perplexity.ai/)\n- [Anthropic](https://docs.anthropic.com/en/docs/)\n- [Hugging Face](https://huggingface.co/)\n- [Google](https://developers.google.com/search/docs)\n- [Wikipedia LLM](https://en.wikipedia.org/wiki/Large_language_model)\n`;
+  const s = computeSubstance(md, 'zh-hans');
+  assert.equal(s.contentTotal, 5, 'fixed blocks must be excluded from content sections');
+  assert.equal(s.contentOk, 0, '1–2 sentence sections are below the 150-char floor');
+  assert.equal(s.itemTotal, 7);
+  assert.equal(s.genericItems, 7, 'Wikipedia articles + platform homepages/landings = all padding');
+  assert.ok(s.contentOk / s.contentTotal < 0.5, 'skeleton must fail the ≥50% expansion ratio');
+});
+
+test('computeSubstance (zh): developed sections pass; data-source block without padding passes', () => {
+  const md = `# T\n\n## 一、市场现状\n\n${zhSec(30)}\n\n## 二、实施路径\n\n${zhSec(30)}\n\n## 三、效果衡量\n\n${zhSec(30)}\n\n## 四、风险与对策\n\n${zhSec(30)}\n\n## 五、选型建议\n\n${zhSec(30)}\n\n## 总结\n\n一句话收尾。\n\n## 数据来源\n\n1. [Perplexity 官方爬虫文档](https://docs.perplexity.ai/guides/perplexitybot)：说明 robots.txt 行为。\n2. [Perplexity Help Center](https://www.perplexity.ai/help-center/zh-CN/articles/10354969-perplexity-ruhe-zunxun-robots-txt)：具体文章页。\n3. [某行业报告页](https://example.com/reports/geo-2026)：具体数据。\n`;
+  const s = computeSubstance(md, 'zh-hans');
+  assert.equal(s.contentTotal, 5);
+  assert.equal(s.contentOk, 5, 'all developed sections reach the 150-char floor');
+  assert.equal(s.itemTotal, 3);
+  assert.equal(s.genericItems, 0, 'deep on-topic docs pages are NOT generic padding');
+  assert.ok(s.contentOk / s.contentTotal >= 0.5);
+});
+
+test('computeSubstance (en boundary): checklist with short but real sections → fails 50% ratio', () => {
+  // The en geo-diagnostic-audit-checklist (id 562) pattern: 10 content sections of
+  // 40–60 words each → 2/10 = 20% expanded.
+  const md = ['# T', '', '## 1. Section A', '', 'Check item description with why it matters and what to do.', '',
+    '## 2. Section B', '', 'Check item description with why it matters and what to do.', '',
+    '## 3. Section C', '', 'Check item description with why it matters and what to do.', '',
+    '## 4. Section D', '', 'Check item description with why it matters and what to do.', '',
+    '## 5. Section E', '', 'Check item description with why it matters and what to do.', '',
+    '## 6. Section F', '', 'Check item description with why it matters and what to do.', '',
+    '## 7. Section G', '', 'Check item description with why it matters and what to do.', '',
+    '## 8. Section H', '', 'Check item description with why it matters and what to do.', '',
+    '## 9. Section I', '', 'Check item description with why it matters and what to do.', '',
+    '## 10. Section J', '', 'Check item description with why it matters and what to do.', '',
+    '## Key Takeaways', '', '- one', '', '## Data Sources', '',
+    '1. [Ahrefs](https://ahrefs.com/blog/seo-audit/)', ''].join('\n');
+  const s = computeSubstance(md, 'en');
+  assert.equal(s.contentTotal, 10);
+  assert.equal(s.contentOk, 0, '11-word sections are far below the 80-word floor');
+  assert.ok(s.contentOk / s.contentTotal < 0.5, 'short-but-real checklist must fail the ratio (562 pattern)');
+});
+
+test('computeSubstance (en): sections at/above 80 words count as expanded', () => {
+  const md = `# T\n\n## 1. One\n\n${enWords(80)}\n\n## 2. Two\n\n${enWords(79)}\n\n## 3. Three\n\n${enWords(85)}\n`;
+  const s = computeSubstance(md, 'en');
+  assert.equal(s.contentTotal, 3);
+  assert.equal(s.contentOk, 2, '80 words counts, 79 does not');
+  assert.ok(s.contentOk / s.contentTotal >= 0.5);
+});
+
+test('computeSubstance: no data-source block → G17-6 n/a (itemTotal < 3)', () => {
+  const md = `# T\n\n## 一、内容\n\n${zhSec(30)}\n\n## 二、内容\n\n${zhSec(30)}\n`;
+  const s = computeSubstance(md, 'zh-hans');
+  assert.equal(s.itemTotal, 0);
+  // G17-6 row ok-condition: srcItemTotal < 3 → pass (n/a), mirrors the check row formula
+  assert.ok(s.itemTotal < 3 || s.genericItems / s.itemTotal < 0.7);
+});
+
+test('computeSubstance: zh 150-char floor — below fails, 150+ passes', () => {
+  const one = '这是一个用于测试字数阈值的中文句子，内容足够长以观察边界行为。'; // 31 chars
+  const mdLo = `# T\n\n## 一、节\n\n${one}${one}${one}${one}${one.slice(0, 20)}\n`; // 124+20=144 chars
+  const mdHi = `# T\n\n## 一、节\n\n${one}${one}${one}${one}${one}\n`; // 155 chars
+  assert.equal(computeSubstance(mdLo, 'zh-hans').contentOk, 0);
+  assert.equal(computeSubstance(mdHi, 'zh-hans').contentOk, 1);
+});
+
+test('isGenericPadding: Wikipedia article (any depth) and platform homepages are padding; deep docs pages are not', () => {
+  assert.equal(isGenericPadding('https://en.wikipedia.org/wiki/Search_engine_optimization'), true);
+  assert.equal(isGenericPadding('https://www.perplexity.ai/'), true);
+  assert.equal(isGenericPadding('https://docs.anthropic.com/en/docs/'), true);
+  assert.equal(isGenericPadding('https://docs.perplexity.ai/guides/perplexitybot'), false, 'deep on-topic docs page is a specific citation');
+  assert.equal(isGenericPadding('https://openai.com/chatgpt/overview/'), true, 'landing page');
+  assert.equal(isGenericPadding('https://ahrefs.com/blog/seo-audit/'), false, 'unrelated domain deep page');
+});
+
+test('isNonSpecificPage: homepage / level-1 channel / level-2 landing blocked; deep pages allowed', () => {
+  assert.equal(isNonSpecificPage('https://www.perplexity.ai/'), true);
+  assert.equal(isNonSpecificPage('https://developers.google.com/search/docs'), true, 'level-2 landing');
+  assert.equal(isNonSpecificPage('https://openai.com/chatgpt/overview/'), true, 'landing keyword segment');
+  assert.equal(isNonSpecificPage('https://docs.perplexity.ai/guides/perplexitybot'), false);
+  assert.equal(isNonSpecificPage('https://www.tengence.com/zh-hans/blog/article/best-geo-tools-comparison-2026/'), false);
+});
 
 test('MCP registry: exposes 78 tools — standards moved to geo://standard/* resources, 17 channel tools, 8 wechat tools, 2 GSC read tools, 2 translation tools, 10 term/author-name tools', () => {
   // The count grows with every new domain tool; if it changes, update this number and

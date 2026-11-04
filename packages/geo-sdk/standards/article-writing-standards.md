@@ -106,6 +106,9 @@ Rules:
    than ~160 chars as "too short" — a 152-char description was still flagged; keep the
    range 165–175) — the single most common failure;
    count it before you finish.
+   (2026-11-04: the range is **language-specific** — zh-hans 165–175, en 150–160,
+   zh-hant 60–80, matching the translation gate T8 and the published-article
+   convention; the check derives it from the article's language.)
 4. The publish chain treats **front matter as the only source of truth**. `.meta.json` is
    retired and kept only as a fallback for legacy articles.
 
@@ -141,6 +144,19 @@ Rules:
 9. **The research brief must be real research** (2026-11-04): it has to carry actual
    source URLs (≥2). A hollow brief ("industry blogs", no URLs) does not satisfy the
    pre-writing research gate.
+10. **Sources are topic-specific, never generic padding** (2026-11-04, gate G17-6):
+    when the data-sources block has ≥3 items, **generic-platform padding** —
+    Wikipedia articles (any depth) and non-specific pages (homepage / level-1/2
+    landing) on the platform domains openai.com / perplexity.ai /
+    docs.anthropic.com / huggingface.co / developers.google.com — must stay
+    **below 70%** of the block. A citation block that is mostly "Wikipedia +
+    platform homepage" is padding, not research, and fails. A deep on-topic page on
+    those domains (e.g. `docs.perplexity.ai/guides/perplexitybot`) is a specific
+    citation and counts as research. Cite the specific report / docs page / article
+    that states the claim instead.
+11. **The same source set is not reused across articles** (2026-11-04): each article's
+    citations must be gathered for its own topic. Copying one generic citation set
+    into 14 different articles is the exact defect the gate exists to catch.
 
 ## 5. Internal links
 
@@ -189,8 +205,37 @@ Rules:
   - body carries **no citations and no data-sources block** at all;
   - body length floor: zh-hans/zh-hant < 800 Chinese chars, en < 600 words;
   - comparison-type articles (case studies / product solutions / T3–T4) contain
-    **no Markdown table**.
+    **no Markdown table**;
+  - **G17-4 (structural floor)**: fewer than **2 content sections** — content H2 =
+    H2 sections minus the fixed blocks (Key Takeaways / FAQ / About / Related
+    Reading / Data Sources / Get Started / References / 总结 / 摘要 / 目录 …);
+  - **G17-5 (section expansion)**: fewer than **50%** of the content sections reach
+    the per-section net-content floor — zh-hans/zh-hant **≥150 chars**, en **≥80
+    words**, list markers and heading lines stripped. The 2026-11-04 batch of 42
+    skeleton articles scored 0–40%; normal articles score ≥50% (p10 ≈ 89%);
+  - **G17-6 (generic-source padding)**: the data-sources block has ≥3 items and
+    **generic-platform padding** — Wikipedia articles plus non-specific pages
+    (homepage / level-1/2 landing) on openai.com / perplexity.ai /
+    docs.anthropic.com / huggingface.co / developers.google.com — makes up **≥70%**
+    of it. Deep on-topic pages on those domains are specific citations, not padding.
   Empty shells must never be published or re-published.
+- **Every content section must actually be written — the semantic standard
+  (user-confirmed, 2026-11-04)**: an article that only lists an outline ("只列了框架"),
+  is hollow ("内容空洞无味"), or carries no real insight or position ("没有实质性的
+  见解或观点") has **no substantive content**. Concretely, every article must meet all
+  five writing requirements:
+  1. **Sections are developed**: no "heading + one sentence" sections; every content
+     H2 is a self-contained developed section (floor zh ≥150 chars / en ≥80 words;
+     target zh ≥300 chars / en ≥150 words per section).
+  2. **Fact density**: ≥2 content sections carry concrete verifiable facts (specific
+     numbers, names, dates, URLs) with their sources.
+  3. **A position**: comparison / how-to / industry articles carry ≥2 decision-level
+     conclusions ("which to choose / what to do"), not just descriptions.
+  4. **Citations are article-specific**: every citation is the specific page stating
+     the claim; no generic links padding the list; the same source set is never
+     reused across articles.
+  5. **No templated filler**: no pure-advertisement section ("<品牌> GEO 如何衔接")
+     standing in for a content section.
 - **Cases**: never name a real company, brand or person. Use natural generic
   descriptors, and never invent a case — with no real data, write no case section.
 
@@ -224,7 +269,7 @@ manual exemption (2026-11-04).
 | G14 | Correct CTA | routed by product line, no broken links; **each link on its own line, never joined by `|`** |
 | G15 | Internal-link language prefix | every on-site article link carries the article's own language prefix (zh-hans→/zh-hans/, en→/en/, zh-hant→/zh-hant/); no cross-language hops |
 | G16 | CTA list layout | the Get Started / 立即行动 block renders as a list (`<ul><li>`), never a single paragraph with several links |
-| G17 | Substantive content | no citations **and** no data-sources block → fail; zh-hans/zh-hant < 800 chars or en < 600 words → fail; comparison types without a Markdown table → fail; **always hard, no manual exemption, failure forces rewrite (draft + blocked)** |
+| G17 | Substantive content | no citations **and** no data-sources block → fail; zh-hans/zh-hant < 800 chars or en < 600 words → fail; comparison types without a Markdown table → fail; **G17-4** < 2 content sections → fail; **G17-5** < 50% of content sections reach the per-section floor (zh ≥150 chars / en ≥80 words) → fail; **G17-6** ≥3 data-source items with ≥70% generic-platform padding (Wikipedia + platform homepage/landing pages) → fail; **always hard, no manual exemption, failure forces rewrite (draft + blocked)** |
 
 ## 9. Site-specific items
 

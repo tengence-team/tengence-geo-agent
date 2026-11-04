@@ -39,6 +39,125 @@ const {
   ctaPipeIssues,
 } = require('../content/md');
 
+// ===== substantive-content metrics (G17-4/5/6, 2026-11-04) =====
+// Pure functions (no DB, no site) so the gate rules are unit-testable and the
+// checkArticle row computation below is a thin wrapper.
+const CHANNEL_SEGS = new Set(['blog','news','articles','resources','wiki','docs','topics','category','categories','tag','tags','insights','learn','product','products','services','about','help','support','pricing','contact','search','geo']);
+// B2 (2026-11-04 accident): citations must point to a specific article that carries
+// the claim. Previously only homepage / level-1 channel pages were blocked; the
+// accident's citations (developers.google.com/search/docs, openai.com/chatgpt/overview/)
+// sailed through as "≥2-segment deep pages". Level-2 landing pages (docs / overview /
+// features / pricing / help …) are channels, not specific articles — now hard-blocked.
+const LANDING_SEGS = new Set(['docs','documentation','overview','features','pricing','help','support','learn','about','contact','faq','getting-started','search','tags','categories','products','services','solutions','start','home','tutorials','guides']);
+// Non-specific-page judgment (hard violation):
+//  1) homepage: pathname empty or '/' and no specific-post query like ?p=/?page_id=;
+//  2) level-1 channel/category page: pathname of exactly 1 segment and a known
+//     channel name (blog/news/wiki/...), and no specific-post query;
+//  3) level-2 landing page (docs/overview/features/...): second segment is a known
+//     landing keyword and no specific-post query (B2).
+// Deep specific pages (with ?p= specific post, /slug guide, /Organization, etc.)
+// count as specific pages and are not blocked.
+function isNonSpecificPage(u) {
+  try {
+    const p = new URL(u);
+    const seg = p.pathname.replace(/^\/+|\/+$/g, '');
+    const segs = seg === '' ? [] : seg.split('/');
+    const specificPost = ['p','page_id','id','post','slug','shareId','share_id','search','q'].some((k) => p.searchParams.has(k));
+    if (segs.length === 0) return !specificPost;                     // homepage (no specific-post query)
+    if (segs.length === 1) return CHANNEL_SEGS.has(segs[0]) && !specificPost; // level-1 channel
+    if (segs.length === 2) return LANDING_SEGS.has(segs[1]) && !specificPost; // level-2 landing page (B2)
+    return false;                                                    // deep specific page
+  } catch { return false; }
+}
+// Fixed blocks excluded from "content sections": they are skeleton scaffolding
+// (Key Takeaways / FAQ / About / Related Reading / Data Sources / Get Started /
+// References / 总结 / 摘要 / 目录 …), not developed content.
+const BLOCK_HEAD = /^(?:Key Takeaways|FAQ|About|Related Reading|Data Sources|Get Started|References|關鍵要點|常見問題|关于|關於|相關閱讀|資料來源|立即行动|立即行動|参考文献|关键要点|常见问题|相关阅读|数据来源|资料来源|摘要|总结|结语|结论|Conclusion|Summary|Table of Contents|目录|快速开始|Quick Start|Related Resources)/;
+// G17-6 (2026-11-04): "generic-platform padding" — an item that is a Wikipedia
+// article (any depth) or a non-specific page (homepage / level-1/2 landing) on a
+// generic platform domain (openai.com, perplexity.ai, docs.anthropic.com,
+// huggingface.co, developers.google.com). The 2026-11-04 batch padded its citation
+// block with exactly this pattern — 7/7 items were Wikipedia articles plus platform
+// homepages / landing docs, identical across 14 topics. Depth alone is NOT the
+// signal: a deep on-topic page on those domains (e.g. docs.perplexity.ai/guides/
+// perplexitybot) is a specific citation and must NOT be counted as padding
+// (user: "引用的文章都没具体到文章" — the defect is links that don't point to a
+// specific page carrying the claim).
+const GENERIC_SOURCE_DOMS = ['wikipedia.org', 'openai.com', 'perplexity.ai', 'docs.anthropic.com', 'huggingface.co', 'developers.google.com'];
+function isGenericPadding(u) {
+  let host = '';
+  try { host = new URL(u).hostname.toLowerCase(); } catch { return false; }
+  const isWiki = host === 'wikipedia.org' || host.endsWith('.wikipedia.org');
+  if (isWiki) return true; // Wikipedia articles are never topic-primary research
+  const onGenericDom = GENERIC_SOURCE_DOMS.some((d) => host === d || host.endsWith('.' + d));
+  return onGenericDom && isNonSpecificPage(u); // platform homepage / landing docs
+}
+/**
+ * Substantive-content metrics for G17-4/5/6.
+ * @param {string} md   article body markdown
+ * @param {string} lang article language (zh-hans | zh-hant | en)
+ * @returns {{contentTotal:number, contentOk:number, itemTotal:number,
+ *            itemsNoLink:number, nonSpecItems:number, genericItems:number}}
+ *   - content sections: H2 sections minus the fixed blocks (BLOCK_HEAD)
+ *   - contentOk: sections whose net content (list markers / heading lines stripped)
+ *     reaches the floor — zh-hans/zh-hant >= 150 chars, en >= 80 words
+ *   - data-source items: list items in the 数据来源/資料來源/资料来源/Data Sources/
+ *     引用来源/引用來源/References block
+ */
+function computeSubstance(md, lang) {
+  let contentTotal = 0;
+  let contentOk = 0;
+  {
+    let curHead = null;
+    const secs = [];
+    for (const line of md.split('\n')) {
+      const m = line.match(/^##\s+(.+)$/);
+      if (m) { if (curHead) secs.push(curHead); curHead = { t: m[1].trim(), body: [] }; }
+      else if (curHead) curHead.body.push(line);
+    }
+    if (curHead) secs.push(curHead);
+    for (const s of secs) {
+      if (BLOCK_HEAD.test(s.t)) continue;
+      contentTotal++;
+      const body = s.body.join('\n').replace(/^[-*>#\d.\s]+/gm, '').replace(/\s+/g, lang === 'en' ? ' ' : '');
+      const n = lang === 'en' ? (body.trim() ? body.trim().split(/\s+/).length : 0) : body.length;
+      if ((lang === 'en' && n >= 80) || (lang !== 'en' && n >= 150)) contentOk++;
+    }
+  }
+  const srcIdx = md.search(/\*\*(数据来源|資料來源|资料来源|Data Sources)\*\*|\*\*(引用来源|引用來源|References)\*\*|^##\s*(数据来源|資料來源|资料来源|Data Sources|引用来源|引用來源|References)/m);
+  let itemTotal = 0;
+  let itemsNoLink = 0;
+  let nonSpecItems = 0;
+  let genericItems = 0;
+  if (srcIdx >= 0) {
+    const tail = md.slice(srcIdx);
+    const end = tail.search(/\n## |\n---+|\n\*\*(相关阅读|Related Reading)\*\*/);
+    const block = end >= 0 ? tail.slice(0, end) : tail;
+    // a list item's link: Markdown [text](https://...) or HTML <a href>
+    // (AGENTS.md says body links are written in Markdown and the publish script adds
+    // target=_blank; both notations count)
+    const linkUrl = (ln) => {
+      const m = ln.match(/\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/) ||
+                ln.match(/<a\s+[^>]*href=["'](https?:\/\/[^"'\s]+)["']/i);
+      return m ? m[1] : null;
+    };
+    for (const ln of block.split('\n')) {
+      // ordered-list (1. ) and unordered-list (- / *) items both count as citation
+      // items (2026-09-16 addition: previously only 1. was recognized, missing `- `)
+      if (/^\s*(?:\d+\.|[-*])\s/.test(ln) || /<li>/.test(ln)) {
+        itemTotal++;
+        const u = linkUrl(ln);
+        if (!u) itemsNoLink++;
+        else {
+          if (isNonSpecificPage(u)) nonSpecItems++;
+          if (isGenericPadding(u)) genericItems++;
+        }
+      }
+    }
+  }
+  return { contentTotal, contentOk, itemTotal, itemsNoLink, nonSpecItems, genericItems };
+}
+
 /**
  * Article gate check
  * @param {{slug:string, dir?:string, type?:string|null, lang?:string, site?:string|null}} opts
@@ -176,33 +295,6 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   const bodyCitations = parsedBlocks.citations || [];
   const legacyCites = (meta.geo && meta.geo.citations) || [];
   const cites = bodyCitations.length ? bodyCitations : legacyCites;
-  const CHANNEL_SEGS = new Set(['blog','news','articles','resources','wiki','docs','topics','category','categories','tag','tags','insights','learn','product','products','services','about','help','support','pricing','contact','search','geo']);
-  // B2 (2026-11-04 accident): citations must point to a specific article that carries
-  // the claim. Previously only homepage / level-1 channel pages were blocked; the
-  // accident's citations (developers.google.com/search/docs, openai.com/chatgpt/overview/)
-  // sailed through as "≥2-segment deep pages". Level-2 landing pages (docs / overview /
-  // features / pricing / help …) are channels, not specific articles — now hard-blocked.
-  const LANDING_SEGS = new Set(['docs','documentation','overview','features','pricing','help','support','learn','about','contact','faq','getting-started','search','tags','categories','products','services','solutions','start','home','tutorials','guides']);
-  // Non-specific-page judgment (hard violation):
-  //  1) homepage: pathname empty or '/' and no specific-post query like ?p=/?page_id=;
-  //  2) level-1 channel/category page: pathname of exactly 1 segment and a known
-  //     channel name (blog/news/wiki/...), and no specific-post query;
-  //  3) level-2 landing page (docs/overview/features/...): second segment is a known
-  //     landing keyword and no specific-post query (B2).
-  // Deep specific pages (with ?p= specific post, /slug guide, /Organization, etc.)
-  // count as specific pages and are not blocked.
-  const isNonSpecificPage = (u) => {
-    try {
-      const p = new URL(u);
-      const seg = p.pathname.replace(/^\/+|\/+$/g, '');
-      const segs = seg === '' ? [] : seg.split('/');
-      const specificPost = ['p','page_id','id','post','slug','shareId','share_id','search','q'].some((k) => p.searchParams.has(k));
-      if (segs.length === 0) return !specificPost;                     // homepage (no specific-post query)
-      if (segs.length === 1) return CHANNEL_SEGS.has(segs[0]) && !specificPost; // level-1 channel
-      if (segs.length === 2) return LANDING_SEGS.has(segs[1]) && !specificPost; // level-2 landing page (B2)
-      return false;                                                    // deep specific page
-    } catch { return false; }
-  };
   const missCit = cites.filter((c) => !c || !String(c.url || '').trim()); // hard: missing url
   const nonSpecCit = cites.filter((c) => { const u = String(c.url || '').trim(); return u && isNonSpecificPage(u); }); // hard: homepage/channel-level
 
@@ -212,33 +304,15 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // `## 資料來源`; the old whitelist (数据来源|Data Sources|引用来源|References) missed it
   // entirely, so the whole citation block was invisible to the gate
   // ("citations: none / data-source no block" while 4 links sat in the body).
-  const srcIdx = md.search(/\*\*(数据来源|資料來源|资料来源|Data Sources)\*\*|\*\*(引用来源|引用來源|References)\*\*|^##\s*(数据来源|資料來源|资料来源|Data Sources|引用来源|引用來源|References)/m);
-  let srcItemTotal = 0;
-  let srcItemsNoLink = 0;   // hard: list item without any link
-  let srcNonSpecItems = 0;   // hard: list item pointing to a homepage/level-1 channel
-  if (srcIdx >= 0) {
-    const tail = md.slice(srcIdx);
-    const end = tail.search(/\n## |\n---+|\n\*\*(相关阅读|Related Reading)\*\*/);
-    const block = end >= 0 ? tail.slice(0, end) : tail;
-    // a list item's link: Markdown [text](https://...) or HTML <a href>
-    // (AGENTS.md says body links are written in Markdown and the publish script adds
-    // target=_blank; both notations count)
-    const linkUrl = (ln) => {
-      const m = ln.match(/\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/) ||
-                ln.match(/<a\s+[^>]*href=["'](https?:\/\/[^"'\s]+)["']/i);
-      return m ? m[1] : null;
-    };
-    for (const ln of block.split('\n')) {
-      // ordered-list (1. ) and unordered-list (- / *) items both count as citation
-      // items (2026-09-16 addition: previously only 1. was recognized, missing `- `)
-      if (/^\s*(?:\d+\.|[-*])\s/.test(ln) || /<li>/.test(ln)) {
-        srcItemTotal++;
-        const u = linkUrl(ln);
-        if (!u) srcItemsNoLink++;
-        else if (isNonSpecificPage(u)) srcNonSpecItems++;
-      }
-    }
-  }
+  // G17-4/5/6 metrics (content-section expansion + generic-source padding) come from
+  // the same pure computeSubstance() — see its definition at the top of this file.
+  const sub = computeSubstance(md, LANG);
+  const srcItemTotal = sub.itemTotal;
+  const srcItemsNoLink = sub.itemsNoLink;   // hard: list item without any link
+  const srcNonSpecItems = sub.nonSpecItems; // hard: list item pointing to a homepage/level-1 channel
+  const srcGenericItems = sub.genericItems; // G17-6: generic-platform padding item
+  const contentTotal = sub.contentTotal;
+  const contentOk = sub.contentOk;
 
   // ===== word count: checked by article type (2026-09-18) =====
   // Type ranges are consistent with sites/tengence/docs/templates/TEMPLATES.md.
@@ -371,6 +445,29 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     }
   }
 
+  // ===== G17-4/5/6 semantic substance (2026-11-04, user-confirmed) =====
+  // The three G17 rows below prove "has citations / long enough / has a table" — NOT
+  // that the sections are actually developed: the 2026-11-04 batch of 42 skeleton
+  // articles (8 H2, each 1–2 sentences, zero data, 7 templated generic links) passed
+  // citations 7/7 and the length floor. The semantic standard (user verbatim): an
+  // article that "只列了框架没有详细写内容 / 内容空洞无味 / 没有实质性的见解或观点"
+  // = no substantive content → hard block + forced rewrite (publish-from-db B5 branch).
+  //
+  // Section-expansion gate, calibrated on the full 549-article corpus (see experience
+  // substance-gate-section-ratio-calibration):
+  //   content H2 = H2 sections minus the fixed blocks (Key Takeaways / FAQ / About /
+  //   Related Reading / Data Sources / Get Started / References / 总结 / 摘要 / 目录 …)
+  //   G17-4: content sections >= 2 (structural floor; corpus min is 2 — the legacy
+  //          en API-doc page — so no published legacy article trips it; the body-length
+  //          floor already blocks degenerate 1–2-section shells)
+  //   G17-5: when content sections >= 3, the fraction of sections whose net content
+  //          reaches the floor (zh-hans/zh-hant >= 150 chars, en >= 80 words) must be
+  //          >= 50%. The 42 skeleton articles score 0.00–0.40; normal articles p10 ~0.89.
+  //   G17-6: when the data-source block has >= 3 items, generic-platform padding
+  //          (Wikipedia articles + platform homepage/landing pages) must stay below
+  //          70% — the skeleton batch's 7/7 such links are padding, not research
+  //          (user: "引用的文章都没具体到文章").
+
   const rows = [
     // 4th element soft=true means the row is informational only and doesn't affect
     // the exit code (word count inferred from dir when --type is not explicit)
@@ -386,7 +483,11 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     // which let plan-driven articles publish without a featured image). See the
     // isPublished demotion loop below, which skips rows with the alwaysHard marker.
     ['front-matter featured_image (featured-image hard check, §5-②)', hasFeaturedImage ? 'present' : 'missing', hasFeaturedImage, hasFeaturedImage, true],
-    ['meta_description chars', mdl, mdl >= 165 && mdl <= 175],
+    // meta_description length is language-specific (aligned with translation gate T8
+    // and the published-article convention): zh-hans 165-175, en 150-160, zh-hant 60-80.
+    // A universal 165-175 range would make en/zh-hant forever fail the publish gate
+    // (and contradict T8), so the range is derived from LANG.
+    ['meta_description chars', mdl, (LANG === 'en' ? (mdl >= 150 && mdl <= 160) : LANG === 'zh-hant' ? (mdl >= 60 && mdl <= 80) : (mdl >= 165 && mdl <= 175))],
     ['takeaway count (body/meta effective)', effTakeaways.length, effTakeaways.length >= 5],
     ['FAQ pair count (body/meta effective)', effFaq.length, effFaq.length >= 5],
     ['materialized takeaways block', take, take === 1],
@@ -407,6 +508,10 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     ['substantive content (G17): citations or data-source block present', cites.length + '/' + srcItemTotal, cites.length > 0 || srcItemTotal > 0, false, true],
     ['substantive content (G17): body length floor', (LANG === 'en' ? (md.split(/\s+/).filter(Boolean).length + ' words') : (cn + ' cn chars')), (LANG === 'en' ? md.split(/\s+/).filter(Boolean).length >= 600 : cn >= 800), false, true],
     ['substantive content (G17): comparison type contains a table', hasTable ? 'table' : 'missing', !isComparison || hasTable, false, true],
+    // ===== G17-4/5/6 semantic substance (2026-11-04): always hard, no manual exemption =====
+    ['substantive content (G17-4): content sections >= 2 (structural floor)', contentTotal + ' content H2', contentTotal >= 2, false, true],
+    ['substantive content (G17-5): ' + (LANG === 'en' ? '≥80 words' : '≥150 chars') + ' per content section, ≥50% expanded', contentTotal >= 3 ? (contentOk + '/' + contentTotal + ' = ' + Math.round((100 * contentOk) / contentTotal) + '%') : 'n/a (<3 content sections)', contentTotal < 3 || contentOk / contentTotal >= 0.5, false, true],
+    ['substantive content (G17-6): data-source block topic-specific (generic platform sources < 70%)', srcItemTotal >= 3 ? (srcGenericItems + '/' + srcItemTotal + ' generic') : 'n/a (<3 items)', srcItemTotal < 3 || srcGenericItems / srcItemTotal < 0.7, false, true],
     // B2 citation ledger (2026-11-04): every body citation URL must appear in the
     // research brief. Hard when a brief exists (always-hard: re-publishing with a
     // citation that no research supports is a substantive defect); n/a when no brief.
@@ -548,4 +653,4 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   };
 }
 
-module.exports = { checkArticle };
+module.exports = { checkArticle, computeSubstance, isNonSpecificPage, isGenericPadding };

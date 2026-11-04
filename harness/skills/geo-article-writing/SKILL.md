@@ -18,12 +18,12 @@ product / case / industry / comparison / guide 七类体裁。
 ## 流程
 
 1. `article_draft { type, topic }` —— 取回该体裁的骨架、research-brief 模板与写作标准。
-2. `geo://standard/article-writing-standards` —— 读交付形态、引用规则、G1–G14 全表。
+2. `geo://standard/article-writing-standards` —— 读交付形态、引用规则、G1–G17 全表与 §6 实质性内容要求。
 3. `geo://standard/block-conventions` —— 核对区块标题的中英精确写法。
 4. 按 research-brief 模板完成研究简报（联网检索，落盘）。**缺此文件门禁直接失败。**
-5. 按骨架写正文：每个 H2 开头先给 40–60 字自足结论。
+5. 按骨架写正文：每个内容 H2 展开成完整小节（下限中文 ≥150 字/节、英文 ≥80 词/节；目标中文 ≥300 字/节），**禁止"标题 + 一句话"节**。
 6. `article_ingest` 提交正文与简报。
-7. `check_article` —— **不可跳过**。
+7. `check_article` —— **不可跳过**。重点核对 G17-4/5/6 三行（内容节数量 / 展开占比 / 数据源通用源占比）。
 8. 失败则回到第 5 步修改，直至全绿。
 9. `image_acquire` 配图（可选，需承载真实内容、不含第三方 logo）。
 
@@ -43,6 +43,12 @@ product / case / industry / comparison / guide 七类体裁。
 - **不臆造**：无真实数据不写案例；案例须脱敏。
 - **区块标题精确**：引擎按固定词解析，中英写法以 `block-conventions` 为准。
 - **地理表述**：全球化优先，单一市场数据标注国别。
+- **实质性内容（2026-11-04 语义标准，门禁 G17-4/5/6 强制）**：
+  1. **每节必须展开**：禁止"标题 + 一句话"节；内容 H2 净内容下限中文 ≥150 字 / 英文 ≥80 词（目标中文 ≥300 字/节），内容节达标占比 ≥50% 且内容节 ≥2。
+  2. **事实密度**：≥2 个内容节含具体数字 / 名称 / 日期 / URL 等可核验事实。
+  3. **必须有观点**：比较 / 教程 / 行业类文章 ≥2 处决策性结论（"选哪个 / 怎么做"），不能只描述。
+  4. **引用具体到文章**：每条引用必须是承载该论断的具体页面；禁止用 Wikipedia 文章页与通用平台首页/落地页（openai.com、perplexity.ai、docs.anthropic.com、huggingface.co、developers.google.com 的首页/落地页）凑数——数据源块 ≥3 条时这类凑数链接占比 ≥70% 即判失败；同域名的深度具体文档页（如 docs.perplexity.ai/guides/perplexitybot）是合格引用；禁止跨文章复用同一套数据源。
+  5. **禁止模板化填充**：禁止把纯广告段（如"通智 GEO 如何衔接"）当作内容节。
 
 ## 示例
 
@@ -51,9 +57,11 @@ product / case / industry / comparison / guide 七类体裁。
 → article_draft { type: "comparison", topic: "GEO 与 SEO 的区别" }
 → 取回 T6 骨架 + 标准
 → 完成 research brief
-→ 写正文（每个 H2 回答优先）
+→ 写正文（每个内容 H2 展开 ≥150 字/节，带数据与观点）
 → article_ingest → check_article
 → 若 G6（引用）失败：补齐来源与日期，重跑
+→ 若 G17-5（内容节展开占比）失败：把"标题 + 一句话"节展开成完整小节
+→ 若 G17-6（通用源凑数）失败：换成承载具体论断的页面
 → 全绿后交付：路径 + 字数 + 门禁最后三行 + 引用清单
 ```
 
@@ -61,9 +69,11 @@ product / case / industry / comparison / guide 七类体裁。
 
 | 现象 | 处理 |
 |---|---|
-| `check_article` 反复不过 | `geo://standard/article-writing-standards` 逐条对照 G1–G14 |
+| `check_article` 反复不过 | `geo://standard/article-writing-standards` 逐条对照 G1–G17 |
 | research-brief 硬校验失败 | 确认简报文件已落盘到站点目录；缺失则补做 |
 | 区块未被解析 | 对照 `block-conventions` 校正标题词（中英均可，但用词须精确） |
+| G17-5 内容节展开占比不足 | 把未达标的 H2 展开（中文 ≥150 字/节、英文 ≥80 词/节），不靠删节数凑占比 |
+| G17-6 数据源通用源占比过高 | 逐条换成承载该论断的具体页面（报告页 / 文档页 / 文章页），不保留凑数链接 |
 | `site_list` 为空 | 工作区绑定错误；`workspace_use` 重新绑定（不要设 `SITES_ROOT`） |
 
 ## 高风险确认规则
