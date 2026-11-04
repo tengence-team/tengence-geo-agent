@@ -916,9 +916,18 @@ async function publishArticle(connection, articleId, options = {}) {
   }
 
   if (existing && !force) {
-    s.logger(`  ⚠️ Article already exists (WP ID: ${existing.id}, Status: ${existing.status})`);
-    s.logger(`  Use --force to force an update`);
-    return existing;
+    // Publishing an article that already exists on WP must update it in place —
+    // the rewrite → re-publish loop (2026-11-04) relies on a status=publish request
+    // actually writing the (rewritten) body and flipping the post live. Silently
+    // returning the existing post made a "publish" request succeed without writing
+    // anything (observed on skeleton 643: "Succeeded: 1" while WP stayed draft).
+    if (status === 'publish') {
+      s.logger(`  ℹ️ Article already exists (WP ID: ${existing.id}, Status: ${existing.status}) — updating in place (status=publish)`);
+    } else {
+      s.logger(`  ⚠️ Article already exists (WP ID: ${existing.id}, Status: ${existing.status})`);
+      s.logger(`  Use --force to force an update`);
+      return existing;
+    }
   }
 
   // 7. publish or update
@@ -968,7 +977,7 @@ async function publishArticle(connection, articleId, options = {}) {
   }
 
   let result;
-  if (existing && force) {
+  if (existing && (force || status === 'publish')) {
     s.logger(`  Updating article ID: ${existing.id}...`);
     result = await wpAPI(`/posts/${existing.id}`, 'POST', postData);
   } else {
