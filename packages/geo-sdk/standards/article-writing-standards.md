@@ -239,6 +239,40 @@ Rules:
 - **Cases**: never name a real company, brand or person. Use natural generic
   descriptors, and never invent a case — with no real data, write no case section.
 
+### Rewrite-and-republish loop (unpublished articles only)
+
+Scope: applies only to articles that are **not live on WordPress** (WP status !=
+publish). Already-published articles are never pulled back or rewritten by this
+loop (user decision 2026-11-04).
+
+When any publish path (`publish_draft` / `publish_from_db` / `publish_daily` /
+`publish_update_article` / `publish_update_fields` / `channel_publish`) returns a
+gate failure for an unpublished article, the agent driving the MCP must close the
+loop itself — the MCP server does not call an LLM:
+
+1. **Classify the failure** from the `check_article` rows:
+   - G17-4/5/6 rows → the body lacks substance: rewrite the article (step 2).
+   - `citation URLs present in research brief (B2 ledger)` → the body cites URLs
+     that are not in the research brief: add each missing URL verbatim to the
+     brief (the check resolves the brief per language, cascading to the zh-hans
+     group brief); a citation that no research supports may never ship.
+   - any other hard row → fix per the corresponding standard section.
+2. **Rewrite**: produce the full Markdown body — same skeleton, same fixed
+   blocks, same front matter — with every content section actually developed
+   (floor zh ≥150 chars / en ≥80 words per section; target zh ≥300 chars / en
+   ≥150 words), concrete facts with sources, decision-level conclusions,
+   article-specific citations (the semantic standard above). Save to
+   `<site>/data/inbox/<lang>/<slug>.<lang>.md`.
+3. **Re-ingest + re-check**: `article_ingest` the body (and the brief), then
+   `check_article` again. It must be fully green before publishing.
+4. **Publish immediately**: once green, publish (fully automatic, no manual
+   confirmation — user decision 2026-11-04); plan rows move
+   queued/blocked → published. Never hand a failing article to a publish path,
+   and never mark the loop done while any hard row still fails.
+
+The publish paths themselves enforce the same gate (hard block, exit ≠ 0 or
+isError) — this loop is the only way an unpublished article may become live.
+
 ## 7. Delivery report
 
 Report: ① file path ② length ③ the gate result verbatim (last three lines) ④ which

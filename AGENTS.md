@@ -71,6 +71,29 @@ The gate (`packages/geo-sdk/check/index.js`) is the *codified mirror* of
 - `TENGENCE_GEO_HOME` is the single environment variable every internal path derives
   from (legacy `GEO_HOME` kept as an alias until 0.2.0).
 
+## 5.5 Gate-failure → rewrite → republish loop (unpublished articles only, 2026-11-04)
+
+The MCP server never calls an LLM — the **agent driving the MCP** closes the loop.
+Scope: only articles **not live on WP** (WP status != publish); already-published
+articles are never pulled back or rewritten by this loop.
+
+When a publish path (`publish_draft` / `publish_from_db` / `publish_daily` /
+`publish_update_article` / `publish_update_fields` / `channel_publish`) returns a
+gate failure:
+
+1. Classify from the `check_article` rows: G17-4/5/6 → rewrite the body; B2 ledger
+   → add each missing citation URL verbatim to the research brief (per-language,
+   cascading to zh-hans); any other hard row → fix per its standard.
+2. Rewrite the body (floor zh ≥150 chars / en ≥80 words per content section,
+   facts with sources, a position, article-specific citations) and save to
+   `<site>/data/inbox/<lang>/<slug>.<lang>.md`.
+3. `article_ingest` → `check_article` again — must be fully green.
+4. **Publish immediately when green** (fully automatic, no manual confirmation);
+   plan rows move queued/blocked → published.
+
+Full rubric lives in `packages/geo-sdk/standards/article-writing-standards.md`
+(§6, "Rewrite-and-republish loop").
+
 ## 6. Adding a standard
 
 1. Drop the file under `packages/geo-sdk/standards/` (kebab-case, English).
@@ -91,8 +114,10 @@ The gate (`packages/geo-sdk/check/index.js`) is the *codified mirror* of
   3. Fallback (first language publish): the `featured_image` URL is downloaded and uploaded
      to the media library once.
 - Translation rows (`en` / `zh-hant`) are gated by `check_translation` (T1–T11), which the
-  harness runs before ingest; `publish-from-db.js` therefore **skips the zh writing gate**
-  (`checkArticle`) for translation rows — do not run `checkArticle` on a translation.
+  harness runs before ingest; since 2026-11-04 the writing gate no longer skips them —
+  `publish-from-db.js` runs the **same `checkArticle`** on every language (B7 cascade:
+  the research brief resolves per language, falling back to the zh-hans group brief), and
+  the G17 / citation / related-reading hard rows apply to all languages.
 - **Same-language internal links (every language, published or draft)** — every on-site
   article link (`tengence.com/blog/article/<slug>/`) carries the article's own language
   prefix: zh-hans → `/zh-hans/`, en → `/en/`, zh-hant → `/zh-hant/`. No bare links, no

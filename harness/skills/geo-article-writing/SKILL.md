@@ -24,7 +24,7 @@ product / case / industry / comparison / guide 七类体裁。
 5. 按骨架写正文：每个内容 H2 展开成完整小节（下限中文 ≥150 字/节、英文 ≥80 词/节；目标中文 ≥300 字/节），**禁止"标题 + 一句话"节**。
 6. `article_ingest` 提交正文与简报。
 7. `check_article` —— **不可跳过**。重点核对 G17-4/5/6 三行（内容节数量 / 展开占比 / 数据源通用源占比）。
-8. 失败则回到第 5 步修改，直至全绿。
+8. 失败则回到第 5 步修改，直至全绿。**未发布文章的门禁失败走"改写-重发闭环"（2026-11-04，通过即发布）**：先分类失败行——G17-4/5/6 → 重写正文；`citation URLs present in research brief (B2 ledger)` → 把缺失引用 URL verbatim 补进 research brief（先查本语言，B7 级联 zh-hans）；其他硬行按对应标准修——再重写正文（下限中文 ≥150 字/节、英文 ≥80 词/节，补事实数据）落盘 `data/inbox/<lang>/<slug>.<lang>.md` → `article_ingest` → `check_article` 全绿后**立即发布**（无需人工确认），plan 行 queued/blocked → published。已发布文章不在此循环内。
 9. `image_acquire` 配图（可选，需承载真实内容、不含第三方 logo）。
 
 ## 关键参数
