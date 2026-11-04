@@ -34,7 +34,7 @@ const HEADINGS = {
     summary: /^>\s*\*\*(摘要|Summary)\*\*[：:]/im,
     takeaways: /^##\s*(关键要点|核心要点|要点速览|Key Takeaways|Key Points)/im,
     faq: /^##\s*(常见问题|FAQ)/im,
-    data_sources: /^##\s*(数据来源|引用来源|Data Sources|Sources|References)/im,
+    data_sources: /^##\s*(数据来源|资料来源|引用来源|Data Sources|Sources|References)/im,
     related: /^##\s*(相关阅读|Related Reading)/im,
     get_started: /^##\s*(立即行动|Get Started)/im,
     about: /^##\s*(关于|About\s)/im,

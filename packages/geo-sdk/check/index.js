@@ -177,10 +177,18 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   const legacyCites = (meta.geo && meta.geo.citations) || [];
   const cites = bodyCitations.length ? bodyCitations : legacyCites;
   const CHANNEL_SEGS = new Set(['blog','news','articles','resources','wiki','docs','topics','category','categories','tag','tags','insights','learn','product','products','services','about','help','support','pricing','contact','search','geo']);
+  // B2 (2026-11-04 accident): citations must point to a specific article that carries
+  // the claim. Previously only homepage / level-1 channel pages were blocked; the
+  // accident's citations (developers.google.com/search/docs, openai.com/chatgpt/overview/)
+  // sailed through as "≥2-segment deep pages". Level-2 landing pages (docs / overview /
+  // features / pricing / help …) are channels, not specific articles — now hard-blocked.
+  const LANDING_SEGS = new Set(['docs','documentation','overview','features','pricing','help','support','learn','about','contact','faq','getting-started','search','tags','categories','products','services','solutions','start','home','tutorials','guides']);
   // Non-specific-page judgment (hard violation):
   //  1) homepage: pathname empty or '/' and no specific-post query like ?p=/?page_id=;
   //  2) level-1 channel/category page: pathname of exactly 1 segment and a known
-  //     channel name (blog/news/wiki/...), and no specific-post query.
+  //     channel name (blog/news/wiki/...), and no specific-post query;
+  //  3) level-2 landing page (docs/overview/features/...): second segment is a known
+  //     landing keyword and no specific-post query (B2).
   // Deep specific pages (with ?p= specific post, /slug guide, /Organization, etc.)
   // count as specific pages and are not blocked.
   const isNonSpecificPage = (u) => {
@@ -188,18 +196,23 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
       const p = new URL(u);
       const seg = p.pathname.replace(/^\/+|\/+$/g, '');
       const segs = seg === '' ? [] : seg.split('/');
-      const specificPost = ['p','page_id','id','post','slug','shareId','share_id'].some((k) => p.searchParams.has(k));
+      const specificPost = ['p','page_id','id','post','slug','shareId','share_id','search','q'].some((k) => p.searchParams.has(k));
       if (segs.length === 0) return !specificPost;                     // homepage (no specific-post query)
       if (segs.length === 1) return CHANNEL_SEGS.has(segs[0]) && !specificPost; // level-1 channel
+      if (segs.length === 2) return LANDING_SEGS.has(segs[1]) && !specificPost; // level-2 landing page (B2)
       return false;                                                    // deep specific page
     } catch { return false; }
   };
   const missCit = cites.filter((c) => !c || !String(c.url || '').trim()); // hard: missing url
   const nonSpecCit = cites.filter((c) => { const u = String(c.url || '').trim(); return u && isNonSpecificPage(u); }); // hard: homepage/channel-level
 
-  // Channel 2: the body "数据来源 / 引用来源" block (compatible with both the bold
-  // legacy notation and the new ## heading)
-  const srcIdx = md.search(/\*\*(数据来源|Data Sources)\*\*|\*\*(引用来源|References)\*\*|^##\s*(数据来源|Data Sources|引用来源|References)/m);
+  // Channel 2: the body "数据来源 / 資料來源 / Data Sources" block (compatible with both
+  // the bold legacy notation and the new ## heading)
+  // B1 (2026-11-04 accident): the published body titled its block `## 资料来源` /
+  // `## 資料來源`; the old whitelist (数据来源|Data Sources|引用来源|References) missed it
+  // entirely, so the whole citation block was invisible to the gate
+  // ("citations: none / data-source no block" while 4 links sat in the body).
+  const srcIdx = md.search(/\*\*(数据来源|資料來源|资料来源|Data Sources)\*\*|\*\*(引用来源|引用來源|References)\*\*|^##\s*(数据来源|資料來源|资料来源|Data Sources|引用来源|引用來源|References)/m);
   let srcItemTotal = 0;
   let srcItemsNoLink = 0;   // hard: list item without any link
   let srcNonSpecItems = 0;   // hard: list item pointing to a homepage/level-1 channel
@@ -307,6 +320,57 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     }
   }
 
+  // ===== research brief — early load (G17 citation-ledger + B6 validity need the text) =====
+  // Current-lang brief first (file → DB), then the zh-hans brief as the translation-group
+  // ledger: translations cite the same sources as the zh-hans body, so en/zh-hant rows
+  // without their own brief resolve against the zh-hans one (B7 cascade).
+  let researchText = '';
+  let researchSource = null;
+  const researchPath = path.join(S.siteDir, 'data', 'inbox', LANG, slug + '.research.md');
+  const brief = await (async () => {
+    if (fs.existsSync(researchPath)) return { text: fs.readFileSync(researchPath, 'utf8'), source: 'file' };
+    for (const lf of [...new Set([LANG, 'zh-hans'])]) {
+      try {
+        const got = await t.db.withConn(async (conn) => {
+          const [rows] = await conn.query(
+            `SELECT research_md FROM tengence_geo_articles WHERE app_id = ? AND slug = ? AND lang = ? AND research_md IS NOT NULL LIMIT 1`,
+            [APP_ID, slug, lf]
+          );
+          return rows.length ? String(rows[0].research_md) : null;
+        });
+        if (got) return { text: got, source: 'articles.research_md' + (lf !== LANG ? '(' + lf + ')' : '') };
+      } catch { /* try next */ }
+    }
+    return null;
+  })();
+  const hasResearch = Boolean(brief);
+  if (brief) { researchText = brief.text; researchSource = brief.source; }
+
+  // G17 composite inputs (2026-11-04): comparison-type articles (case roundups /
+  // product solutions / T3-T4) must contain at least one markdown table; every body
+  // citation URL must trace back to the research brief (B2 ledger).
+  const isComparison = /(?:case-studies|product-solutions)/.test(dir) || /^T[34]$/.test(typeArg);
+  const hasTable = /\n\|[^\n]+\|\n\|[\s:\-|]+\|/.test(md);
+  const ledgerMiss = researchText
+    ? cites.filter((c) => c && String(c.url || '').trim() && !researchText.includes(String(c.url).trim())).map((c) => c.url)
+    : [];
+  // B3: related-reading block — every list item must be an own-site article URL
+  // (tengence.com/<lang>/blog/article/<slug>); external or top-level links are hard
+  // violations (only the Data Sources section may reference external pages).
+  let relBad = [];
+  {
+    const relM = md.match(/^##\s*(?:相关阅读|相關閱讀|相关文章|相關文章|Related Reading)[^\n]*\n([\s\S]*?)(?=\n##\s|\n---+|(?![\s\S]))/m);
+    if (relM) {
+      for (const ln of relM[1].split('\n')) {
+        if (!/^\s*[-*]\s/.test(ln) && !/<li>/.test(ln)) continue;
+        const m = ln.match(/\[[^\]]+\]\((https?:\/\/[^)\s]+)\)/) || ln.match(/<a\s+[^>]*href=["'](https?:\/\/[^"'\s]+)["']/i);
+        if (!m) { relBad.push('item without link: ' + ln.trim().slice(0, 40)); continue; }
+        const u = m[1];
+        if (!/^https?:\/\/(?:www\.)?tengence\.com\/(?:zh-hans|zh-hant|en)\/blog\/article\/[a-z0-9][a-z0-9-]*\/?$/.test(u)) relBad.push(u);
+      }
+    }
+  }
+
   const rows = [
     // 4th element soft=true means the row is informational only and doesn't affect
     // the exit code (word count inferred from dir when --type is not explicit)
@@ -333,6 +397,30 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     ['body data-source items each with a link', srcItemTotal ? (srcItemTotal - srcItemsNoLink) + '/' + srcItemTotal : 'no block', srcItemTotal === 0 || srcItemsNoLink === 0],
     ['citations banned homepage/channel-level (hard)', cites.length ? (nonSpecCit.length ? nonSpecCit.length + ' violations' : 'none') : 'none', nonSpecCit.length === 0],
     ['body data-source banned homepage/channel-level (hard)', srcItemTotal ? (srcNonSpecItems ? srcNonSpecItems + ' violations' : 'none') : 'no block', srcNonSpecItems === 0],
+    // ===== G17 substantive-content gate (2026-11-04 accident: an article with zero
+    // citations and zero data-source block — and no geo-mcp content at all — passed the
+    // gate and went live). Every G17 row is ALWAYS hard: an empty article must never be
+    // (re-)published, no manual exemption (user-confirmed). =====
+    // Decisive trigger: no citations AND no data-source block → the body carries no
+    // source material at all; composite with a length floor and (for comparison types)
+    // a mandatory table.
+    ['substantive content (G17): citations or data-source block present', cites.length + '/' + srcItemTotal, cites.length > 0 || srcItemTotal > 0, false, true],
+    ['substantive content (G17): body length floor', (LANG === 'en' ? (md.split(/\s+/).filter(Boolean).length + ' words') : (cn + ' cn chars')), (LANG === 'en' ? md.split(/\s+/).filter(Boolean).length >= 600 : cn >= 800), false, true],
+    ['substantive content (G17): comparison type contains a table', hasTable ? 'table' : 'missing', !isComparison || hasTable, false, true],
+    // B2 citation ledger (2026-11-04): every body citation URL must appear in the
+    // research brief. Hard when a brief exists (always-hard: re-publishing with a
+    // citation that no research supports is a substantive defect); n/a when no brief.
+    ...(researchText
+      ? [['citation URLs present in research brief (B2 ledger)', ledgerMiss.length ? ledgerMiss.length + ' missing: ' + ledgerMiss.slice(0, 3).join(' ') : 'all ' + cites.length + ' cited in brief', ledgerMiss.length === 0, false, true]]
+      : [['citation URLs present in research brief (B2 ledger)', 'no brief (ledger n/a)', true, true]]),
+    // B6 (2026-11-04): a hollow research brief ("industry blogs", zero URLs) must not
+    // count as research. The brief has to carry actual source URLs (≥2). Advisory for
+    // already-published rows (the brief gates writing); hard for first-time publishes.
+    ['research brief contains source URLs (G17/B6)', researchText ? ((researchText.match(/https?:\/\//g) || []).length + ' urls') : 'no brief', !hasResearch || (researchText.match(/https?:\/\//g) || []).length >= 2, isPublished, false],
+    // B3 related reading (2026-11-04 accident): the block linked external site homepages
+    // (perplexity.ai / docs.anthropic.com / huggingface.co). Only own-site article URLs
+    // are allowed here; external references live exclusively in the Data Sources section.
+    ['related-reading links own-site article only (hard)', relBad.length ? relBad.join(', ') : 'ok', relBad.length === 0, false, true],
     // 2026-10-06 new publishing requirements (hard for first-time publishes; advisory
     // once the article is already on WP, like every other editorial row below)
     ['internal links carry own-language prefix (hard)', linkIssues.length ? linkIssues.length + ' violations' : 'ok', linkIssues.length === 0],
@@ -366,27 +454,8 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
 
   // ===== pre-writing research brief (AGENTS.md §9: the mandatory research gate
   // before writing the body; upgraded from soft warning to hard check 2026-09-18) =====
-  // Based on root AGENTS.md "九、文章写作前研究" and article-writer stage 0: the
-  // research brief is the mandatory pre-writing gate artifact; missing blocks publish
-  // (hard check, exit code 1). Same lang as the article.
-  const researchPath = path.join(S.siteDir, 'data', 'inbox', LANG, slug + '.research.md');
-  let hasResearch = fs.existsSync(researchPath);
-  let researchSource = hasResearch ? 'file' : null;
-  if (!hasResearch) {
-    // DB fallback: articles.research_md (brief ingested; the file may be deleted after)
-    try {
-      hasResearch = await t.db.withConn(async (conn) => {
-        const [rows] = await conn.query(
-          `SELECT research_md FROM tengence_geo_articles WHERE app_id = ? AND slug = ? AND lang = ? AND research_md IS NOT NULL LIMIT 1`,
-          [APP_ID, slug, LANG]
-        );
-        return rows.length > 0;
-      });
-      if (hasResearch) researchSource = 'articles.research_md';
-    } catch (e) {
-      hasResearch = false;
-    }
-  }
+  // Loaded early (see the G17/B2/B6 rows); translations resolve to the zh-hans brief
+  // as the group ledger (B7). Missing brief = warning + hard row for drafts.
   if (!hasResearch) {
     warns.push('No pre-writing research brief found (file or articles.research_md; AGENTS.md §9: the mandatory pre-writing research gate — missing blocks publish)');
   }
@@ -451,7 +520,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
 
   // 3. legacy bold remnant at the end of the body (should be upgraded to ## headings;
   // templates / site conventions already upgraded)
-  const legacyBold = (md.match(/\*\*(相关阅读|数据来源|立即行动|引用来源|Related Reading|Data Sources|Get Started|References)\*\*/g) || []).length;
+  const legacyBold = (md.match(/\*\*(相关阅读|数据来源|資料來源|资料来源|立即行动|引用来源|引用來源|Related Reading|Data Sources|Get Started|References)\*\*/g) || []).length;
   if (legacyBold) {
     warns.push('End-of-body blocks still use the bold notation in ' + legacyBold + ' places (should be upgraded to ## Related Reading / ## Data Sources / ## Get Started)');
   }

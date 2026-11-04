@@ -885,7 +885,9 @@ function isCitationsHeading(text) {
   return (
     n === '数据来源' ||
     n === '資料來源' ||
+    n === '资料来源' || // B1 (2026-11-04 accident): the live body titled its block `资料来源`
     n === '引用來源' ||
+    n === '引用来源' ||
     n === 'Data Sources'
   );
 }

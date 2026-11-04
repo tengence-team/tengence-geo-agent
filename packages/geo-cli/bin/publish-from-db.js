@@ -170,19 +170,38 @@ async function main() {
         );
         lang = rows[0] && rows[0].lang;
       }
-      // Translation rows (en / zh-hant) are gated by check_translation (T1–T8), which the
-      // harness runs before ingest; the zh writing gate (checkArticle) does not apply to them.
+      // Translation rows (en / zh-hant) are gated by the SAME checkArticle as zh-hans
+      // (B7 cascade, 2026-11-04): the writing gate no longer skips them — their
+      // research brief resolves to the zh-hans one (group ledger), and the G17 /
+      // citation / related-reading hard rows apply to every language.
       const isTranslation = lang && lang !== 'zh-hans';
       const gateDir = (planRow && planRow.category) || 'industry-insights';
       if (slug) {
-        if (isTranslation) {
-          console.log(`  ⏭️  Translation row (lang=${lang}): writing gate skipped (check_translation T1–T8 already passed by the harness before ingest)`);
-        } else {
-        const gateReport = await t.check.checkArticle({ slug, dir: gateDir });
+        // --type: only zh-hans carries a word-count type range (T1..T7); passing a type
+        // to en/zh-hant would hard-fail their Chinese-char row (English bodies count 0
+        // Chinese chars), so the type is left undeclared for translations.
+        const planType = isTranslation ? null : ((planRow && planRow.node_type) || null);
+        const gateReport = await t.check.checkArticle({ slug, dir: gateDir, type: planType, lang: lang || undefined });
         if (!gateReport.ok) {
-          console.log(`\n⛔ Gate failed, skipping ID ${articleId} (${slug})`);
+          console.log(`\n⛔ Gate failed, skipping ID ${articleId} (${slug}${isTranslation ? ', lang=' + lang : ''})`);
           for (const [k, v, ok, soft] of gateReport.rows) {
-            console.log((ok ? '✅' : (soft ? '⚠️' : '❌')) + ' ' + k + ': ' + v);
+            if (!ok && !soft) console.log('❌ ' + k + ': ' + v);
+          }
+          // B5 (user-confirmed 2026-11-04): a G17 substantive-content failure forces a
+          // rewrite — the article row is written back to draft, the plan row to blocked,
+          // and there is no manual exemption. Re-publishing an empty article must never
+          // succeed silently.
+          const g17Failed = gateReport.rows.some((r) => String(r[0]).startsWith('substantive content (G17)') && !r[2]);
+          if (g17Failed) {
+            await connection.query(
+              "UPDATE tengence_geo_articles SET status = 'draft' WHERE id = ? AND app_id = ?",
+              [articleId, getState().CONFIG.app_id]
+            );
+            await connection.query(
+              "UPDATE tengence_geo_article_plan SET plan_status = 'blocked', notes = COALESCE(notes, '') || ' [G17 forced rewrite: no substantive content; rewrite before publishing]' WHERE app_id = ? AND (slug = ? OR id = ?)",
+              [getState().CONFIG.app_id, slug, articleId]
+            );
+            console.log(`  ✍️  G17 forced rewrite: articles.${articleId} → draft, plan row → blocked (no manual override)`);
           }
           console.log('>>> Some checks failed (must pass the gate before publishing, see AGENTS.md)');
           gateSkipped++;
@@ -190,7 +209,6 @@ async function main() {
           continue;
         }
         console.log(`  ✅ Gate passed: ${slug}`);
-        }
       }
       try {
         const result = await publishArticle(connection, articleId, {

@@ -118,7 +118,11 @@ Rules:
    ```
 
 2. **They must be the specific page that states the claim.** ❌ a homepage, ❌ a level-1
-   channel page (`example.com/blog/`), ❌ a guessed URL.
+   channel page (`example.com/blog/`), ❌ a level-2 landing page (`…/docs`, `…/overview`,
+   `…/features`, `…/pricing`, `…/help`, `…/learn`, `…/about`, `…/contact`, `…/faq`, …),
+   ❌ a guessed URL. (2026-11-04: citations like `developers.google.com/search/docs` and
+   `openai.com/chatgpt/overview/` previously sailed through as "deep pages"; they are now
+   hard-blocked.)
 3. **Preferred sources**: arXiv papers, official documentation, listed-company filings
    and investor-relations pages, official engineering blogs, and the **specific report
    page** of a research firm.
@@ -127,6 +131,16 @@ Rules:
 5. In the data-sources block, state for each item **which claim it supports**.
 6. **If you cannot find the specific source for a claim, delete the claim.** Do not
    weaken it into a vague number and do not substitute a homepage URL.
+7. **The data-sources block heading must be one the gate recognizes** (2026-11-04
+   accident): `## 数据来源` / `## 资料来源` / `## 資料來源` / `## Data Sources` /
+   `## 引用来源` / `## 引用來源` / `## References`. An unrecognized block title makes
+   the whole citation block invisible to the gate.
+8. **Citation ledger (2026-11-04, gate-enforced)**: every citation URL in the body must
+   appear verbatim in the research brief (`<slug>.research.md` / `articles.research_md`).
+   A citation that no research supports is a substantive defect and blocks publishing.
+9. **The research brief must be real research** (2026-11-04): it has to carry actual
+   source URLs (≥2). A hollow brief ("industry blogs", no URLs) does not satisfy the
+   pre-writing research gate.
 
 ## 5. Internal links
 
@@ -147,6 +161,12 @@ Rules:
    between languages. The publish chain normalizes the prefix automatically on the
    WP write exit (`buildPostHtml`), and the gates (`check_article` rows + the
    translation gate T10) verify the md source.
+7. **Related Reading only carries own-site article URLs** (2026-11-04, hard-gated):
+   every item must be `tengence.com/<lang>/blog/article/<slug>/`. External links and
+   site-top-level links (e.g. `perplexity.ai/`, `docs.anthropic.com/`,
+   `huggingface.co/`) are removed from the block; if no qualifying on-site article
+   exists, delete the whole block. External references live **only** in the Data
+   Sources section.
 
 ## 6. Quality bar (this decides whether AI will cite the article)
 
@@ -163,6 +183,14 @@ Rules:
   - ✅ at least one Markdown table (comparison, metrics, or checklist)
   - ✅ executable methods, decision rules, rollout steps — not generalities
   - ✅ figures with a source; when it cannot be verified, use a qualitative statement
+- **G17 substantive-content gate (2026-11-04, always hard, no manual exemption)**:
+  an article that fails any of the following is blocked and **forced back to
+  rewrite** (`articles.status=draft`, plan row `blocked`):
+  - body carries **no citations and no data-sources block** at all;
+  - body length floor: zh-hans/zh-hant < 800 Chinese chars, en < 600 words;
+  - comparison-type articles (case studies / product solutions / T3–T4) contain
+    **no Markdown table**.
+  Empty shells must never be published or re-published.
 - **Cases**: never name a real company, brand or person. Use natural generic
   descriptors, and never invent a case — with no real data, write no case section.
 
@@ -174,7 +202,9 @@ pass before reporting** — never hand back a failing draft.
 
 ## 8. Editorial gates G1–G16
 
-All 16 must pass before publishing; any failure sends the article back.
+All 17 must pass before publishing; any failure sends the article back. G17 is
+**always hard** — it also applies to re-publishing an already-live article, with no
+manual exemption (2026-11-04).
 
 | ID | Gate | Criterion |
 |---|---|---|
@@ -183,7 +213,7 @@ All 16 must pass before publishing; any failure sends the article back.
 | G3 | Key-takeaways block | 4–8 items, after the lead and before the first H2 |
 | G4 | FAQ block | 4–8 pairs in the Q/A notation |
 | G5 | Entity byline | real author name + Organization |
-| G6 | Verifiable citations | sourced links with dates; no homepage or level-1 channel pages |
+| G6 | Verifiable citations | sourced links with dates; no homepage, no level-1 channel pages, no level-2 landing pages (`…/docs`, `…/overview`, `…/features`, `…/pricing`, `…/help`, …) |
 | G7 | Anonymized data | no real companies or people; use generic descriptors |
 | G8 | No fabrication | no invented cases or figures |
 | G9 | Internal links | ≥2 pointing at the hub, no dead links |
@@ -194,6 +224,7 @@ All 16 must pass before publishing; any failure sends the article back.
 | G14 | Correct CTA | routed by product line, no broken links; **each link on its own line, never joined by `|`** |
 | G15 | Internal-link language prefix | every on-site article link carries the article's own language prefix (zh-hans→/zh-hans/, en→/en/, zh-hant→/zh-hant/); no cross-language hops |
 | G16 | CTA list layout | the Get Started / 立即行动 block renders as a list (`<ul><li>`), never a single paragraph with several links |
+| G17 | Substantive content | no citations **and** no data-sources block → fail; zh-hans/zh-hant < 800 chars or en < 600 words → fail; comparison types without a Markdown table → fail; **always hard, no manual exemption, failure forces rewrite (draft + blocked)** |
 
 ## 9. Site-specific items
 

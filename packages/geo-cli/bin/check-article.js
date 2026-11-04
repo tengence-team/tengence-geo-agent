@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 // Article gate check: word count (per article type) / banned words / meta length / the three
 // blocks (summary·takeaways·FAQ) with materialization preview / citation source-link integrity
-// Usage: tengence-geo check-article.js <slug> [<dir=industry-insights>] [--type=T1..T7]
+// Usage: tengence-geo check-article.js <slug> [<dir=industry-insights>] [--type=T1..T7] [--lang=<lang>]
 //   --type: explicitly declares the article type (T1 definition / T2 how-to / T3 product
 //           solution / T4 case study / T5 industry / T6 comparison / T7 documentation),
 //           enforcing the word-count range by type (hard check); when omitted, infers by
 //           directory (soft hint only, non-blocking).
+//   --lang: article language (defaults to the site default). Multi-language articles must
+//           pass the gate with their own lang so the DB lookup is unambiguous (B7, 2026-11-04).
 // Exit code 0 = all passed, 1 = failures exist, 2 = usage error
 //
 // 2026-09-20 sink-down: the check logic moved entirely into tengence-geo-sdk/check
@@ -20,18 +22,19 @@ const t = require('@tengence/geo-sdk');
 
 async function main() {
   const { positionals, flags } = t.cli.args.parse(
-    { type: { type: 'string' } },
+    { type: { type: 'string' }, lang: { type: 'string' } },
     process.argv.slice(2)
   );
   const slug = positionals[0];
   const dir = positionals[1] || 'industry-insights';
   const typeArg = (flags.type || '').trim().toUpperCase();
+  const langArg = (flags.lang || '').trim() || null;
   if (!slug) {
-    console.error('Usage: tengence-geo check-article.js <slug> [<dir>] [--type=T1..T7]');
+    console.error('Usage: tengence-geo check-article.js <slug> [<dir>] [--type=T1..T7] [--lang=<lang>]');
     process.exit(2);
   }
 
-  const report = await t.check.checkArticle({ slug, dir, type: typeArg || null });
+  const report = await t.check.checkArticle({ slug, dir, type: typeArg || null, lang: langArg });
   const { rows, warns } = report;
 
   if (report.unknownType) {
