@@ -68,6 +68,7 @@ function parseArgs(argv) {
       'meta-title': { type: 'string' },
       'meta-desc': { type: 'string' },
       'post-title': { type: 'string' },
+      'skip-gate': { type: 'boolean' },
       lang: { type: 'string', default: 'zh-hans' },
       site: { type: 'string', default: DEFAULT_SITE },
     },
@@ -85,6 +86,7 @@ function parseArgs(argv) {
     metaTitle: flags['meta-title'] || '',
     metaDesc: flags['meta-desc'] || '',
     postTitle: flags['post-title'] || '',
+    skipGate: Boolean(flags['skip-gate']),
     lang: flags.lang,
     site: flags.site,
     markdownFile: positionals.length ? path.resolve(positionals[0]) : null,
@@ -316,6 +318,46 @@ async function metaOnlyUpdate(options) {
   console.log('='.repeat(70));
 }
 
+/**
+ * Gate: hard block before any status=publish write (2026-11-04). The full-update
+ * path used to bypass check-article entirely (--status defaults to publish), so a
+ * skeleton article could go live with zero substance checks. checkArticle runs
+ * against the DB row for slug+lang (B7 cascade resolves the research brief);
+ * on failure the publish is aborted and the article must be rewritten first.
+ * --skip-gate is refused for publish; it only exists for explicit --status=draft
+ * authoring writes (which never touch the live state).
+ */
+async function runGate(options, postId) {
+  let slug = options.slug || '';
+  if (!slug && postId) {
+    try {
+      const p = await t.wp.posts.get(postId, '?_fields=id,slug,status');
+      slug = (p && p.slug) || '';
+    } catch (e) {
+      slug = '';
+    }
+  }
+  if (!slug) {
+    console.error(`✗ Gate: cannot resolve a slug for post ${postId}; aborting the publish (use --slug or fix the target)`);
+    process.exit(1);
+  }
+
+  console.log('\n🔍 Gate check (check-article)...');
+  const report = await t.check.checkArticle({ slug, lang: options.lang, site: options.site });
+  for (const [k, v, ok, soft] of report.rows) {
+    console.log((ok ? '✅' : (soft ? '⚠️' : '❌')) + ' ' + k + ': ' + v);
+  }
+  if (report.warns.length) {
+    console.log('\n⚠️  Soft warnings (non-blocking, recommended to clean up):');
+    for (const w of report.warns) console.log('   - ' + w);
+  }
+  if (!report.ok) {
+    console.error('\n❌ Gate failed, aborting the publish. Rewrite the article (G17 substance requirements) before publishing.');
+    process.exit(1);
+  }
+  console.log('  ✅ Gate passed');
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   const mdFile = options.markdownFile;
@@ -480,6 +522,15 @@ async function main() {
   } else {
     console.log('✗ Specify either --slug or --post-id');
     process.exit(1);
+  }
+
+  // step 6.5: gate — mandatory before any publish-status write (2026-11-04)
+  if (options.status === 'publish') {
+    if (options.skipGate) {
+      console.error('Error: --skip-gate is not allowed with --status=publish (the gate is mandatory before publishing)');
+      process.exit(1);
+    }
+    await runGate(options, postId);
   }
 
   // step 7: update the article

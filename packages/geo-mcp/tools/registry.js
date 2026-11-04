@@ -1029,13 +1029,49 @@ const tools = [
         if (!postId) {
           connection = await t.db.createConnection();
           const [rows] = await connection.query(
-            'SELECT id, wp_post_id, title, seo, lang FROM tengence_geo_articles WHERE id = ? AND app_id = ? LIMIT 1',
+            'SELECT id, slug, wp_post_id, title, seo, lang FROM tengence_geo_articles WHERE id = ? AND app_id = ? LIMIT 1',
             [args.article_id, appId]
           );
           dbRow = rows[0] || null;
           postId = dbRow && dbRow.wp_post_id;
           if (!postId) {
             return fail(new Error(`Article ${args.article_id} has no wp_post_id (not published yet)`));
+          }
+        }
+
+        // ---- 2.5 GATE: any write that flips the post to status=publish must pass
+        // the substantive-content gate first (2026-11-04). This tool used to write
+        // status/content directly with no checkArticle, so a skeleton article with a
+        // wp_post_id could be force-published. Field-level / meta-only updates that
+        // do not touch status are unaffected. The DB row is the authority for
+        // slug+lang (B7 cascade resolves the research brief); when only a wp_post_id
+        // is given, the slug is read back from WP.
+        if (wpBody.status === 'publish') {
+          let slug = dbRow ? dbRow.slug : null;
+          let lang = args.lang || (dbRow && dbRow.lang) || null;
+          if (!slug && postId) {
+            try {
+              const p = await t.wp.posts.get(postId, '?_fields=id,slug,status', { siteKey });
+              slug = (p && p.slug) || null;
+            } catch (e) {
+              slug = null;
+            }
+          }
+          if (!slug) {
+            return fail(new Error(`Gate: cannot resolve a slug for post ${postId}; refusing status=publish`));
+          }
+          const report = await t.check.checkArticle({ slug, lang: lang || undefined, site: siteKey });
+          if (!report.ok) {
+            const hard = report.rows
+              .filter((r) => !r[2] && !r[3])
+              .map((r) => `${r[0]}: ${r[1]}`)
+              .join('; ');
+            return fail(
+              new Error(
+                `Gate failed — refusing to publish "${slug}" (${lang || 'site default'}): ${hard || 'unknown rows'}. ` +
+                  'A substantive-content (G17) failure forces a rewrite before publishing; no manual override.'
+              )
+            );
           }
         }
 

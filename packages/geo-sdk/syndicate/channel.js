@@ -1079,6 +1079,31 @@ async function publishToChannel({ platform, slugs = [], articles = [], asDraft =
 
   if (!siteKey) siteKey = t.site.readSiteArg();
 
+  // GATE (2026-11-04): Mode A (slugs → real platform write) must pass the
+  // substantive-content gate for every slug BEFORE any external call. This
+  // covers the MCP channel_publish tool, the channel-publish CLI and the
+  // channel-schedule auto-promoter alike — all three enter through here.
+  // Mode B (articles[] → local export package) is never sent automatically,
+  // so it is exempt. dryRun never touches the platform, so it is exempt.
+  if (hasSlugs && !dryRun) {
+    const S = t.site.loadSite(siteKey || undefined);
+    const defaultLang = (S.site && S.site.languages && S.site.languages.default) || 'zh-hans';
+    const failed = [];
+    for (const slug of slugs) {
+      try {
+        const report = await t.check.checkArticle({ slug, lang: defaultLang, site: siteKey });
+        if (!report.ok) failed.push(slug);
+      } catch (e) {
+        failed.push(`${slug} (check error: ${e.message})`);
+      }
+    }
+    if (failed.length) {
+      throw new Error(
+        `channel_publish gate: ${failed.length} article(s) failed the substantive-content gate before sending: ${failed.join(', ')} — rewrite them (G17 requirements) before publishing`
+      );
+    }
+  }
+
   if (hasSlugs) {
     return publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, siteKey });
   }
