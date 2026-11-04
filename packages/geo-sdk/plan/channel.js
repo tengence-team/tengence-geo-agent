@@ -147,6 +147,14 @@ async function clearPlatform(platform) {
  * @returns {Promise<Set<string>>}
  */
 const DEFAULT_DISPATCHED = new Set(['published', 'reviewing']);
+
+// 自动派发（nextDue）时不自动重发的"终态"集合（2026-10-24）。
+// 目的：切断 review_failed 被 nextDue 无限重选、在 CSDN 等无"草稿→发布"两步的平台
+// 反复新建副本的死循环。这类行需人工在 channel_plan 改回 todo 才会重入自动队列，或显式
+// publishToChannel({slugs}) 手动重发（手动走 filterUnpublished，不受本集合限制）。
+// 注意：'draft' 仅对 juejin 等非 dispatched 平台生效；wechat/devto 的 'draft' 已在各自
+// dispatched 集合内（published.has 已跳过），此处再加一层保险。
+const NO_AUTO_RETRY = new Set(['review_failed', 'deleted', 'paused', 'draft']);
 /**
  * Per-platform "already dispatched" statuses (2026-10-08).
  *
@@ -348,10 +356,12 @@ async function recordWechatIssue(rec) {
  *     by title. Unmatched titles fall back to a synthetic slug so they are recorded.
  *
  * v7: rows are keyed by (platform, slug, lang); `lang` defaults to the platform's
- * default language (PLATFORM_LANGS).
+ * default language (PLATFORM_LANGS). When the platform article id is known (map
+ * entry or live item) it is recorded on the row so the local calendar can
+ * deep-link / re-check without re-querying the platform.
  *
  * @param {string} platform platform key (juejin / csdn / …)
- * @param {{map?:Array<{slug:string, lang?:string, title?:string, draftId?:string, notes?:string}>}} opts
+ * @param {{map?:Array<{slug:string, lang?:string, title?:string, draftId?:string, articleId?:string, notes?:string}>}} opts
  * @returns {Promise<{platform:string, source:string, inserted:number, matched:number, unmatched:number}>}
  */
 async function reconcileFromPlatform(platform, { map } = {}) {
@@ -361,7 +371,7 @@ async function reconcileFromPlatform(platform, { map } = {}) {
   if (Array.isArray(map) && map.length) {
     await withConn(async (conn) => {
       for (const m of map) {
-        await repo.upsert(conn, appId, {
+        const r = await repo.upsert(conn, appId, {
           platform,
           slug: m.slug,
           lang: m.lang || lang,
@@ -370,6 +380,12 @@ async function reconcileFromPlatform(platform, { map } = {}) {
           draft_ids: m.draftId ? [m.draftId] : [],
           notes: m.notes || null,
         });
+        // Record the platform article id when the caller knows it (e.g. backfilling
+        // an article published outside the scheduler). Keep as string — Juejin ids
+        // are 19-digit Snowflake ids that lose precision as a JS Number.
+        if (m.articleId != null && String(m.articleId)) {
+          await repo.setArticleId(conn, appId, r.id, String(m.articleId));
+        }
       }
     });
     return { platform, source: 'map', inserted: map.length, matched: map.length, unmatched: 0 };
@@ -405,9 +421,10 @@ async function reconcileFromPlatform(platform, { map } = {}) {
       const title = it.title || '';
       const articleId = it.id;
       const slug = titleToSlug.get(title.trim().toLowerCase());
+      let rowId;
       if (slug) {
         matched += 1;
-        await repo.upsert(conn, appId, {
+        const r = await repo.upsert(conn, appId, {
           platform,
           slug,
           lang,
@@ -415,9 +432,10 @@ async function reconcileFromPlatform(platform, { map } = {}) {
           status: 'published',
           notes: null,
         });
+        rowId = r.id;
       } else {
         unmatched += 1;
-        await repo.upsert(conn, appId, {
+        const r = await repo.upsert(conn, appId, {
           platform,
           slug: String(articleId),
           lang,
@@ -425,6 +443,12 @@ async function reconcileFromPlatform(platform, { map } = {}) {
           status: 'published',
           notes: 'unmatched title — synthetic slug',
         });
+        rowId = r.id;
+      }
+      // The live item carries the platform's authoritative article id — record it
+      // (string; 19-digit Snowflake ids lose precision as a JS Number).
+      if (articleId != null && String(articleId)) {
+        await repo.setArticleId(conn, appId, rowId, String(articleId));
       }
       inserted += 1;
     }
@@ -554,7 +578,10 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
     const a = ai.audit_status;
     if (a === 2) return 'published'; // 审核通过
     if (a === 1) return 'reviewing'; // 审核中
-    return 'review_failed'; // 0 / 3 / other → treat as rejected (retryable)
+    // 草稿未发布（孤儿）：audit_status=-1 且 status=0 = 从未真正发布（页面 404），
+    // 不是"审核未通过"，不应落入 review_failed 触发重发。标记 draft（已被 NO_AUTO_RETRY 覆盖，不自动重选）。
+    if (a === -1 && (ai.status === 0 || ai.status == null)) return 'draft';
+    return 'review_failed'; // 0 / 3 / other → treat as rejected (retryable via manual)
   };
   // The platform APIs expose NO reject reason text — the human-flag tells the user
   // where to look (Juejin/CSDN backend) while keeping the machine state truthful.
@@ -699,6 +726,7 @@ async function nextDue(platform, { count = 1, register = true } = {}) {
       const key = `${r.slug}::${r.lang}`;
       if (published.has(key)) continue; // 已发送 → 下一篇
       let task = await repo.getByKey(conn, appId, platform, r.slug, r.lang);
+      if (task && NO_AUTO_RETRY.has(task.status)) continue; // 终态：不自动重发，需人工
       if (!task) {
         if (!register) {
           // dry-run preview: never write; the row will be registered at real fire time

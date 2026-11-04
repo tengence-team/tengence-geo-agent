@@ -42,6 +42,7 @@ const tencent = require('./tencent');
 const tencentTaxonomy = require('./tencent-taxonomy');
 const { publishDevto } = require('./devto');
 const { articleUrl, appendUtm, rewriteMarkdownUtm, langFor } = require('./utm');
+const styleCheck = require('./styleCheck');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
 
@@ -328,6 +329,25 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
         // 渠道出口正文：本站链接统一加渠道语言前缀 + UTM 归因参数
         // （只动 tengence.com 域链接，第三方引用原样保留；详见 syndicate/utm.js）
         const contentMd = rewriteMarkdownUtm(article.contentMd, { platform, lang });
+
+        // ---- 硬拦截闸门（HARD GATE, 2026-10-24）----
+        // 发布前强制 styleCheck（仅校验正文，避免误伤标题长度等平台自带处理）。
+        // 任何 HARD 错误（营销块/转化链接/违禁词/超长/emoji）一律拒发，不调平台接口。
+        // 规范从此从"纸面"变"硬拦截"；dryRun 不拦截（保持预览语义）。
+        if (!dryRun) {
+          const gate = styleCheck.check({ platform, body: contentMd });
+          if (!gate.ok) {
+            failed += 1;
+            const reason = `硬拦截 styleCheck 未通过（${gate.errors.length} 项）：${gate.errors.slice(0, 5).join('；')}`;
+            appendLog(site.siteDir, {
+              action: 'blocked-style', platform, slug, ok: false,
+              detail: { errors: gate.errors, warnings: gate.warnings },
+            });
+            results.push({ slug, ok: false, blocked: true, reason, errors: gate.errors });
+            continue;
+          }
+        }
+
         const dir = exportDir(site.siteDir, platform);
         fs.mkdirSync(dir, { recursive: true });
         const mdPath = path.join(dir, `${slug}.md`);
@@ -683,6 +703,22 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
       continue;
     }
     try {
+      // ---- 硬拦截闸门（HARD GATE, 2026-10-24，Mode B）----
+      // 与 Mode A 同源：仅校验正文，任何 HARD 错误拒发（不落盘、不推送）。
+      if (!dryRun) {
+        const gate = styleCheck.check({ platform, body: article.contentMd });
+        if (!gate.ok) {
+          failed += 1;
+          const reason = `硬拦截 styleCheck 未通过（${gate.errors.length} 项）：${gate.errors.slice(0, 5).join('；')}`;
+          appendLog(site.siteDir, {
+            action: 'blocked-style', platform, slug: article.slug, ok: false,
+            detail: { errors: gate.errors, warnings: gate.warnings },
+          });
+          exported.push({ slug: article.slug, ok: false, blocked: true, reason, errors: gate.errors });
+          article.__gateBlocked = true; // 后续 wechat/juejin 推送循环据此跳过
+          continue;
+        }
+      }
       const mdPath = path.join(dir, `${article.slug}.md`);
       fs.writeFileSync(mdPath, renderPublishPackage(platform, article), 'utf8');
       exported.push({ slug: article.slug, ok: true, path: mdPath });
@@ -712,7 +748,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
   const plat = registry.getPlatform(platform);
   if (plat && plat.api === 'official' && platform === 'wechat' && !dryRun) {
     try {
-      pushResult = await publishRewrittenToWechat({ articles: activeArticles, siteKey });
+      pushResult = await publishRewrittenToWechat({ articles: activeArticles.filter((a) => !a.__gateBlocked), siteKey });
     } catch (e) {
       failed += 1;
       appendLog(site.siteDir, { action: 'push-error', platform, ok: false, detail: { error: e.message } });
@@ -728,6 +764,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
     const taxoCtx = await juejinTaxonomy.prepareJuejinTaxonomy({ siteDir: site.siteDir, autoSync: true });
     const TITLE_MAX = 40;
     for (const article of activeArticles) {
+      if (article.__gateBlocked) continue; // 已被硬闸拦截，跳过推送
       if (!article.slug || !article.title || !article.contentMd) continue;
       try {
         let title = String(article.title || '');

@@ -2166,7 +2166,7 @@ const tools = [
       'Filter by platform / slug / status / lang; limit caps rows (default 50, ascending by id).',
     inputSchema: z.object({
       platform: z.string().optional().describe('filter to one platform (juejin / csdn / aliyun / tencent / devto / wechat)'),
-      slug: z.string().optional().describe('filter to one article slug (exact match, applied in-memory)'),
+      slug: z.string().optional().describe('filter to one article slug (exact match, filtered in SQL)'),
       status: z.string().optional().describe('filter by status: failed | published | draft | reviewing | review_failed | deleted | todo | paused'),
       lang: z.string().optional().describe('language filter (default zh-hans; devto=en)'),
       limit: z.number().optional().describe('max rows (default 50)'),
@@ -2175,19 +2175,21 @@ const tools = [
     async run(args) {
       try {
         const appId = Number(process.env.APP_ID || 1);
+        // slug is filtered in SQL (db/channel-plan.js list) so LIMIT cannot truncate
+        // the result set before the slug match.
         const rows = await t.db.withConn(async (conn) =>
           t.db.channelPlan.list(conn, appId, {
             platform: args.platform,
             status: args.status,
             lang: args.lang,
+            slug: args.slug,
             limit: args.limit || 50,
           })
         );
-        const filtered = args.slug ? rows.filter((r) => r.slug === args.slug) : rows;
         return ok({
           ok: true,
-          count: filtered.length,
-          rows: filtered.map((r) => ({
+          count: rows.length,
+          rows: rows.map((r) => ({
             id: r.id,
             platform: r.platform,
             slug: r.slug,
@@ -2242,8 +2244,10 @@ const tools = [
     description:
       'Reconcile a platform channel_plan with what is ACTUALLY published on that platform (platform=juejin | csdn). ' +
       'This SEEDS the publish plan with already-published articles — we do NOT bulk-import the blog plan (the table logs ' +
-      'real outcomes, so each platform keeps its own calendar). Pass map[] of {slug, lang?, title?} for the ' +
-      'explicitly-known published articles (recommended — avoids API rate limits), or omit map to live-read the platform ' +
+      'real outcomes, so each platform keeps its own calendar). Pass map[] of {slug, lang?, title?, articleId?} for the ' +
+      'explicitly-known published articles (recommended — avoids API rate limits); the platform article id (e.g. the Juejin ' +
+      'post id) is recorded on the row when known, so the local calendar can deep-link without re-querying the platform. ' +
+      'Omit map to live-read the platform ' +
       'published list and match titles back to blog slugs. Idempotent (upsert by platform+slug+lang; lang defaults to the ' +
       "platform's language, e.g. zh-hans). Run this once per platform before the first channel_plan_next so the " +
       'already-published articles are skipped instead of re-published.',
@@ -2255,6 +2259,9 @@ const tools = [
             slug: z.string(),
             lang: z.string().optional().describe("article language, e.g. 'zh-hans' (default: platform's language)"),
             title: z.string().optional(),
+            articleId: z.string().optional().describe('platform article id to record (e.g. Juejin post id); kept as string'),
+            draftId: z.string().optional().describe('platform draft id (optional)'),
+            notes: z.string().optional(),
           })
         )
         .optional()

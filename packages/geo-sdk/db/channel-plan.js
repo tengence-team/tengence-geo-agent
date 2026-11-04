@@ -68,8 +68,12 @@ function normalizeRow(row) {
 }
 
 /**
- * List task rows (optional platform / status / lang filter).
- * @param {object} filters { platform, status, lang, limit }
+ * List task rows (optional platform / status / lang / slug filter).
+ * NOTE: slug is filtered in SQL — a caller that combines slug with `limit` must
+ * not let LIMIT truncate the result set before the slug match (the old
+ * channel_plan_status path filtered slug in-memory after LIMIT and silently
+ * returned nothing for rows past the limit).
+ * @param {object} filters { platform, status, lang, slug, limit }
  */
 async function list(conn, appId, filters = {}) {
   let sql = `SELECT * FROM ${CHANNEL_PLAN} WHERE app_id = ?`;
@@ -85,6 +89,10 @@ async function list(conn, appId, filters = {}) {
   if (filters.lang) {
     sql += ' AND lang = ?';
     params.push(normalizeLang(filters.lang));
+  }
+  if (filters.slug) {
+    sql += ' AND slug = ?';
+    params.push(filters.slug);
   }
   sql += ' ORDER BY id ASC';
   if (filters.limit) {
