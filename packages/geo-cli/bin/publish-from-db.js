@@ -191,7 +191,10 @@ async function main() {
           // rewrite — the article row is written back to draft, the plan row to blocked,
           // and there is no manual exemption. Re-publishing an empty article must never
           // succeed silently.
-          const g17Failed = gateReport.rows.some((r) => String(r[0]).startsWith('substantive content (G17)') && !r[2]);
+          // NOTE (2026-11-04): rows are labelled "substantive content (G17-5)" / "(G17-6)" —
+          // the old startsWith('substantive content (G17)') (trailing ')') never matched the
+          // "-" after G17, so the forced-rewrite branch silently never ran.
+          const g17Failed = gateReport.rows.some((r) => /^substantive content \(G17/.test(String(r[0])) && !r[2]);
           if (g17Failed) {
             await connection.query(
               "UPDATE tengence_geo_articles SET status = 'draft' WHERE id = ? AND app_id = ?",
