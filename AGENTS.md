@@ -52,15 +52,43 @@ fixed. The full parser contract is `standards/block-conventions.md`.
 3. Optionally `geo://standard/content-strategy` / `geo://standard/block-conventions`
    for format selection and parser details.
 4. `article_ingest` the body + research brief.
-5. `check_article` — enforces the **same** G1–G16 rules codified in
+5. `check_article` — enforces the **same** G1–G18 rules codified in
    `article-writing-standards` (citation dual-channel, word count by type, banned words,
    the four blocks, research-brief hard check, **internal-link language prefix,
-   CTA single-link-per-line layout**). **Do not skip it.**
+   CTA single-link-per-line layout**, and the **G18 always-hard tag/category
+   topic semantics gate**, see §4.5). **Do not skip it.**
 6. `publish_draft`.
 
 The gate (`packages/geo-sdk/check/index.js`) is the *codified mirror* of
 `article-writing-standards.md`. Keep the two in sync by hand and record the link in
 `standards/block-conventions.md` — the code does not read the doc to generate checks.
+
+## 4.5 G18 taxonomy semantics is a HARD gate (2026-11-05, red line)
+
+The 2026-11 batch generated tags from **category templates**: an Algolia
+site-search comparison shipped with `ai-ask` (Tengence Insight), and `plan.tags`
+contained `search-recommend` — a *category* slug. The old gate only checked
+"non-empty / whitelisted / category matches plan", so all of it was green.
+
+- `check_article` now emits four **always-hard** G18 rows (tags configured, no
+  category slug as a tag, strong-domain tags match the article topic, product
+  category matches the article topic). **They are never demoted for
+  already-published articles** (`alwaysHard`, 5th row element) — do not change
+  them back to soft/advisory. All publish paths call this one `checkArticle`.
+- Rule SSOT: `packages/geo-sdk/check/tag-semantics.js` (pure, unit-tested in
+  `tests/tag-semantics.test.js`); standard: `article-writing-standards.md` §8 / G18.
+- Cross-domain rebuttal evidence is taken from the **zh-hans source body** —
+  translations share the slug/topic/tag set, and judging an English translation
+  by its own sparser vocabulary produces false positives.
+- On a G18 failure fix the **taxonomy**, not the body: use
+  `tagSemantics` in the gate result, write `plan.tags` / `plan.category` per
+  **(slug, lang)** row and mirror into WP with `article_terms_sync`. Never
+  create a pseudo tag term to satisfy the gate.
+- A taxonomy-lookup failure is advisory with an explicit warning (infrastructure
+  fault), never an editorial pass-by-default. Never silently disable G18.
+- **After changing the gate code, restart the local geo-mcp HTTP server (8787)**;
+  `publish-next-article.mjs` reuses a running server, so a stale process keeps
+  the old gate until it is restarted.
 
 ## 5. Red lines
 
@@ -83,7 +111,8 @@ gate failure:
 
 1. Classify from the `check_article` rows: G17-4/5/6 → rewrite the body; B2 ledger
    → add each missing citation URL verbatim to the research brief (per-language,
-   cascading to zh-hans); any other hard row → fix per its standard.
+   cascading to zh-hans); G18 → fix the taxonomy per §4.5 (not the body);
+   any other hard row → fix per its standard.
 2. Rewrite the body (floor zh ≥150 chars / en ≥80 words per content section,
    facts with sources, a position, article-specific citations) and save to
    `<site>/data/inbox/<lang>/<slug>.<lang>.md`.

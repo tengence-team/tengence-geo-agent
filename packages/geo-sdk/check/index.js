@@ -15,7 +15,10 @@
  *   (body reverse-parsed citations + body data-source block; homepage/level-1
  *   channel pages hard-checked) · pre-writing research brief (AGENTS.md §9 mandatory
  *   gate) · H2 numbering continuity / H3 affiliation · opening summary blockquote ·
- *   trailing bold remnant (soft warning).
+ *   trailing bold remnant (soft warning) · G18 tag/category topic semantics
+ *   (2026-11-05: always-hard — a tag that describes another product line, a
+ *   category slug used as a tag, or a product category contradicting the
+ *   article's primary domain must never reach WordPress).
  *
  * Conventions:
  *   - Requiring this file has zero side effects; checkArticle lazily loadSite()s.
@@ -38,6 +41,7 @@ const {
   articlePrefixIssues,
   ctaPipeIssues,
 } = require('../content/md');
+const { checkTagSemantics } = require('./tag-semantics');
 
 // ===== substantive-content metrics (G17-4/5/6, 2026-11-04) =====
 // Pure functions (no DB, no site) so the gate rules are unit-testable and the
@@ -210,6 +214,34 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
       return rows[0] || null;
     });
   } catch (e) { dbArticle = null; }
+
+  // ===== G18 taxonomy context (2026-11-05) =====
+  // The editorial gate never used to look at tags/categories at all, so a batch
+  // that generated tags from category templates shipped `ai-ask` (Insight) on an
+  // Algolia site-search comparison and used `search-recommend` (a CATEGORY slug)
+  // as a tag. Keep this lookup in its own try/catch: a schema/connection fault is
+  // infrastructure, not an editorial defect, and must not silently re-enable the
+  // whole gate's DB path (the main query above owns the body).
+  let taxRows = [];
+  let taxonomyResolved = false;
+  try {
+    taxRows = await t.db.withConn(async (conn) => {
+      const [rows] = await conn.query(
+        `SELECT a.lang, a.title AS article_title, a.excerpt AS article_excerpt,
+                a.content_longtext AS tax_body,
+                p.title AS plan_title, p.focus_keyword, p.tags AS plan_tags,
+                p.category AS plan_category
+           FROM tengence_geo_articles a
+           LEFT JOIN tengence_geo_article_plan p
+                  ON p.app_id = a.app_id AND p.slug = a.slug AND p.lang = a.lang
+          WHERE a.app_id = ? AND a.slug = ? AND a.lang IN (?, 'zh-hans')`,
+        [APP_ID, slug, LANG]
+      );
+      return rows || [];
+    });
+    taxonomyResolved = true;
+  } catch (e) { taxonomyResolved = false; }
+
   if (dbArticle && String(dbArticle.content_longtext || '').trim()) {
     md = dbArticle.content_longtext;
   } else {
@@ -223,6 +255,37 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   if (!String(md || '').trim()) {
     throw new Error(`Body not found: articles.content_longtext is empty and data/inbox/${LANG}/${slug}.md does not exist`);
   }
+
+  // ===== G18 tag/category topic semantics (2026-11-05, ALWAYS HARD) =====
+  const taxCur = taxRows.find((r) => String(r.lang) === LANG) || null;
+  const taxSrc = taxRows.find((r) => String(r.lang) === 'zh-hans') || null;
+  const planTags = (v) => { const x = parseJson(v, []); return Array.isArray(x) ? x.map(String) : []; };
+  // Translation rows historically inherit the zh-hans source taxonomy (blank
+  // translation plan rows are filled by the publish path), so fall back to it.
+  const curTags = planTags(taxCur && taxCur.plan_tags);
+  const effTags = curTags.length ? curTags : planTags(taxSrc && taxSrc.plan_tags);
+  // Headline material always comes from the zh-hans source when available: the
+  // three languages share a slug, a topic and a tag set, and the Chinese source
+  // has the richest evidence vocabulary.
+  const semHead = taxSrc || taxCur || {};
+  // No plan row at all = data gap (the publish pipeline needs the row anyway);
+  // report it as advisory rather than pretending it is an editorial failure.
+  const hasPlanRow = Boolean(taxCur || taxSrc);
+  const sem = checkTagSemantics({
+    tags: effTags,
+    title: semHead.plan_title || semHead.article_title || '',
+    keyword: semHead.focus_keyword || '',
+    excerpt: semHead.article_excerpt || '',
+    // Cross-domain rebuttal evidence comes from the zh-hans SOURCE body when it
+    // exists. Translations share the slug/topic/tag set, and the Chinese source
+    // has the richest evidence vocabulary — judging an English translation by
+    // its own sparser term list produced 3 false positives in the 570-row
+    // regression (2026-11-05).
+    body: (taxSrc && taxSrc.tax_body) || md,
+    category: (taxCur && taxCur.plan_category) || (taxSrc && taxSrc.plan_category) || '',
+    taxonomyResolved: taxonomyResolved && hasPlanRow,
+  });
+
   // effective GEO: body reverse-parse is authoritative; articles.geo is the fallback
   // (for legacy bodies that don't write the three blocks)
   const geo = dbArticle ? parseJson(dbArticle.geo, {}) : (meta.geo || {});
@@ -512,6 +575,19 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     ['substantive content (G17-4): content sections >= 2 (structural floor)', contentTotal + ' content H2', contentTotal >= 2, false, true],
     ['substantive content (G17-5): ' + (LANG === 'en' ? '≥80 words' : '≥150 chars') + ' per content section, ≥50% expanded', contentTotal >= 3 ? (contentOk + '/' + contentTotal + ' = ' + Math.round((100 * contentOk) / contentTotal) + '%') : 'n/a (<3 content sections)', contentTotal < 3 || contentOk / contentTotal >= 0.5, false, true],
     ['substantive content (G17-6): data-source block topic-specific (generic platform sources < 70%)', srcItemTotal >= 3 ? (srcGenericItems + '/' + srcItemTotal + ' generic') : 'n/a (<3 items)', srcItemTotal < 3 || srcGenericItems / srcItemTotal < 0.7, false, true],
+    // ===== G18 tag/category topic semantics (2026-11-05 incident) =====
+    // Always hard (5th element true): a mismatched tag is a live taxonomy defect,
+    // not a legacy editorial artifact, so even re-publishing an article that is
+    // already on WordPress must not demote these rows to advisory. The value
+    // strings name the offending tag/category so the self-heal loop can fix them.
+    ['tag semantics (G18): tags configured (hard)', sem.resolved ? effTags.length + ' tags: ' + effTags.join(', ') : 'n/a (taxonomy lookup unavailable)', !sem.resolved || !sem.tagsEmpty, !sem.resolved, true],
+    ['tag semantics (G18): no category slug used as a tag (hard)', sem.pseudoTags.length ? sem.pseudoTags.join(', ') : 'none', sem.pseudoTags.length === 0, false, true],
+    ['tag semantics (G18): strong-domain tags match article topic (hard)',
+      sem.mismatches.length
+        ? sem.mismatches.length + ' mismatch: ' + sem.mismatches.map((m) => m.tag + '[' + m.tagDomain + '≠' + m.articleDomain + ']').join(', ') + ' — ' + sem.reason
+        : (sem.domain ? sem.domain + ' / ok' : 'domain ambiguous (cross-domain check n/a)'),
+      sem.mismatches.length === 0, false, true],
+    ['tag semantics (G18): product category matches article topic (hard)', sem.categoryConflict || 'ok', !sem.categoryConflict, false, true],
     // B2 citation ledger (2026-11-04): every body citation URL must appear in the
     // research brief. Hard when a brief exists (always-hard: re-publishing with a
     // citation that no research supports is a substantive defect); n/a when no brief.
@@ -551,6 +627,12 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // citations were upgraded to a hard check on 2026-09-20, see the "banned
   // homepage/channel-level (hard)" rows)
   const warns = [];
+  // G18: a failed taxonomy lookup (or a missing plan row) must be visible — the
+  // semantic rows go advisory in that case, which is an infrastructure/data gap
+  // and must never be mistaken for a green editorial check.
+  if (!sem.resolved) {
+    warns.push('G18 advisory: taxonomy lookup failed or no plan row for this (slug, lang) — tag/category semantics were NOT checked; fix the data gap before publishing');
+  }
   // legacy-compatibility notice: citations still only in meta.json, no body
   // "数据来源" block (post-publish, the body will be authoritative and it will be lost)
   if (legacyCites.length && !bodyCitations.length) {
@@ -648,6 +730,19 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     researchSource,
     isPublished,
     counts: { cn },
+    // G18 machine-readable verdict (consumed by MCP check_article and by the
+    // publish self-heal loop — it names the exact tag/category to fix)
+    tagSemantics: {
+      ok: sem.ok,
+      resolved: sem.resolved,
+      domain: sem.domain,
+      scores: sem.scores,
+      tags: effTags,
+      pseudoTags: sem.pseudoTags,
+      mismatches: sem.mismatches,
+      categoryConflict: sem.categoryConflict,
+      reason: sem.reason,
+    },
     // unknown --type notice (CLI rendering; byte-identical to pre-sink-down)
     unknownType: typeArg && !typeExplicit ? typeArg : null,
   };

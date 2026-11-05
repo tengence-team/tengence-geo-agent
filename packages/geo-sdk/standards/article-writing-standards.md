@@ -256,6 +256,11 @@ loop itself — the MCP server does not call an LLM:
      that are not in the research brief: add each missing URL verbatim to the
      brief (the check resolves the brief per language, cascading to the zh-hans
      group brief); a citation that no research supports may never ship.
+   - G18 rows → do **not** rewrite the body: fix the taxonomy. Read
+     `tagSemantics.{pseudoTags,mismatches,categoryConflict}` in the gate result,
+     then update `plan.tags` / `plan.category` for **(slug, lang) per row** (never
+     a slug-only write) and mirror the terms into WP via `article_terms_sync`.
+     Never invent a new tag term to satisfy the gate (`create_terms=false`).
    - any other hard row → fix per the corresponding standard section.
 2. **Rewrite**: produce the full Markdown body — same skeleton, same fixed
    blocks, same front matter — with every content section actually developed
@@ -304,6 +309,7 @@ manual exemption (2026-11-04).
 | G15 | Internal-link language prefix | every on-site article link carries the article's own language prefix (zh-hans→/zh-hans/, en→/en/, zh-hant→/zh-hant/); no cross-language hops |
 | G16 | CTA list layout | the Get Started / 立即行动 block renders as a list (`<ul><li>`), never a single paragraph with several links |
 | G17 | Substantive content | no citations **and** no data-sources block → fail; zh-hans/zh-hant < 800 chars or en < 600 words → fail; comparison types without a Markdown table → fail; **G17-4** < 2 content sections → fail; **G17-5** < 50% of content sections reach the per-section floor (zh ≥150 chars / en ≥80 words) → fail; **G17-6** ≥3 data-source items with ≥70% generic-platform padding (Wikipedia + platform homepage/landing pages) → fail; **always hard, no manual exemption, failure forces rewrite (draft + blocked)** |
+| G18 | Tag / category topic semantics (2026-11-05) | **Always hard, including re-publishing an already-live article.** Tags must be configured; a category slug (`geo-ai-search` / `search-recommend` / `data-growth` / …) must never be used as a tag; a strong product-line tag must match the article's primary domain derived from title + focus keyword + excerpt (`tengence-geo`/`geo-seo` → GEO, `tengence-search`/`search-system`/`site-search` → SEARCH, `tengence-insight`/`ai-ask`/`report-automation` → INSIGHT) unless the body carries ≥2 distinct evidence terms of that domain; and a product-line category must not contradict the domain all strong tags agree on. Neutral tags (comparison / pricing / ecommerce / saas / b2b-export …) are never blocked. Rule lives in `packages/geo-sdk/check/tag-semantics.js`; `check_article` returns a machine-readable `tagSemantics` verdict naming the offending tag. |
 
 ## 9. Site-specific items
 

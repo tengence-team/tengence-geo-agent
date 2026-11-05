@@ -541,10 +541,10 @@ const tools = [
   // ---------- check ----------
   {
     name: 'check_article',
-    title: '校验文章（G1–G14 门禁）',
+    title: '校验文章（G1–G18 门禁，含 G18 标签语义硬校验）',
     annotations: { readOnlyHint: true },
     structured: true,
-    description: 'Publish gate: enforces the editorial rules codified in the "article-writing-standards" standard (citation dual-channel, word count by T1–T7 type, banned words, the three GEO blocks — Summary / Key Takeaways / FAQ / Data Sources — and the research-brief hard check). Read that standard via resource geo://standard/article-writing-standards before authoring, and run article_draft first to scaffold per-spec.',
+    description: 'Publish gate: enforces the editorial rules codified in the "article-writing-standards" standard (citation dual-channel, word count by T1–T7 type, banned words, the three GEO blocks — Summary / Key Takeaways / FAQ / Data Sources — and the research-brief hard check), plus the G18 ALWAYS-HARD tag/category semantics gate: tags must be configured, no category slug may be used as a tag, strong-domain tags (e.g. ai-ask = Insight, tengence-search = Search, tengence-geo = GEO) must match the article primary domain, and a product-line category must not contradict it. Read that standard via resource geo://standard/article-writing-standards before authoring, and run article_draft first to scaffold per-spec. On failure, fix the offending tags/category in plan.tags / plan.category (and the WP terms) and re-run; tagSemantics in the result names the exact defect.',
     inputSchema: z.object({
       slug: z.string().describe('article slug'),
       site: siteField,
@@ -577,6 +577,9 @@ const tools = [
           // rules that postdate the body. Drafts stay hard-gated.
           isPublished: result.isPublished,
           research: result.research,
+          // G18 (2026-11-05): machine-readable tag/category semantic verdict —
+          // an always-hard gate; mismatches[].tag names what to fix.
+          tagSemantics: result.tagSemantics,
         });
       } catch (e) {
         return fail(e);
