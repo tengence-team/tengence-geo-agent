@@ -249,6 +249,29 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
     };
   }
 
+  // ---- GATE (moved here 2026-11-06 from publishToChannel): the substantive-
+  // content gate (G17) runs only on the slugs that will actually be sent (the
+  // post-dedup `toPublish` set), and only for a real write (not dryRun). A
+  // no-op "all already published → skip-empty" above therefore never needs
+  // body content. Any gate failure aborts before any external platform call.
+  if (!dryRun) {
+    const defaultLang = (site.site && site.site.languages && site.site.languages.default) || 'zh-hans';
+    const failed = [];
+    for (const slug of toPublish) {
+      try {
+        const report = await t.check.checkArticle({ slug, lang: defaultLang, site: siteKey });
+        if (!report.ok) failed.push(slug);
+      } catch (e) {
+        failed.push(`${slug} (check error: ${e.message})`);
+      }
+    }
+    if (failed.length) {
+      throw new Error(
+        `channel_publish gate: ${failed.length} article(s) failed the substantive-content gate before sending: ${failed.join(', ')} — rewrite them (G17 requirements) before publishing`
+      );
+    }
+  }
+
   // ---- wechat: reuse the existing drafts-box pipeline (multi-article merge) ----
   if (platform === 'wechat') {
     // WeChat caps a single send at 8 image-text articles; apply the cap to the
@@ -1079,31 +1102,14 @@ async function publishToChannel({ platform, slugs = [], articles = [], asDraft =
 
   if (!siteKey) siteKey = t.site.readSiteArg();
 
-  // GATE (2026-11-04): Mode A (slugs → real platform write) must pass the
-  // substantive-content gate for every slug BEFORE any external call. This
-  // covers the MCP channel_publish tool, the channel-publish CLI and the
-  // channel-schedule auto-promoter alike — all three enter through here.
-  // Mode B (articles[] → local export package) is never sent automatically,
-  // so it is exempt. dryRun never touches the platform, so it is exempt.
-  if (hasSlugs && !dryRun) {
-    const S = t.site.loadSite(siteKey || undefined);
-    const defaultLang = (S.site && S.site.languages && S.site.languages.default) || 'zh-hans';
-    const failed = [];
-    for (const slug of slugs) {
-      try {
-        const report = await t.check.checkArticle({ slug, lang: defaultLang, site: siteKey });
-        if (!report.ok) failed.push(slug);
-      } catch (e) {
-        failed.push(`${slug} (check error: ${e.message})`);
-      }
-    }
-    if (failed.length) {
-      throw new Error(
-        `channel_publish gate: ${failed.length} article(s) failed the substantive-content gate before sending: ${failed.join(', ')} — rewrite them (G17 requirements) before publishing`
-      );
-    }
-  }
-
+  // GATE for Mode A (slugs) lives inside publishFromSlugs, right AFTER the
+  // per-platform dedup (filterUnpublished): it runs checkArticle only on the
+  // slugs that will actually be sent, so a no-op "all already published →
+  // skip-empty" run is never blocked for want of body content. It still guards
+  // every real external write — the MCP channel_publish tool, the
+  // channel-publish CLI and the channel-schedule auto-promoter all enter
+  // through here. Mode B (articles[] → local export) is never sent
+  // automatically, so it stays exempt; dryRun never touches the platform.
   if (hasSlugs) {
     return publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, siteKey });
   }

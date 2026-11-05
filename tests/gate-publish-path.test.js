@@ -25,6 +25,15 @@ const REPO = path.resolve(__dirname, '..');
 
 process.env.SITES_ROOT = process.env.SITES_ROOT || WORKSPACE;
 
+// This is an integration test against the REAL local workspace: the
+// www_tengence_com site plus the article DB (skeleton row id 640, the en
+// gate-green article). Under the CI harness (SITES_ROOT=examples + an empty
+// sqlite) that workspace is absent, so the suite is SKIPPED there instead of
+// failing every `npm test` run (Site not found: sites/www_tengence_com).
+const SITE_ROOT = process.env.SITES_ROOT;
+const sitePresent = fs.existsSync(path.join(SITE_ROOT, SITE, 'config'));
+const maybeTest = sitePresent ? test : test.skip;
+
 const t = require('../packages/geo-sdk');
 const { tools } = require('../packages/geo-mcp/tools/registry');
 
@@ -35,6 +44,7 @@ let skeletonRow = null; // { id, wp_post_id } of a 42-batch skeleton article
 let expandedSlug = null; // a gate-green article (en) for the positive control
 
 before(async () => {
+  if (!sitePresent) return; // integration suite is skipped outside the real workspace
   await t.db.withConn(async (conn) => {
     const [rows] = await conn.query(
       "SELECT id, slug, lang, wp_post_id FROM tengence_geo_articles WHERE id = 640 LIMIT 1"
@@ -46,7 +56,7 @@ before(async () => {
   if (report.ok) expandedSlug = 'geo-diagnostic-audit-checklist';
 });
 
-test('publish-update-article: --status=publish on a skeleton article is blocked by the gate (exit 1)', async () => {
+maybeTest('publish-update-article: --status=publish on a skeleton article is blocked by the gate (exit 1)', async () => {
   assert.ok(skeletonRow && skeletonRow.wp_post_id, 'precondition: skeleton 640 has a wp_post_id');
 
   const md = path.join(os.tmpdir(), 'gate-test-skeleton.md');
@@ -71,7 +81,7 @@ test('publish-update-article: --status=publish on a skeleton article is blocked 
   assert.match(out, /substantive content \(G17-5\)/, 'must surface the G17-5 failure row');
 });
 
-test('publish_update_fields: status="publish" on a skeleton article is refused by the gate', async () => {
+maybeTest('publish_update_fields: status="publish" on a skeleton article is refused by the gate', async () => {
   assert.ok(skeletonRow, 'precondition: skeleton row loaded');
 
   const res = await updateFieldsTool.run({
@@ -87,7 +97,7 @@ test('publish_update_fields: status="publish" on a skeleton article is refused b
   assert.match(text, /no manual override/, 'must state there is no manual override');
 });
 
-test('positive control: a gate-green expanded article passes the same adjudication', async () => {
+maybeTest('positive control: a gate-green expanded article passes the same adjudication', async () => {
   assert.ok(expandedSlug, 'precondition: geo-diagnostic-audit-checklist (en) is gate-green');
   const report = await t.check.checkArticle({ slug: expandedSlug, lang: 'en', site: SITE });
   assert.equal(report.ok, true, 'expanded article must pass the gate the write paths rely on');

@@ -8,6 +8,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # promote.js parseWpDate treats naive WP dates as Asia/Shanghai (+08:00)
+    # while formatLocalDate uses the runtime's local zone; the runner must match
+    # the documented runtime assumption (see promote.js header), else the
+    # future-slot clamp/isFutureDate tests fail with an 8h drift.
+    env:
+      TZ: Asia/Shanghai
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

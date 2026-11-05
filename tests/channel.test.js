@@ -427,6 +427,26 @@ test('nextDue: wechat no longer hijacked by calendar rows (derived like every pl
 // lang=en while the zh-hans body was actually published. Since 2026-10-12 it
 // also publishes LIVE (published:true) with the article's cover image.
 
+// Gate-green zh-hans body for the devto routing fixture: satisfies the
+// always-hard G17 substance rows (>=800 cn chars, 2 content sections, a
+// 数据来源 block with linked sources) so the publish gate lets the test through
+// while it exercises the en-routing / live / cover logic.
+const zhGateBody = [
+  '# 中文标题',
+  '',
+  '## 一、内容概述',
+  '在生成式人工智能与传统搜索引擎技术加速融合的背景下，企业内容营销正从单纯的关键词堆砌转向面向生成式引擎的知识资产建设。本文系统梳理了面向 AI 搜索优化的内容策略，涵盖结构化数据、实体权威性、语义检索、引用溯源与质量门禁等核心环节，并结合行业实践给出可落地的实施路径。内容团队需要同时兼顾传统搜索引擎排名与生成式引擎的引用概率，二者在信号权重与评估方式上存在显著差异，因此必须建立一套覆盖选题、撰写、发布与复盘的自动化质量门禁体系，确保每一篇对外发布的内容都具备充分的实质信息与可验证的来源支撑。与此同时，检索生态的演进也要求团队持续观察生成式引擎对内容引用的偏好变化，并据此动态调整结构化程度与证据链密度，避免策略固化为静态清单。',
+  '',
+  '## 二、详细分析',
+  '首先，生成式引擎更偏好结构清晰、观点明确、引用可溯源的深度内容。相较于传统搜索对关键词密度与外部链接数量的依赖，AI 检索更加重视内容的实体覆盖度、语义一致性与证据链完整度，因此作者应当围绕核心实体组织段落，并为每一个关键论断提供来自权威来源的支撑，而不是堆砌通用表述。其次，结构化标记与 schema 语义能够让机器更容易理解页面的主题归属，实体权威性则来自持续、一致的内容沉淀与外部认可，二者共同构成了 AI 搜索可见度的基础。',
+  '再次，内容质量门禁应当把实质内容、引用来源、相关阅读、元描述、关键词与分类语义等维度纳入自动化检查，确保在发布前即可拦截空洞或存在歧义的文章，避免无效内容进入索引并稀释站点权威。除此之外，跨语言内容的发布链路也需要纳入统一管理，同一篇主题往往需要生成简体中文、繁体中文与英文三个语言版本，而各语言版本在元描述长度、内链语言前缀与翻译质量上有着各自独立的规范。面向国际渠道的英文版本尤其需要强调术语准确性、本地化表达与封面图完整性，避免因语言版本混用导致发布内容与站点定位不符。',
+  '最后，发布后的复盘同样关键，团队应当根据搜索排名、生成式引擎引用与用户反馈持续迭代选题方向，让内容策略始终保持与检索生态演进的同步。针对不同渠道的特性，内容团队还需要区分首发与转发的定位差异，确保同一主题在官方网站与第三方平台之间形成协同而非重复，从而最大化每一篇内容的长期检索价值。',
+  '',
+  '## 数据来源',
+  '- https://www.example.com/research/ai-search-optimization-2026',
+  '- https://www.example.com/guides/schema-markup-for-entities',
+].join('\n');
+
 test('devto: publishFromSlugs sends the ENGLISH row (lang=en), live + cover image', async () => {
   const { withConn } = require('../packages/geo-sdk/db/connection');
   const oldKey = process.env.DEVTO_API_KEY;
@@ -449,9 +469,26 @@ test('devto: publishFromSlugs sends the ENGLISH row (lang=en), live + cover imag
   try {
     await withConn(async (conn) => {
       // same slug, two language rows — zh-hans MUST NOT be used for dev.to
+      // The zh-hans row is what the publish gate (checkArticle) adjudicates; to
+      // keep this a routing test (and not an editorial-gate test), seed it as an
+      // already-published article (wp_post_id>0 → editorial rows go advisory)
+      // that still satisfies the ALWAYS-HARD G17 substance rows: substantive
+      // body (>=800 cn chars) + 2 content sections + a 数据来源 block + cover.
       await conn.query(
-        `INSERT INTO tengence_geo_articles (app_id, slug, title, lang, content_longtext, target_keywords, status)
-         VALUES (1, 'devto-lang-regression', '中文标题', 'zh-hans', '# 中文标题\n中文正文内容', '中文,SEO', 'publish')`
+        `INSERT INTO tengence_geo_articles
+           (app_id, slug, title, lang, content_longtext, featured_image, status, wp_post_id)
+         VALUES (1, 'devto-lang-regression', '中文标题', 'zh-hans', ?, 'https://www.tengence.com/blog/static/images/2026/09/regression.webp', 'publish', 42)`,
+        [zhGateBody]
+      );
+      // G18 taxonomy row: neutral tags (not product-capability, not a category
+      // slug) + a shape category keep the always-hard tag/category semantics
+      // rows green without importing a specific product domain into this
+      // routing test.
+      await conn.query(
+        `INSERT INTO tengence_geo_article_plan
+           (app_id, slug, lang, node_type, title, plan_status, focus_keyword, tags, category)
+         VALUES (1, 'devto-lang-regression', 'zh-hans', 'spoke', '中文标题', 'published', 'AI 搜索优化', ?, 'industry-insights')`,
+        [JSON.stringify(['b2b-export', 'comparison'])]
       );
       await conn.query(
         `INSERT INTO tengence_geo_articles (app_id, slug, title, lang, content_longtext, target_keywords, featured_image, status)
@@ -483,6 +520,7 @@ test('devto: publishFromSlugs sends the ENGLISH row (lang=en), live + cover imag
     await withConn(async (conn) => {
       await conn.query(`DELETE FROM tengence_geo_articles WHERE slug = 'devto-lang-regression'`);
       await conn.query(`DELETE FROM tengence_geo_channel_plan WHERE slug = 'devto-lang-regression'`);
+      await conn.query(`DELETE FROM tengence_geo_article_plan WHERE slug = 'devto-lang-regression'`);
     });
   }
 });
