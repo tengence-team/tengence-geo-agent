@@ -302,6 +302,60 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // wp_post_id) keep the full hard gate, research brief included.
   const isPublished = Boolean(dbArticle && Number(dbArticle.wp_post_id) > 0);
 
+  // ===== G19 WP-side taxonomy sync (2026-11-10) =====
+  // G18 validates plan-table tag/category *semantics* (are they correct for the topic).
+  // G19 validates that the plan taxonomy actually *landed in WordPress* — the
+  // publish-update-article.js patch previously dropped categories/tags entirely, so
+  // 288 live posts had empty WP tags/categories while plan rows were correct.
+  // Always hard: a taxonomy that exists in the plan but not in WP is a live defect,
+  // not a legacy-format artifact.
+  let wpTax = { checked: false, wpCats: [], wpTags: [], missingCats: [], missingTags: [], extraCats: [], extraTags: [] };
+  if (isPublished) {
+    try {
+      const postId = Number(dbArticle.wp_post_id);
+      const wpPost = await t.wp.api(`/posts/${postId}?_fields=id,categories,tags`);
+      const wpCatIds = new Set(wpPost.categories || []);
+      const wpTagIds = new Set(wpPost.tags || []);
+
+      // Resolve plan category slug → WP category ID
+      const planCat = (taxCur && taxCur.plan_category) || (taxSrc && taxSrc.plan_category) || '';
+      let planCatId = null;
+      if (planCat) {
+        const wpCats = await t.wp.api(`/categories?slug=${encodeURIComponent(planCat)}&_fields=id,slug`);
+        if (wpCats && wpCats.length) planCatId = wpCats[0].id;
+      }
+
+      // Resolve plan tag slugs → WP tag IDs
+      const planTagSlugs = effTags;
+      const planTagIds = [];
+      if (planTagSlugs.length) {
+        const wpTagsAll = await t.wp.api(`/tags?per_page=100&_fields=id,slug`);
+        const slugToId = {};
+        (wpTagsAll || []).forEach((x) => { slugToId[x.slug] = x.id; });
+        for (const s of planTagSlugs) {
+          if (slugToId[s]) planTagIds.push(slugToId[s]);
+        }
+      }
+
+      // Compare
+      const missingCats = planCatId && !wpCatIds.has(planCatId) ? [planCat] : [];
+      const missingTags = planTagIds.filter((id) => !wpTagIds.has(id)).length;
+
+      wpTax = {
+        checked: true,
+        wpCats: [...wpCatIds],
+        wpTags: [...wpTagIds],
+        planCatId,
+        planTagIds,
+        missingCats,
+        missingTagCount: missingTags,
+        planTagCount: planTagIds.length,
+      };
+    } catch (e) {
+      wpTax = { checked: false, error: e.message };
+    }
+  }
+
   const cn = (md.match(/[一-龥]/g) || []).length;
   const BAD = ['我国', '国内', '海外', '本土', '国外'];
   const hits = BAD.filter((w) => md.includes(w));
@@ -588,6 +642,30 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
         : (sem.domain ? sem.domain + ' / ok' : 'domain ambiguous (cross-domain check n/a)'),
       sem.mismatches.length === 0, false, true],
     ['tag semantics (G18): product category matches article topic (hard)', sem.categoryConflict || 'ok', !sem.categoryConflict, false, true],
+    // ===== G19 WP-side taxonomy sync (2026-11-10) =====
+    // Always hard: the plan says category X and tags Y, but WP shows neither.
+    // This is the defect that shipped 288 live posts with empty WP tags.
+    ...(wpTax.checked
+      ? [
+          ['WP taxonomy (G19): plan category present in WP',
+            wpTax.missingCats.length
+              ? 'MISSING: ' + wpTax.missingCats.join(', ') + ' (plan cat not in WP)'
+              : (wpTax.planCatId ? 'cat ID ' + wpTax.planCatId + ' in WP' : 'no plan category (n/a)'),
+            wpTax.missingCats.length === 0, false, true],
+          ['WP taxonomy (G19): all plan tags present in WP',
+            wpTax.planTagCount
+              ? (wpTax.planTagCount - wpTax.missingTagCount) + '/' + wpTax.planTagCount + ' plan tags in WP'
+              : 'no plan tags (n/a)',
+            wpTax.planTagCount === 0 || wpTax.missingTagCount === 0, false, true],
+        ]
+      : [
+          ['WP taxonomy (G19): plan category present in WP',
+            isPublished ? 'lookup failed: ' + (wpTax.error || 'unknown') : 'n/a (draft, not yet on WP)',
+            !isPublished, isPublished, false],
+          ['WP taxonomy (G19): all plan tags present in WP',
+            isPublished ? 'lookup failed' : 'n/a (draft, not yet on WP)',
+            !isPublished, isPublished, false],
+        ]),
     // B2 citation ledger (2026-11-04): every body citation URL must appear in the
     // research brief. Hard when a brief exists (always-hard: re-publishing with a
     // citation that no research supports is a substantive defect); n/a when no brief.
