@@ -196,6 +196,65 @@ async function applyFeaturedImage(postId, featuredImageUrl) {
   console.log(`  ✓ Featured image updated (media ID ${mediaId})`);
 }
 
+/**
+ * Load plan-table taxonomy (category + tags) for an article.
+ * Returns { category: string|null, tags: string[] } or empty when no plan row.
+ */
+async function loadPlanTaxonomy(slug, lang) {
+  if (!slug) return { category: null, tags: [] };
+  const appId = Number(process.env.APP_ID || 1);
+  try {
+    return await t.db.withConn(async (conn) => {
+      const [rows] = await conn.query(
+        `SELECT category, tags FROM tengence_geo_article_plan
+         WHERE app_id = ? AND slug = ? AND lang = ? LIMIT 1`,
+        [appId, slug, lang]
+      );
+      if (!rows.length) return { category: null, tags: [] };
+      let tags = [];
+      try { tags = JSON.parse(rows[0].tags || '[]'); } catch { tags = []; }
+      return { category: rows[0].category || null, tags: Array.isArray(tags) ? tags.map(String) : [] };
+    });
+  } catch (e) {
+    console.log(`⚠️ Failed to read plan taxonomy: ${e.message}`);
+    return { category: null, tags: [] };
+  }
+}
+
+/** Get or create a WP category by slug; returns WP term ID or null. */
+async function resolveWpCategory(catSlug) {
+  if (!catSlug) return null;
+  try {
+    const existing = await t.wp.api(`/categories?slug=${encodeURIComponent(catSlug)}`);
+    if (existing && existing.length) return existing[0].id;
+  } catch (e) { /* fall through to create */ }
+  try {
+    const created = await t.wp.api('/categories', { method: 'POST', body: { name: catSlug, slug: catSlug } });
+    console.log(`  ✓ Created WP category: ${catSlug} (ID: ${created.id})`);
+    return created.id;
+  } catch (e) {
+    console.log(`  ⚠️ Failed to create WP category ${catSlug}: ${e.message}`);
+    return null;
+  }
+}
+
+/** Get or create a WP tag by slug; returns WP term ID or null. */
+async function resolveWpTag(tagSlug) {
+  if (!tagSlug) return null;
+  try {
+    const existing = await t.wp.api(`/tags?slug=${encodeURIComponent(tagSlug)}`);
+    if (existing && existing.length) return existing[0].id;
+  } catch (e) { /* fall through to create */ }
+  try {
+    const created = await t.wp.api('/tags', { method: 'POST', body: { name: tagSlug, slug: tagSlug } });
+    console.log(`  ✓ Created WP tag: ${tagSlug} (ID: ${created.id})`);
+    return created.id;
+  } catch (e) {
+    console.log(`  ⚠️ Failed to create WP tag ${tagSlug}: ${e.message}`);
+    return null;
+  }
+}
+
 function line() {
   console.log('-'.repeat(70));
 }
@@ -509,6 +568,16 @@ async function main() {
   let postId = options.postId ? Number(options.postId) : null;
   if (postId) {
     console.log(`Using the given article ID: ${postId}`);
+    // Resolve slug from post when --slug not explicitly given (needed for plan taxonomy lookup)
+    if (!options.slug) {
+      try {
+        const p = await t.wp.posts.get(postId, '?_fields=id,slug');
+        if (p && p.slug) {
+          options.slug = p.slug;
+          console.log(`  ✓ Resolved slug from post: ${p.slug}`);
+        }
+      } catch (e) { /* non-fatal; taxonomy lookup will be skipped */ }
+    }
   } else if (slug) {
     const existingPost = await t.wp.posts.findBySlug(slug);
     if (existingPost) {
@@ -558,6 +627,23 @@ async function main() {
     console.log(`  ⚠️ Failed to read live meta, skipping GEO field sync: ${e.message}`);
   }
 
+  // Load plan taxonomy (category + tags) and resolve WP term IDs
+  const planSlug = options.slug || slug;
+  const planTax = await loadPlanTaxonomy(planSlug, options.lang);
+  let wpCategoryId = null;
+  const wpTagIds = [];
+  if (planTax.category) {
+    wpCategoryId = await resolveWpCategory(planTax.category);
+    console.log(`  Category: ${planTax.category} → WP ID ${wpCategoryId || '(failed)'}`);
+  }
+  if (planTax.tags.length) {
+    for (const tagSlug of planTax.tags) {
+      const tid = await resolveWpTag(tagSlug);
+      if (tid) wpTagIds.push(tid);
+    }
+    console.log(`  Tags: ${planTax.tags.join(', ')} → WP IDs [${wpTagIds.join(', ')}]`);
+  }
+
   let result;
   try {
     // Future-dated posts: a bare status=publish update on a post whose post_date
@@ -565,6 +651,8 @@ async function main() {
     // the slot to now for that conversion case only (normal re-publishes keep
     // their original date). Unified with the promote core (2026-11-05).
     const patch = { title, content: htmlContent, status: options.status };
+    if (wpCategoryId) patch.categories = [wpCategoryId];
+    if (wpTagIds.length) patch.tags = wpTagIds;
     if (options.status === 'publish') {
       try {
         const cur = await t.wp.posts.get(postId, '?_fields=id,status,date,date_gmt');
@@ -630,6 +718,17 @@ async function main() {
   const verified = await t.wp.posts.get(postId);
   if (verified) {
     console.log('✓ Verification passed');
+    // Verify taxonomy actually landed in WP
+    const liveCats = verified.categories || [];
+    const liveTags = verified.tags || [];
+    if (planTax.category) {
+      const catOk = wpCategoryId && liveCats.includes(wpCategoryId);
+      console.log(`  ${catOk ? '✅' : '❌'} Category in WP: [${liveCats.join(', ')}] (expected ${wpCategoryId})`);
+    }
+    if (planTax.tags.length) {
+      const missing = wpTagIds.filter(id => !liveTags.includes(id));
+      console.log(`  ${missing.length === 0 ? '✅' : '❌'} Tags in WP: [${liveTags.join(', ')}] (expected [${wpTagIds.join(', ')}]${missing.length ? ', missing: ' + missing.join(',') : ''})`);
+    }
     console.log(`\n${'='.repeat(70)}`);
     console.log('Article update complete!');
     console.log('='.repeat(70));
