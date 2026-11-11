@@ -30,7 +30,7 @@ const { CHANNEL_PLAN } = require('./sqlite-schema');
 // `published` and `reviewing` are both treated as "already dispatched" by the dedup
 // logic (nextDue / filterUnpublished); `review_failed` and `deleted` remain eligible
 // for a (re)publish attempt.
-const STATUSES = ['todo', 'draft', 'published', 'paused', 'reviewing', 'review_failed', 'deleted'];
+const STATUSES = ['todo', 'failed', 'draft', 'published', 'paused', 'reviewing', 'review_failed', 'deleted'];
 
 /** Normalize a language tag: 'zh-hans' | 'en' | 'zh-hant' (defensive trim/lowercase). */
 function normalizeLang(l) {

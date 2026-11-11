@@ -86,6 +86,7 @@ rewrite:
     brandDomainPatterns: ["tengence.com"]
     allowCitations: true
     brandLinkAllowedPatterns:
+      - "tengence.com/blog/static/"   # 本站图片资源（媒体资产，非引流链接）
       - "tengence.com/blog/article/"
       - "tengence.com/zh-hans/blog/article/"
       - "tengence.com/zh-hant/blog/article/"

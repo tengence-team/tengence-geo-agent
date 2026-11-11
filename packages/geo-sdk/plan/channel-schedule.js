@@ -68,13 +68,37 @@ function collectPublishErrors(pub) {
  * Fire-window in minutes: a slot whose publish_time is within ±FIRE_WINDOW_MIN of
  * `now` is due. The external ticker granularity drives this:
  *   - Doubao cron jobs have a hard MINIMUM interval of 1 hour (minExecInterval
- *     3600s), so the practical external tick is hourly ⇒ FIRE_WINDOW_MIN = 30
- *     covers every HH:MM exactly once per day (any time is ≤30 min from an
- *     hourly tick).
+ *     3600s), so the practical external tick is hourly ⇒ FIRE_WINDOW_MIN = 45
+ *     covers every HH:MM exactly once per day with a 15-minute margin on each
+ *     side. 30 was exactly zero-margin: the observed tick interval drifts to
+ *     61–65 min (2026-11-11), so a slot could fall outside the window on the
+ *     tick that "should" have hit it (11-11: wechat 08:26 and devto 09:38 both
+ *     missed entirely). Double-firing the same slot is impossible — last_run_at
+ *     dedups per slot per day — and re-publishing an article twice is impossible
+ *     too (channel_plan unique key + nextDue skips dispatched rows). The cost of
+ *     the wider window is that adjacent slots (e.g. juejin 21:08 / 21:41) may
+ *     fire in the SAME tick, which is exactly what they are for: two slots = two
+ *     articles.
  *   - A local launchd/cron ticker could be finer (e.g. every 30 min ⇒ ±15),
  *     but the scheduler must stay correct for the hourly Doubao ticker.
  */
-const FIRE_WINDOW_MIN = 30;
+const FIRE_WINDOW_MIN = 45;
+
+/**
+ * A slot whose window closed more than this many minutes ago without a
+ * same-day last_run_at is reported as MISSED. The ticker never fires it again
+ * that day, so without this flag a missed slot is invisible: the schedule
+ * simply produces one less article, forever. Reported in publishDue's
+ * `stale_slots` so the hourly automation can alert instead of staying silent.
+ */
+const MISSED_REPORT_DELAY_MIN = 120;
+
+/**
+ * 闸门隔离后的候选重试轮数上限（2026-11-11）。publishToChannel 命中 G17 实质内容
+ * 闸会把不合格稿隔离成 review_failed 并返回 blocked:true；此时换下一批候选再试，
+ * 最多这么多轮。作用是"队头压着一篇永久不合格的旧稿"不再让整个槽当天报废。
+ */
+const GATE_RETRY_MAX = 4;
 
 /**
  * Platforms whose outcomes are logged into channel_plan by publishDue.
@@ -151,13 +175,28 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
 
   const due = [];
   const skippedToday = [];
+  const staleSlots = [];
   for (const s of schedule) {
     if (!s.enabled) continue;
     const [h, m] = String(s.publish_time).split(':').map(Number);
     const t = new Date(now);
     t.setHours(h, m, 0, 0);
+    const ranToday = !!(s.last_run_at && String(s.last_run_at).slice(0, 10) === day);
+    // P2 漏跑自检：窗口右端已过 MISSED_REPORT_DELAY_MIN 分钟、今天仍没跑过 ⇒ 今日必漏。
+    // 只看"今天已过点的槽"，避免把当天还没到的槽误报成漏跑。
+    const rightEdgeMs = t.getTime() + FIRE_WINDOW_MIN * 60000;
+    if (!ranToday && nowMs > rightEdgeMs + MISSED_REPORT_DELAY_MIN * 60000) {
+      staleSlots.push({
+        id: s.id,
+        platform: s.platform,
+        publish_time: s.publish_time,
+        last_run_at: s.last_run_at || null,
+        missed_by_min: Math.round((nowMs - t.getTime()) / 60000),
+        action: '人工补跑或等明日窗口；连续多日出现说明外部 tick 与窗口不匹配',
+      });
+    }
     if (Math.abs(nowMs - t.getTime()) / 60000 > FIRE_WINDOW_MIN) continue;
-    if (s.last_run_at && String(s.last_run_at).slice(0, 10) === day) {
+    if (ranToday) {
       skippedToday.push({ id: s.id, platform: s.platform, publish_time: s.publish_time, reason: 'already ran today' });
       continue;
     }
@@ -196,7 +235,31 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
     }
     const asDraft = AS_DRAFT_BY_PLATFORM[s.platform] === true;
     try {
-      const next = await channel.nextDue(s.platform, { count: s.count || 1, register: !dryRun });
+      // 2026-11-11 — 闸门隔离后的候选重试：publishToChannel 命中 G17 会把不合格稿
+      // 隔离成 review_failed（从队列移出）并返回 blocked:true。旧行为是直接失败，
+      // 这个槽当天就此报废；现在换下一批候选再试，最多 GATE_RETRY_MAX 轮，
+      // 这样队头压着坏稿也不会让整个槽连续多日空转。
+      let next = null;
+      let slugs = [];
+      let pub = null;
+      for (let attempt = 1; attempt <= GATE_RETRY_MAX; attempt += 1) {
+        next = await channel.nextDue(s.platform, { count: s.count || 1, register: !dryRun });
+        if (!next) break;
+        slugs = next.tasks.map((x) => x.slug);
+        pub = await publishToChannel({
+          platform: s.platform,
+          slugs,
+          articles: [],
+          asDraft,
+          dryRun,
+          siteKey,
+        });
+        if (!pub || pub.ok || !pub.blocked) break;
+        if (attempt === GATE_RETRY_MAX) {
+          // 用尽重试：把最后一轮的 blocked 结果原样返回，交给下面的失败留痕分支
+          break;
+        }
+      }
       if (!next) {
         results.push({
           platform: s.platform,
@@ -206,21 +269,38 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
         });
         continue;
       }
-      const slugs = next.tasks.map((x) => x.slug);
-      const pub = await publishToChannel({
-        platform: s.platform,
-        slugs,
-        articles: [],
-        asDraft,
-        dryRun,
-        siteKey,
-      });
       const fired = { platform: s.platform, publish_time: s.publish_time, count: s.count, asDraft, ok: !!pub.ok };
       if (!pub.ok) {
         fired.status = 'failed';
         // Surface the REAL per-article failure reasons (platform err_no/err_msg, stage,
         // cover/tags context) instead of a generic "not-ok".
         fired.detail = collectPublishErrors(pub);
+        // 失败也要留痕（2026-11-11）。此前这里直接 continue：channel_plan 一行都不写，
+        // error_code/error_message/failed_at 永远为空，ticker 日志只剩 "1 of 1 failed"，
+        // 结果"发了但被前置闸门拦下"与"根本没被调度到"在数据上完全无法区分——这正是
+        // 掘金/CSDN 停发 5 天却查不出原因的直接原因。现在把每个失败项按行落库。
+        if (!dryRun && PUBLISH_LOG_PLATFORMS.includes(s.platform)) {
+          const attemptAt = localStamp(new Date());
+          for (const r of pub.results || []) {
+            if (!r || r.ok) continue;
+            try {
+              await channel.recordPublish({
+                platform: s.platform,
+                slug: r.slug,
+                title: r.title || (r.detail && r.detail.title),
+                status: 'failed',
+                draftId: r.draftId || (r.detail && r.detail.draftId),
+                notes: `[attempt ${attemptAt}] 发布失败：${r.stage || 'unknown'}${r.blocked ? '（前置闸门拦截，未调平台接口）' : ''}`,
+                error: r.error || (r.reason ? { code: 'STYLE_GATE', message: r.reason } : null),
+                stage: r.stage || (r.blocked ? 'style_check' : null),
+                context: r.context || (r.errors ? { gateErrors: r.errors.slice(0, 10) } : null),
+              });
+            } catch (logErr) {
+              console.error('[channel_publish_due] recordPublish(failed) failed:', logErr.message);
+            }
+          }
+          fired.failuresLogged = (pub.results || []).filter((r) => r && !r.ok).length;
+        }
         results.push(fired);
         continue;
       }
@@ -312,11 +392,22 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
     audit,
     results,
     skipped_today: skippedToday,
+    // P2: 今日必漏的槽（窗口右端已过 2 小时且未跑）。非空即需告警——外部 ticker
+    // 不会补跑，漏掉的槽当天就是少一篇文章，且不会自己出现在任何日志里。
+    stale_slots: staleSlots,
+    alerts: staleSlots.map((x) => ({
+      type: 'slot_missed',
+      platform: x.platform,
+      publish_time: x.publish_time,
+      message: `${x.platform} ${x.publish_time} 今日窗口已关闭（已过 ${x.missed_by_min} 分钟）且未执行，本日该槽漏发`,
+    })),
   };
 }
 
 module.exports = {
   FIRE_WINDOW_MIN,
+  GATE_RETRY_MAX,
+  MISSED_REPORT_DELAY_MIN,
   AS_DRAFT_BY_PLATFORM,
   PUBLISH_LOG_PLATFORMS,
   list,

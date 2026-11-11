@@ -155,6 +155,40 @@ const DEFAULT_DISPATCHED = new Set(['published', 'reviewing']);
 // 注意：'draft' 仅对 juejin 等非 dispatched 平台生效；wechat/devto 的 'draft' 已在各自
 // dispatched 集合内（published.has 已跳过），此处再加一层保险。
 const NO_AUTO_RETRY = new Set(['review_failed', 'deleted', 'paused', 'draft']);
+
+/**
+ * 队列状态（尚未确认到达平台）。syncStatuses 只对这两类行做"从未下发"判定：
+ * 队列行 + 无 draft_id + 无 article_id ⇒ 平台列表里找不到只能说明"从未发出"，
+ * 绝不能判 deleted（deleted ∈ NO_AUTO_RETRY = 永久出局，每失败一次烧掉一篇稿）。
+ */
+const QUEUE_STATUSES = new Set(['todo', 'failed']);
+const NEVER_SENT_REASON =
+  '从未成功下发到平台（无 draft_id / article_id），平台列表缺失属"未发出"而非"被删除"；保留可重试状态';
+
+/**
+ * Decide the status of a channel_plan row that is ABSENT from the platform's live
+ * list. `deleted` is a terminal state (NO_AUTO_RETRY) — getting this wrong burns
+ * the article permanently, so "absent" is only enough when the row demonstrably
+ * reached the platform before (it carries a draft id or an article id), or when
+ * it was never a queue row to begin with.
+ *
+ * @param {{status:string, draftId?:string|null, articleId?:string|number|null, listLooksComplete:boolean}} a
+ * @returns {{status:string, neverSent:boolean}}
+ */
+function classifyMissingRow({ status, draftId, articleId, listLooksComplete }) {
+  const articleIdKnown = articleId != null && String(articleId) !== '';
+  const hasPlatformId = !!draftId || articleIdKnown;
+  // 无任何平台 id ⇒ 这一行从未离开过本地。此时"平台列表里没有"只是"没发出"，
+  // 不能等于"被平台删除"。
+  if (!hasPlatformId) {
+    // review_failed 是被 G17 实质内容闸主动隔离的稿子（2026-11-11）。它不是队列
+    // 状态，也不该被降级成 failed 后又被自动重试（那会把坏稿反复推回队头），
+    // 保持原位即可。
+    if (status === 'review_failed') return { status: 'review_failed', neverSent: true };
+    if (QUEUE_STATUSES.has(status)) return { status: 'failed', neverSent: true };
+  }
+  return { status: listLooksComplete ? 'deleted' : status, neverSent: false };
+}
 /**
  * Per-platform "already dispatched" statuses (2026-10-08).
  *
@@ -615,15 +649,30 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
         titleCandidates.map((tn) => byTitle.get(tn)).find(Boolean);
 
       let newStatus;
+      let neverSent = false;
       if (ai) {
         newStatus = auditToStatus(ai);
       } else {
         const exists =
           (draftId && presentSet.has(`d:${draftId}`)) ||
           titleCandidates.some((tn) => presentSet.has(`t:${tn}`));
-        // present in some fetch but status unreadable this run → keep current (don't flip)
-        // absent from every fetch AND the list looks complete → genuinely deleted
-        newStatus = exists ? row.status : listLooksComplete ? 'deleted' : row.status;
+        if (exists) {
+          // present in some fetch but status unreadable this run → keep current (don't flip)
+          newStatus = row.status;
+        } else {
+          // absent from every fetch: "deleted" ONLY if the row had actually reached
+          // the platform before. A queued row with no draft id and no article id was
+          // never dispatched (every send died before the platform), so it must stay
+          // retryable — see classifyMissingRow().
+          const verdict = classifyMissingRow({
+            status: row.status,
+            draftId,
+            articleId: row.article_id,
+            listLooksComplete,
+          });
+          newStatus = verdict.status;
+          neverSent = verdict.neverSent;
+        }
       }
       byStatus[newStatus] = (byStatus[newStatus] || 0) + 1;
 
@@ -646,13 +695,20 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 }
           articleId,
           articleIdRecorded: idRecorded,
           title: row.topic || '',
-          reason: newStatus === 'review_failed' ? reviewFailedReason(ai) : null,
+          reason: newStatus === 'review_failed'
+            ? reviewFailedReason(ai)
+            : neverSent && newStatus === 'failed'
+              ? NEVER_SENT_REASON
+              : null,
         });
         if (!dryRun) {
           if (idChanged) await repo.markStatus(conn, appId, row.id, newStatus);
           if (idRecorded) await repo.setArticleId(conn, appId, row.id, articleId);
           if (newStatus === 'review_failed' && row.status !== 'review_failed') {
             await repo.appendNotes(conn, appId, row.id, reviewFailedReason(ai));
+          }
+          if (neverSent && newStatus === 'failed' && row.status !== 'failed') {
+            await repo.appendNotes(conn, appId, row.id, NEVER_SENT_REASON);
           }
         }
       }
@@ -788,5 +844,6 @@ module.exports = {
   get,
   markStatus,
   nextDue,
+  classifyMissingRow,
   PLATFORM_LANGS,
 };

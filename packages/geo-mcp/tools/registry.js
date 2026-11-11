@@ -2052,11 +2052,11 @@ const tools = [
     name: 'channel_plan_mark',
     title: '标记平台发布状态',
     description:
-      'Update a channel_plan row status (todo | draft | published | paused) and optionally record its draft ids (media ids). ' +
+      'Update a channel_plan row status (todo | failed | draft | published | paused | reviewing | review_failed) and optionally record its draft ids (media ids). ' +
       'Call after channel_publish to persist the created draft (e.g. wechat media_id) and keep the calendar in sync.',
     inputSchema: z.object({
       id: z.number().describe('channel_plan row id (see channel_plan_next rows)'),
-      status: z.enum(['todo', 'draft', 'published', 'paused']).describe('new row status'),
+      status: z.enum(['todo', 'failed', 'draft', 'published', 'paused', 'reviewing', 'review_failed']).describe('new row status'),
       draftIds: z
         .array(z.string())
         .optional()
@@ -2452,12 +2452,14 @@ const tools = [
     title: '到期平台内容发布',
     description:
       'UNIFIED auto-publish executor: scan the channel_schedule slots and publish on every platform whose slot is due NOW ' +
-      '(publish_time within ±15 minutes — a 30-minute external tick always lands in the window) and has NOT run today ' +
+      '(publish_time within ±45 minutes — one hour of margin against tick drift, since the hourly tick has been observed ' +
+      'drifting to 61–65 minutes) and has NOT run today ' +
       '(last_run_at). Per slot: picks the next N un-dispatched articles (nextDue, N = slot count), publishes through the same ' +
       'pipeline as channel_publish (juejin/csdn/devto publish for real; wechat stays DRAFT-BOX — 原创声明/赞赏 cannot be set via ' +
       'any WeChat API and need a manual toggle before sending), writes the outcome back to channel_plan and stamps last_run_at. ' +
       'dryRun=true prints the due plan with NO external calls and NO writes. Call this from ONE external ticker (cron/launchd ' +
-      'every 30 min) — do NOT create one scheduled task per channel.',
+      'every 30 min) — do NOT create one scheduled task per channel. The report carries stale_slots/alerts: slots whose ' +
+      'window closed >2h ago without running today (a silent miss for the day).',
     inputSchema: z.object({
       dryRun: z.boolean().optional().describe('print the due plan only, no external calls, no writes'),
       site: siteField,

@@ -55,6 +55,7 @@ rewrite:
     allowCitations: true
     # 允许保留的本站链接：必须是文章正文页（编辑性引用），其余路径一律 error
     brandLinkAllowedPatterns:
+      - "tengence.com/blog/static/"   # 本站图片资源（媒体资产，非引流链接）
       - "tengence.com/blog/article/"
       - "tengence.com/zh-hans/blog/article/"
       - "tengence.com/zh-hant/blog/article/"

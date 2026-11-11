@@ -203,7 +203,23 @@ function renderReport(report, opts) {
         continue;
       }
       if (r.status === 'failed') {
-        push(` [${platform}] ${pt} ✗ 失败: ${r.detail || r.error || ''}`);
+        // detail carries collectPublishErrors()' shape {summary, errors:[{slug,stage,error}]}
+        const d = r.detail;
+        let why = '';
+        if (d && typeof d === 'object') {
+          const first = (d.errors || [])[0];
+          const msg = first && first.error;
+          const msgText = typeof msg === 'string' ? msg : (msg && msg.message) || '';
+          why = `${d.summary || 'failed'}${first ? ` · ${first.slug}${first.stage ? `@${first.stage}` : ''}: ${msgText}` : ''}`;
+        } else if (d) {
+          why = String(d);
+        } else if (r.error) {
+          why = String(r.error);
+        }
+        push(` [${platform}] ${pt} ✗ 失败: ${why.slice(0, 200)}`);
+        if (r.failuresLogged != null) {
+          push(`    失败明细已落库 channel_plan: ${r.failuresLogged} 行（error_message / failed_at）`);
+        }
         continue;
       }
       const isDraft = r.asDraft === true;
@@ -219,6 +235,18 @@ function renderReport(report, opts) {
         push(` [${platform}] ${pt} ${tag}`);
       }
     }
+  }
+
+  // P2 漏跑告警：窗口已关闭且今天没跑过的槽。外部 ticker 不会补跑，漏掉的槽
+  // 当天就是少一篇文章，不主动报出来就永久静默。
+  const missed = Array.isArray(report.stale_slots) ? report.stale_slots : [];
+  if (missed.length) {
+    push('----------------------------------------------------------------');
+    push(` ⚠ 漏跑 ${missed.length} 个槽（今日窗口已关闭且未执行，不会自动补跑）:`);
+    for (const m of missed) {
+      push(`    • ${(m.platform || '?').toUpperCase()} ${m.publish_time} 已过 ${m.missed_by_min || '?'} 分钟  last_run_at=${m.last_run_at || 'never'}`);
+    }
+    push('    处理建议: 手动补发该渠道，或检查外部 tick 间隔是否漂移出窗口。');
   }
 
   if (report.audit && !dryRun) {

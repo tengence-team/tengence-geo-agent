@@ -43,6 +43,7 @@ const tencentTaxonomy = require('./tencent-taxonomy');
 const { publishDevto } = require('./devto');
 const { articleUrl, appendUtm, rewriteMarkdownUtm, langFor } = require('./utm');
 const styleCheck = require('./styleCheck');
+const sanitize = require('./sanitize');
 
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
 
@@ -205,6 +206,72 @@ async function featuredImageFor(slug, inherited = null) {
 }
 
 /**
+ * G17 实质内容闸的失败摘要：把 checkArticle 报告里 ok=false 的检查项名列出来
+ * （最多 4 项），落进 channel_plan 的 error_message，替代过去一句 "gate failed"
+ * 这种无法定位的信息。
+ */
+function summarizeGateFailure(report) {
+  const rows = report && Array.isArray(report.rows) ? report.rows : [];
+  const bad = rows
+    .filter((r) => Array.isArray(r) && r[2] === false)
+    .map((r) => String(r[0]).trim())
+    .filter(Boolean);
+  if (bad.length) return bad.slice(0, 4).join('; ');
+  return 'substantive content gate failed (G17)';
+}
+
+/**
+ * G17 实质内容闸 + 隔离（2026-11-11）。抽成独立函数，供 publishFromSlugs 调用，
+ * 也让"闸门只拦不合格稿、不整批否决"的行为可以被单测直接覆盖（不需要桩平台接口）。
+ *
+ * 规则：逐篇跑 checkArticle；不合格的写成 review_failed（带 error_code/error_message/
+ * notes，从队列移出、不再每小时重试），合格的留在 survivors 里继续发。
+ * 返回 { survivors, blocked }，调用方自行决定 blocked 全量时怎么收场。
+ */
+async function applyContentGate({ platform, slugs, siteKey, defaultLang, siteDir }) {
+  const survivors = [];
+  const blocked = [];
+  for (const slug of slugs) {
+    try {
+      const report = await t.check.checkArticle({ slug, lang: defaultLang, site: siteKey });
+      if (report.ok) {
+        survivors.push(slug);
+        continue;
+      }
+      blocked.push({ slug, reason: summarizeGateFailure(report) });
+    } catch (e) {
+      blocked.push({ slug, reason: `check error: ${e.message}` });
+    }
+  }
+  if (blocked.length) {
+    const planChannel = require('../plan/channel');
+    for (const g of blocked) {
+      try {
+        await planChannel.recordPublish({
+          platform,
+          slug: g.slug,
+          status: 'review_failed',
+          error: { code: 'G17_GATE', message: g.reason },
+          stage: 'content_gate',
+          notes: `[gate] 实质内容闸未通过（G17），已隔离待重写：${g.reason}`.slice(0, 480),
+        });
+      } catch (e) {
+        // logging must never break the batch
+        console.warn(`  ⚠️  隔离落库失败（${g.slug}）: ${e.message}`);
+      }
+      appendLog(siteDir, {
+        action: 'gate-quarantine',
+        platform,
+        slug: g.slug,
+        ok: false,
+        detail: { reason: g.reason },
+      });
+    }
+  }
+  return { survivors, blocked };
+}
+
+/**
  * Mode A: publish original DB articles through the platform's own pipeline.
  */
 async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, siteKey }) {
@@ -219,7 +286,7 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
   // No external calls, no title matching. EVERY platform (wechat/juejin/devto/…)
   // goes through this exactly once here — it is NOT re-implemented per platform,
   // and it also covers the CLI (publish-wechat.js now routes through here too).
-  const { toPublish, skipped } = await t.plan.channel.filterUnpublished(platform, slugs);
+  let { toPublish, skipped } = await t.plan.channel.filterUnpublished(platform, slugs);
   if (skipped.length) {
     appendLog(site.siteDir, {
       action: 'skip-published',
@@ -253,22 +320,42 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
   // content gate (G17) runs only on the slugs that will actually be sent (the
   // post-dedup `toPublish` set), and only for a real write (not dryRun). A
   // no-op "all already published → skip-empty" above therefore never needs
-  // body content. Any gate failure aborts before any external platform call.
+  // body content.
+  //
+  // 2026-11-11 — 闸门不再"一票否决整批"。此前任一稿不合格就 throw，队头只要压着
+  // 一篇永久不合格的旧稿，这个槽每小时都会以同一篇失败一次，last_run_at 永远不推进
+  // （掘金/CSDN 连停多日的第二条隐因）。现在：命中的稿子就地隔离为 review_failed
+  // （error_code=G17_GATE + 失败项落库，从队列移出、不再每小时重试），其余照常发；
+  // 只有"整批都不合格"才返回 ok:false（blocked:true），交给调用方换候选重试。
+  let gateBlocked = [];
   if (!dryRun) {
     const defaultLang = (site.site && site.site.languages && site.site.languages.default) || 'zh-hans';
-    const failed = [];
-    for (const slug of toPublish) {
-      try {
-        const report = await t.check.checkArticle({ slug, lang: defaultLang, site: siteKey });
-        if (!report.ok) failed.push(slug);
-      } catch (e) {
-        failed.push(`${slug} (check error: ${e.message})`);
+    const gate = await applyContentGate({
+      platform,
+      slugs: toPublish,
+      siteKey,
+      defaultLang,
+      siteDir: site.siteDir,
+    });
+    gateBlocked = gate.blocked;
+    if (gateBlocked.length) {
+      toPublish = gate.survivors;
+      if (toPublish.length === 0) {
+        return {
+          ok: false,
+          platform,
+          action: 'gate_blocked',
+          blocked: true,
+          results: gateBlocked.map((g) => ({
+            slug: g.slug,
+            ok: false,
+            blocked: true,
+            stage: 'content_gate',
+            error: { code: 'G17_GATE', message: g.reason },
+          })),
+          logPath: logFile(site.siteDir),
+        };
       }
-    }
-    if (failed.length) {
-      throw new Error(
-        `channel_publish gate: ${failed.length} article(s) failed the substantive-content gate before sending: ${failed.join(', ')} — rewrite them (G17 requirements) before publishing`
-      );
     }
   }
 
@@ -351,7 +438,26 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
         const article = await articleFromDb(conn, appId, slug, SITE_DOMAIN, lang);
         // 渠道出口正文：本站链接统一加渠道语言前缀 + UTM 归因参数
         // （只动 tengence.com 域链接，第三方引用原样保留；详见 syndicate/utm.js）
-        const contentMd = rewriteMarkdownUtm(article.contentMd, { platform, lang });
+        const rawMd = rewriteMarkdownUtm(article.contentMd, { platform, lang });
+
+        // ---- 确定性清洗层（SANITIZE, 2026-11-11）----
+        // 无人值守路径（scheduler 的 Mode A）此前只有"校验"没有"改写"：原文自带
+        // 品牌块（关于通智云）、CTA 块（立即行动）与转化链接（console/login、
+        // /contact-us、产品页），styleCheck 变硬闸后 100% 被拒（juejin 3/80、
+        // csdn 2/88 过闸）。这里在闸门之前按同一份 styles/*.yaml 规则剥掉这些
+        // 内容，保证"能发出去的"与"过得了审的"是同一份文本。
+        // 只作用于渠道出口：源库 content_longtext 与 WP 正文一律不动。
+        // 闸门仍在其后（见下），清洗不掉的问题依旧会被拦，绝不静默放行。
+        const cleaned = sanitize.SANITIZE_PLATFORMS.includes(platform)
+          ? sanitize.sanitizeBody({ platform, body: rawMd })
+          : { body: rawMd, actions: [], changed: false };
+        const contentMd = cleaned.body;
+        if (cleaned.actions.length) {
+          appendLog(site.siteDir, {
+            action: 'sanitized', platform, slug, ok: true,
+            detail: { actions: cleaned.actions, chars: { before: rawMd.length, after: contentMd.length } },
+          });
+        }
 
         // ---- 硬拦截闸门（HARD GATE, 2026-10-24）----
         // 发布前强制 styleCheck（仅校验正文，避免误伤标题长度等平台自带处理）。
@@ -364,9 +470,21 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             const reason = `硬拦截 styleCheck 未通过（${gate.errors.length} 项）：${gate.errors.slice(0, 5).join('；')}`;
             appendLog(site.siteDir, {
               action: 'blocked-style', platform, slug, ok: false,
-              detail: { errors: gate.errors, warnings: gate.warnings },
+              detail: { errors: gate.errors, warnings: gate.warnings, sanitized: cleaned.actions },
             });
-            results.push({ slug, ok: false, blocked: true, reason, errors: gate.errors });
+            // structured error so the failure lands in channel_plan
+            // (error_code/error_message/failed_at) and in the scheduler report —
+            // previously only `reason` existed, so the ticker printed a bare
+            // "1 of 1 failed" with no cause and the row stayed silent.
+            results.push({
+              slug,
+              ok: false,
+              blocked: true,
+              stage: 'style_check',
+              reason,
+              errors: gate.errors,
+              error: { code: 'STYLE_GATE', message: reason },
+            });
             continue;
           }
         }
@@ -1121,4 +1239,6 @@ module.exports = {
   exportDir,
   logFile,
   renderPublishPackage,
+  applyContentGate,
+  summarizeGateFailure,
 };
