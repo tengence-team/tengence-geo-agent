@@ -120,6 +120,21 @@ async function updatePlanStatus(conn, appId, slug, lang, planStatus) {
   return { affectedRows: res ? res.affectedRows : 0 };
 }
 
+/**
+ * Clear a plan row's article_id. Used when the plan row points at ANOTHER language's
+ * article and no article of its own language exists — the link is a lie, and the
+ * derived state for this row is plan-only (todo), so null is the truthful value.
+ */
+async function clearPlanArticleLink(conn, appId, slug, lang) {
+  const [res] = await conn.query(
+    `UPDATE ${TABLES.articlePlan}
+        SET article_id = NULL, updated_at = NOW()
+      WHERE app_id = ? AND slug = ? AND lang = ?`,
+    [appId, slug, lang]
+  );
+  return { affectedRows: res ? res.affectedRows : 0 };
+}
+
 /** Mirror the featured image URL into the article rows (all langs when lang is null) */
 async function updateFeaturedImage(conn, appId, slug, lang, url) {
   if (lang) {
@@ -152,14 +167,24 @@ async function repairArticleLink(conn, appId, slug, lang, articleId) {
  * Read-only audit sources. Returns raw row sets; index.js shapes the report.
  */
 async function auditRows(conn, appId) {
+  // drift = the plan MIRROR disagrees with the state derived from the article row.
+  // Derived state (identical rules to derive.js):
+  //   article row: status publish|future|private → published; else wp_post_id>0 → queued; else written
+  //   no article row: plan-only  → paused stays paused, everything else todo
   const [drift] = await conn.query(
     `SELECT p.slug, p.lang, p.plan_status, a.status AS article_status
        FROM ${TABLES.articlePlan} p
-       JOIN ${TABLES.articles} a
-         ON a.app_id = p.app_id AND a.slug = p.slug AND a.lang = p.lang
+       LEFT JOIN ${TABLES.articles} a
+              ON a.app_id = p.app_id AND a.slug = p.slug AND a.lang = p.lang
       WHERE p.app_id = ?
-        AND ((p.plan_status IN ('published') AND a.status NOT IN ('publish','future','private'))
-          OR (p.plan_status = 'queued' AND COALESCE(a.wp_post_id, 0) = 0))`,
+        AND p.plan_status <> (
+          CASE
+            WHEN a.id IS NULL THEN (CASE WHEN p.plan_status = 'paused' THEN 'paused' ELSE 'todo' END)
+            WHEN LOWER(a.status) IN ('publish','future','private') THEN 'published'
+            WHEN COALESCE(a.wp_post_id, 0) > 0 THEN 'queued'
+            ELSE 'written'
+          END
+        )`,
     [appId]
   );
 
@@ -205,6 +230,7 @@ module.exports = {
   updatePlanStatus,
   updateFeaturedImage,
   repairArticleLink,
+  clearPlanArticleLink,
   auditRows,
   nowString,
 };

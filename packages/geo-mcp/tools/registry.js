@@ -1434,16 +1434,19 @@ const tools = [
       'fkMismatch (plan.article_id points at another language\'s article), dangling (plan claims ' +
       'published/queued with no article row), missingCover. Read-only unless repair=true.',
     inputSchema: z.object({
-      dryRun: z.boolean().optional().describe('default true; repair=true writes the drifted plan mirror + article links'),
+      repair: z.boolean().optional().describe('true = write the fixes (plan mirror + article_id links); default false = read-only'),
+      dryRun: z.boolean().optional().describe('inverse convenience flag: dryRun=false behaves like repair=true'),
       site: siteField,
     }),
     async run(args) {
       try {
         const S = withSite(args);
         process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const repair = args.repair === true || args.dryRun === false;
         const report = await t.articleState.audit({
           appId: parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10),
-          fix: args.repair === true || args.dryRun === false,
+          fix: repair,
+          dryRun: !repair,
         });
         return ok({ ok: true, report });
       } catch (e) {

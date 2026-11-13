@@ -256,6 +256,10 @@ async function audit({ appId, fix = false, dryRun = true, conn: injected } = {})
       if (aRows && aRows.length) {
         await repo.repairArticleLink(c, appId, item.slug, item.lang, Number(aRows[0].id));
         fixed.fkMismatch += 1;
+      } else {
+        // no article of its own language → the cross-language link is a lie: null it
+        await repo.clearPlanArticleLink(c, appId, item.slug, item.lang);
+        fixed.fkNulled = (fixed.fkNulled || 0) + 1;
       }
     }
     // drift repair: the plan column is a mirror, so bring it back in line with the
