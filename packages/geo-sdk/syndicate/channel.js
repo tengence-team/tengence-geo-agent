@@ -228,12 +228,14 @@ function summarizeGateFailure(report) {
  * notes，从队列移出、不再每小时重试），合格的留在 survivors 里继续发。
  * 返回 { survivors, blocked }，调用方自行决定 blocked 全量时怎么收场。
  */
-async function applyContentGate({ platform, slugs, siteKey, defaultLang, siteDir }) {
+async function applyContentGate({ platform, slugs, siteKey, defaultLang, siteDir, rewritten = {}, check = null }) {
   const survivors = [];
   const blocked = [];
   for (const slug of slugs) {
     try {
-      const report = await t.check.checkArticle({ slug, lang: defaultLang, site: siteKey });
+      // 2026-11-13: 有渠道改写稿时校验改写稿（真正要发出去的那份），而不是 DB 原文
+      const overrides = rewritten[slug] || null;
+      const report = await (check || t.check.checkArticle)({ slug, lang: defaultLang, site: siteKey, overrides });
       if (report.ok) {
         survivors.push(slug);
         continue;
@@ -330,12 +332,23 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
   let gateBlocked = [];
   if (!dryRun) {
     const defaultLang = (site.site && site.site.languages && site.site.languages.default) || 'zh-hans';
+    // 2026-11-13: wechat 有改写稿时，闸门校验改写稿（与建稿用的是同一份内容）
+    let rewrittenMap = {};
+    if (platform === 'wechat') {
+      for (const slug of toPublish) {
+        try {
+          const r = t.syndicate.wechat.readRewrittenExport(site.siteDir, slug);
+          if (r) rewrittenMap[slug] = { title: r.title, contentMd: r.contentMd };
+        } catch (_) { /* 读不到改写稿就按原文校验 */ }
+      }
+    }
     const gate = await applyContentGate({
       platform,
       slugs: toPublish,
       siteKey,
       defaultLang,
       siteDir: site.siteDir,
+      rewritten: rewrittenMap,
     });
     gateBlocked = gate.blocked;
     if (gateBlocked.length) {

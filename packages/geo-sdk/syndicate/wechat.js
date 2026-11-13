@@ -729,7 +729,63 @@ function appendLog(entry, LOG_DIR, LOG_FILE) {
  * @throws article not found / no featured image / WeChat API error (the CLI catches
  *         and exits 1)
  */
-async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKey, keepOrder = false, skipDedupe = false }) {
+/**
+ * 读取微信渠道改写稿（Mode B 落盘的发布包，位于
+ * <siteDir>/data/channel-export/wechat/<slug>.md）。返回 null 表示没有改写稿。
+ * 改写稿的 front matter 带 title，正文是已按微信渠道规则改过的 markdown。
+ * @param {string} siteDir
+ * @param {string} slug
+ * @returns {?{slug:string, title:string, contentMd:string, path:string}}
+ */
+function readRewrittenExport(siteDir, slug) {
+  try {
+    const p = path.join(siteDir, 'data', 'channel-export', 'wechat', `${slug}.md`);
+    if (!fs.existsSync(p)) return null;
+    const raw = fs.readFileSync(p, 'utf8');
+    const { data: fm, content } = t.content.md.parseFrontMatter(raw);
+    if (!fm || !fm.title || !content || !content.trim()) return null;
+    return { slug, title: fm.title, contentMd: content, path: p };
+  } catch (e) {
+    console.warn(`⚠️  改写稿读取失败（${slug}）: ${e.message} — 回退原文`);
+    return null;
+  }
+}
+
+/**
+ * 删除草稿箱里的一条消息（draft/delete）。与 freepublish/delete 不同：这里删的是
+ * 还没发布出去的草稿消息，删完不可恢复（内容仍在 articles / channel-export 里）。
+ * `request` / `accessToken` 是测试注入口。
+ * @param {string} mediaId draft box media_id
+ * @param {{dryRun?:boolean, siteKey?:string, request?:Function, accessToken?:string}} [opts]
+ * @returns {Promise<{ok:boolean, mediaId:string, dryRun?:boolean, payload?:string}>}
+ */
+async function deleteDraft(mediaId, { dryRun = false, siteKey, request = httpsRequest, accessToken: injectedToken } = {}) {
+  if (!mediaId) throw new Error('deleteDraft requires mediaId (draft box media_id)');
+  const body = JSON.stringify({ media_id: mediaId });
+  if (dryRun) return { ok: true, mediaId, dryRun: true, payload: body };
+  const accessToken = injectedToken || (await getAccessToken());
+  const { json } = await request(
+    `https://api.weixin.qq.com/cgi-bin/draft/delete?access_token=${accessToken}`,
+    { method: 'POST', headers: { 'Content-Type': 'application/json' } },
+    body
+  );
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`draft/delete failed: ${json.errcode} ${json.errmsg}`);
+  }
+  try {
+    const SITE = siteKey ? t.site.loadSite(siteKey) : null;
+    if (SITE) {
+      appendLog(
+        { time: new Date().toISOString(), action: 'draft-delete', mediaId },
+        path.join(SITE.siteDir, 'data'),
+        path.join(SITE.siteDir, 'data', 'wechat-log.jsonl')
+      );
+    }
+  } catch (_) { /* logging must never mask the delete result */ }
+  return { ok: true, mediaId };
+}
+
+async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKey, keepOrder = false, skipDedupe = false, preferRewritten = true }) {
   const SITE = t.site.loadSite(siteKey);
   const SITE_DOMAIN = (process.env.SITE_DOMAIN || (SITE.site && SITE.site.site && SITE.site.site.domain) || 'www.tengence.com').replace(/^https?:\/\//, '').replace(/^www\./, 'www.');
   const LOG_DIR = path.join(SITE.siteDir, 'data');
@@ -768,8 +824,15 @@ async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKe
 
     const articles = [];
     for (const slug of sortedSlugs) {
-      const article = await prepareArticle(conn, slug, SITE_DOMAIN);
+      // 2026-11-13: 若 data/channel-export/wechat/<slug>.md 存在（渠道改写稿），
+      // 建稿优先用它 —— 否则闸门判不合格的稿子永远发不出去。改写稿只影响
+      // 标题/正文，不改变 media_id / 期号 / 状态机。
+      const rewritten = preferRewritten ? readRewrittenExport(SITE.siteDir, slug) : null;
+      const article = await prepareArticle(conn, slug, SITE_DOMAIN, rewritten
+        ? { titleOverride: rewritten.title, contentMdOverride: rewritten.contentMd }
+        : {});
       article._slug = slug;
+      article._rewritten = !!rewritten;
       articles.push(article);
     }
 
@@ -1380,6 +1443,8 @@ async function publishRewrittenToWechat({ articles, siteKey, dryRun = false }) {
 
 module.exports = {
   syncWechat,
+  deleteDraft,
+  readRewrittenExport,
   publishRewrittenToWechat,
   cleanWechatHtml,
   prepareArticle,

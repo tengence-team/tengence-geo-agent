@@ -176,7 +176,7 @@ function computeSubstance(md, lang) {
  *   each rows item [label, value, ok, soft]: soft=true means it's informational only
  *   and does not affect the exit code.
  */
-async function checkArticle({ slug, dir = 'industry-insights', type = null, lang = null, site = null } = {}) {
+async function checkArticle({ slug, dir = 'industry-insights', type = null, lang = null, site = null, overrides = null } = {}) {
   const t = require('../index');
   // site context: SITES_ROOT injected via env; app_id from the site .env's APP_ID
   // (default 1); lang from the site's default language. An explicit `site` key (e.g.
@@ -252,6 +252,13 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
       md = parsed.content || '';
     }
   }
+  // 2026-11-13 — 渠道改写稿优先：闸门必须校验"真正要发出去的那份正文"。
+  // 否则一篇靠改写才合格的文章，永远过不了 DB 原文的闸（改写与闸门互相打脸）。
+  if (overrides && typeof overrides.contentMd === 'string' && overrides.contentMd.trim()) {
+    md = overrides.contentMd;
+    if (typeof overrides.title === 'string' && overrides.title.trim()) fm = { ...fm, title: overrides.title };
+  }
+
   if (!String(md || '').trim()) {
     throw new Error(`Body not found: articles.content_longtext is empty and data/inbox/${LANG}/${slug}.md does not exist`);
   }
