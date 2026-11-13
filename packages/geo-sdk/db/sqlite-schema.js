@@ -94,6 +94,17 @@ const MCP_TASKS = 'tengence_geo_mcp_tasks';
 const SCHEMA_VERSION = 11;
 
 /**
+ * publish_order is the history order every channel queue derives from, so the
+ * database itself refuses to hold two articles at the same position.
+ * Scoped to zh-hans (the primary language owns the number; the other language rows
+ * follow it) and to publish_order > 0 (0 means "not assigned yet").
+ */
+const PLAN_ORDER_INDEX_SQL = `
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sqlite_plan_order
+  ON ${TABLES.articlePlan} (app_id, publish_order)
+  WHERE lang = 'zh-hans' AND publish_order > 0;`;
+
+/**
  * channel_plan v7 DDL template (workspace-local publishing TASK table).
  *
  * One row = one (platform, slug, lang) publish task/log entry:
@@ -539,13 +550,10 @@ CREATE INDEX IF NOT EXISTS idx_sqlite_plan_queued ON ${TABLES.articlePlan} (app_
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_category ON ${TABLES.articlePlan} (app_id, category);
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_slug ON ${TABLES.articlePlan} (slug);
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_batch ON ${TABLES.articlePlan} (app_id, publish_batch);
--- publish_order is the history order every channel queue derives from, so the
--- database itself refuses to hold two articles at the same position (S9 2026-11-13).
--- Scoped to zh-hans because all three language rows of one article share the number
--- and zh-hans is the owner (453/453 articles carry it).
-CREATE UNIQUE INDEX IF NOT EXISTS uq_sqlite_plan_order
-  ON ${TABLES.articlePlan} (app_id, publish_order)
-  WHERE lang = 'zh-hans' AND publish_order > 0;
+-- publish_order unique index is created SEPARATELY (PLAN_ORDER_INDEX_SQL) because a
+-- legacy DB still holds duplicate / text orders: a failure there must not abort
+-- startup, it must tell the operator to run
+-- scripts/migrate-plan-order-unique-2026-11-13.js (S9 2026-11-13).
 
 -- ========== 17. channel publishing tasks (workspace-local, not in MySQL) ==========
 ${channelPlanDDL(CHANNEL_PLAN)}
@@ -598,4 +606,4 @@ CREATE INDEX IF NOT EXISTS idx_sqlite_mcp_tasks_status ON ${MCP_TASKS} (app_id, 
 CREATE INDEX IF NOT EXISTS idx_sqlite_mcp_tasks_updated ON ${MCP_TASKS} (app_id, updated_at);
 `;
 
-module.exports = { SCHEMA_VERSION, createSqliteTablesSQL, CHANNEL_PLAN, CHANNEL_TAXONOMY, CHANNEL_SCHEDULE, MCP_TASKS, channelPlanDDL, channelScheduleDDL, mcpTasksDDL };
+module.exports = { SCHEMA_VERSION, PLAN_ORDER_INDEX_SQL, createSqliteTablesSQL, CHANNEL_PLAN, CHANNEL_TAXONOMY, CHANNEL_SCHEDULE, MCP_TASKS, channelPlanDDL, channelScheduleDDL, mcpTasksDDL };

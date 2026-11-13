@@ -37,7 +37,7 @@ const fs = require('fs');
 const path = require('path');
 const sqliteDriver = require('./sqlite-driver');
 
-const { createSqliteTablesSQL, SCHEMA_VERSION, CHANNEL_PLAN } = require('./sqlite-schema');
+const { createSqliteTablesSQL, PLAN_ORDER_INDEX_SQL, SCHEMA_VERSION, CHANNEL_PLAN } = require('./sqlite-schema');
 const { TABLES } = require('./schema');
 
 let _db = null;
@@ -126,6 +126,18 @@ function ensureSchema(db) {
   } catch (e) {
     db.exec('ROLLBACK');
     throw e;
+  }
+  // The publish_order unique index is best-effort at startup: a legacy DB may still
+  // hold text / duplicate orders, and refusing to open it would take the whole MCP
+  // server down. Warn loudly instead — scripts/migrate-plan-order-unique-2026-11-13.js
+  // normalises the data and creates the index.
+  try {
+    db.exec(PLAN_ORDER_INDEX_SQL);
+  } catch (e) {
+    console.warn(
+      '[geo-sdk] publish_order is not unique yet (' + e.message + '). ' +
+        'Run: node scripts/migrate-plan-order-unique-2026-11-13.js --apply'
+    );
   }
   return { applied: true, version: SCHEMA_VERSION };
 }
