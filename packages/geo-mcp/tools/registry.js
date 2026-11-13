@@ -2275,6 +2275,10 @@ const tools = [
         .string()
         .optional()
         .describe('why the row moves; REQUIRED for deleted / review_failed / reviving deleted→todo'),
+      force: z
+        .boolean()
+        .optional()
+        .describe('bypass the transition table (only for a reconcile-driven correction; reason becomes required)'),
       site: siteField,
     }),
     async run(args) {
@@ -2283,6 +2287,7 @@ const tools = [
         const ch = t.plan.channel;
         const updated = await ch.markStatus(args.id, args.status, args.draftIds, {
           reason: args.reason || null,
+          force: args.force === true,
         });
         const row = await ch.get(args.id);
         return ok({ ok: true, updated, row });
