@@ -902,7 +902,7 @@ const tools = [
       '  • dates (plugin dates API — the ONLY way to write post_modified, which wp/v2 treats as readonly)\n' +
       'Only the fields you pass are touched; everything else is left untouched. SEO and GEO are applied as one batch each and\n' +
       'reported separately, so you can update one without touching the other. Optionally mirrors title / seo_meta_title /\n' +
-      'seo_meta_description into the DB row (sync_db, default true) to keep the DB as the SSOT.',
+      'seo_meta_description / featured image into the DB row (sync_db, default true) to keep the DB as the SSOT.',
     inputSchema: z.object({
       site: siteField,
       article_id: z.number().optional().describe('articles.id (DB) — resolved to its wp_post_id; omit when wp_post_id is given'),
@@ -966,7 +966,7 @@ const tools = [
       translation_group: z.string().optional().describe('translation-group UUID shared by the languages of one article'),
 
       // --- behavior ---
-      sync_db: z.boolean().optional().describe('mirror title / seo_meta_title / seo_meta_description into the DB row (default true)'),
+      sync_db: z.boolean().optional().describe('mirror title / seo_meta_title / seo_meta_description / featured image into the DB row (default true)'),
       dry_run: z.boolean().optional().describe('validate and report the routing without writing anything'),
     }).passthrough(), // keep unknown keys so a typo'd field is reported by name, not silently dropped
     async run(args) {
@@ -1188,7 +1188,11 @@ const tools = [
 
         // ---- 7. mirror into the DB (SSOT) ----
         const dbMirrored = {};
-        if (args.sync_db !== false && (args.title !== undefined || args.seo_meta_title !== undefined || args.seo_meta_description !== undefined)) {
+        const wantsImg = args.image !== undefined || args.featured_media !== undefined;
+        if (
+          args.sync_db !== false &&
+          (args.title !== undefined || args.seo_meta_title !== undefined || args.seo_meta_description !== undefined || wantsImg)
+        ) {
           if (!connection) connection = await t.db.createConnection();
           let row = dbRow;
           if (!row) {
@@ -1209,6 +1213,27 @@ const tools = [
             dbMirrored.fields = Object.keys(saveFields);
           } else {
             dbMirrored.warning = 'no DB row matched this post; nothing mirrored';
+          }
+        }
+        // featured image → articles.featured_image. Without this the DB keeps a NULL cover
+        // while WP is correct, so the 公众号 cover gate (G20) sees an empty cover on a live
+        // post and refuses the article — the ai-marketing-roi-measurement case.
+        if (args.sync_db !== false && wantsImg && args.image) {
+          if (!connection) connection = await t.db.createConnection();
+          let row = dbRow;
+          if (!row) {
+            const [rows] = await connection.query(
+              'SELECT id, slug, lang FROM tengence_geo_articles WHERE wp_post_id = ? AND app_id = ? LIMIT 1',
+              [postId, appId]
+            );
+            row = rows[0] || null;
+          }
+          if (row) {
+            await t.articleState.repo.updateFeaturedImage(connection, appId, row.slug, row.lang, args.image);
+            dbMirrored.featured_image = args.image;
+            dbMirrored.featured_image_lang = row.lang;
+          } else {
+            dbMirrored.warning = (dbMirrored.warning ? dbMirrored.warning + '; ' : '') + 'no DB row matched this post; featured_image not mirrored';
           }
         }
 
