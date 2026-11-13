@@ -1,12 +1,14 @@
 /**
  * WeChat backend read-back & channel_plan reconciliation
  * ============================================================================
- * Locks in syncProgressFromWechat alignment rules (as confirmed by the user):
+ * Locks in syncProgressFromWechat alignment rules (superceded 2026-11-13 — the
+ * earlier "roll back to todo / uncertain" contract was replaced by the five-category
+ * one the user approved):
  *   - draft row, media_id present in the draft box            → keep draft
  *   - draft row, media_id gone but title in the publish list  → upgrade published
- *   - draft row, media_id gone and not in the publish list    → UNCERTAIN (no auto-write;
- *     WeChat has no API for mass-sent records, so the draft may have been consumed by a
- *     manual mass-send — never roll back to todo automatically)
+ *   - draft row, media_id gone, title uniquely in a draft msg → backfill the media_id
+ *   - draft row, no trace in either list                      → deleted (TERMINAL:
+ *     never re-sent automatically; a human must reset it to todo)
  *   - published row                                           → never downgraded
  *
  * The WeChat API itself is mocked via the `fetchers` injection seam; the real DB
@@ -77,13 +79,13 @@ const fetchers = {
   listPublished: async () => [{ article_id: 'PUB_1', update_time: 1, titles: ['已群发标题B'] }],
 };
 
-test('wechat_sync_progress: auto-fix draft→published, keep draft, never downgrade published, uncertain on missing trace', async () => {
+test('wechat_sync_progress: kept / upgraded / deleted / never downgraded', async () => {
   // A: draft with a real draft-box media_id → kept
   const idA = await insertPlanRow({ period: '第1期', status: 'draft', slugs: ['slug-a'], draftIds: ['DRAFT_EXISTS'] });
-  // B: draft whose media_id is gone but title was mass-sent → upgraded to published
+  // B: draft whose media_id is gone but title was published → upgraded to published
   await insertArticle('slug-b', '已群发标题B');
   const idB = await insertPlanRow({ period: '第2期', status: 'draft', slugs: ['slug-b'], draftIds: ['DRAFT_GONE'] });
-  // C: draft with neither draft nor publish record → UNCERTAIN, NOT auto-modified
+  // C: draft with neither draft nor publish record → deleted (terminal, never re-sent)
   await insertArticle('slug-c', '从未发布标题C');
   const idC = await insertPlanRow({ period: '第3期', status: 'draft', slugs: ['slug-c'], draftIds: ['DRAFT_GONE_2'] });
   // D: published → unchanged even though the title is absent from the publish list
@@ -97,27 +99,23 @@ test('wechat_sync_progress: auto-fix draft→published, keep draft, never downgr
   assert.equal(result.report.drafts, 1);
   assert.equal(result.report.published, 1);
 
-  // changes: only B (draft→published)
-  const byId = Object.fromEntries(result.report.changes.map((c) => [c.id, c]));
-  assert.equal(result.report.changes.length, 1, `expected 1 change, got ${JSON.stringify(result.report.changes)}`);
-  assert.equal(byId[idB].from, 'draft');
-  assert.equal(byId[idB].to, 'published');
-
-  // C reported as uncertain (no auto-write)
-  const uncertain = result.report.uncertain.find((u) => u.id === idC);
-  assert.ok(uncertain, 'missing-trace draft must be reported as uncertain');
-  assert.match(uncertain.reason, /no API for mass-sent/, 'reason must explain the API limitation');
+  const ids = (list) => list.map((x) => x.id);
+  assert.deepEqual(ids(result.report.kept), [idA]);
+  assert.deepEqual(ids(result.report.upgraded), [idB]);
+  assert.deepEqual(ids(result.report.deleted), [idC], 'no-trace draft is judged deleted, never retried');
+  assert.equal(ids(result.report.unchanged).includes(idD), true, 'published rows are never downgraded');
+  assert.equal(result.report.unchanged.some((u) => u.id === idC), false);
 
   // DB final state
   const rowA = await t.plan.channel.get(idA);
   assert.equal(rowA.status, 'draft', 'draft with real media_id must be kept');
   assert.deepEqual(rowA.draft_ids, ['DRAFT_EXISTS']);
   const rowB = await t.plan.channel.get(idB);
-  assert.equal(rowB.status, 'published', 'draft whose title was mass-sent upgrades to published');
-  assert.deepEqual(rowB.draft_ids, ['DRAFT_GONE'], 'published upgrade keeps the stored draft_ids');
+  assert.equal(rowB.status, 'published', 'draft whose title was published upgrades to published');
+  assert.equal(rowB.article_id, 'PUB_1', 'article_id comes from the freepublish record');
   const rowC = await t.plan.channel.get(idC);
-  assert.equal(rowC.status, 'draft', 'uncertain draft must NOT be rolled back to todo');
-  assert.deepEqual(rowC.draft_ids, ['DRAFT_GONE_2'], 'uncertain draft keeps its draft_ids');
+  assert.equal(rowC.status, 'deleted', 'no-trace draft is terminal');
+  assert.match(rowC.notes || '', /人工改回 todo/, 'the human-reset hint is recorded');
   const rowD = await t.plan.channel.get(idD);
   assert.equal(rowD.status, 'published', 'published rows are never downgraded');
 });
@@ -130,9 +128,9 @@ test('wechat_sync_progress: dryRun reports but does not write', async () => {
     dryRun: true,
     fetchers,
   });
-  const change = result.report.changes.find((c) => c.id === id);
-  assert.ok(change, 'dryRun still reports the would-be change');
-  assert.equal(change.to, 'published');
+  const upgrade = result.report.upgraded.find((c) => c.id === id);
+  assert.ok(upgrade, 'dryRun still reports the would-be upgrade');
+  assert.equal(upgrade.to, 'published');
   const row = await t.plan.channel.get(id);
   assert.equal(row.status, 'draft', 'dryRun must not write');
   assert.deepEqual(row.draft_ids, ['DRAFT_GONE_3'], 'dryRun must not clear draft_ids');

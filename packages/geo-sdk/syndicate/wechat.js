@@ -24,8 +24,10 @@ const FormData = require('form-data');
 const sharp = require('sharp');
 
 const t = require('../index');
+const channelRepo = require('../db/channel-plan');
 const { renderMarkdownToWechat } = require('@rbbtsn0w/wechat-markdown');
 const { articleUrl, appendUtm } = require('./utm');
+const { buildTitleIndex, lookupTitle, partitionByDrafts } = require('../plan/wechat-match');
 
 // ==================== WeChat API client ====================
 
@@ -273,11 +275,35 @@ async function publishDraft(accessToken, mediaId) {
 }
 
 /**
+ * Read back the state of a freepublish task (freepublish/get).
+ * freepublish/submit is async: it returns a publish_id, and the article_id only
+ * becomes available through this endpoint. Never fatal for the publish itself.
+ * @param {string} publishId id returned by freepublish/submit
+ * @returns {Promise<{publish_status?:number, article_id?:string, article_detail?:any, response:any}>}
+ */
+async function getPublishStatus(publishId, { request = httpsRequest, accessToken: injectedToken } = {}) {
+  if (!publishId) throw new Error('getPublishStatus requires publishId');
+  const accessToken = injectedToken || await getAccessToken();
+  const url = `https://api.weixin.qq.com/cgi-bin/freepublish/get?access_token=${accessToken}`;
+  const { json } = await request(url, { method: 'POST', headers: { 'Content-Type': 'application/json' } }, JSON.stringify({ publish_id: publishId }));
+  if (json.errcode && json.errcode !== 0) {
+    throw new Error(`freepublish/get failed: ${json.errcode} ${json.errmsg}`);
+  }
+  return { publish_status: json.publish_status, article_id: json.article_id || null, article_detail: json.article_detail, response: json };
+}
+
+/**
  * Publish an existing draft box media_id to the account homepage via
  * freepublish/submit (NO push to followers — the draft is consumed and moves to
  * the published list). dryRun=true prints the payload without calling the API.
+ *
+ * Returns `mediaId` and (best effort) `articleId` so the caller can write the row
+ * back to channel_plan. `getStatus` is an injection seam for tests.
  */
-async function publishDraftByMediaId(mediaId, { dryRun = false, request = httpsRequest, accessToken: injectedToken } = {}) {
+async function publishDraftByMediaId(
+  mediaId,
+  { dryRun = false, request = httpsRequest, accessToken: injectedToken, getStatus = getPublishStatus } = {}
+) {
   if (!mediaId) throw new Error('publishDraftByMediaId requires mediaId');
   const body = { media_id: mediaId };
   if (dryRun) {
@@ -290,7 +316,16 @@ async function publishDraftByMediaId(mediaId, { dryRun = false, request = httpsR
   if (json.errcode && json.errcode !== 0) {
     throw new Error(`freepublish/submit failed: ${json.errcode} ${json.errmsg}`);
   }
-  return { dryRun: false, publishId: json.publish_id, response: json };
+  let articleId = null;
+  try {
+    if (json.publish_id && typeof getStatus === 'function') {
+      const st = await getStatus(json.publish_id, { request, accessToken });
+      articleId = (st && st.article_id) || null;
+    }
+  } catch (_) {
+    // status read is informational only — the publish itself already succeeded
+  }
+  return { dryRun: false, mediaId, publishId: json.publish_id, articleId, response: json };
 }
 
 // ==================== Article processing ====================
@@ -694,7 +729,7 @@ function appendLog(entry, LOG_DIR, LOG_FILE) {
  * @throws article not found / no featured image / WeChat API error (the CLI catches
  *         and exits 1)
  */
-async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKey, keepOrder = false }) {
+async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKey, keepOrder = false, skipDedupe = false }) {
   const SITE = t.site.loadSite(siteKey);
   const SITE_DOMAIN = (process.env.SITE_DOMAIN || (SITE.site && SITE.site.site && SITE.site.site.domain) || 'www.tengence.com').replace(/^https?:\/\//, '').replace(/^www\./, 'www.');
   const LOG_DIR = path.join(SITE.siteDir, 'data');
@@ -718,7 +753,7 @@ async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKe
     if (!keepOrder) {
       articlesMeta.sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt));
     }
-    const sortedSlugs = keepOrder ? slugs.slice() : articlesMeta.map((a) => a.slug);
+    let sortedSlugs = keepOrder ? slugs.slice() : articlesMeta.map((a) => a.slug);
 
     console.log(`\nSend order (${keepOrder ? 'as given, 1st is headline' : 'newest → oldest'}): ${sortedSlugs.join(' → ')}`);
 
@@ -736,6 +771,44 @@ async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKe
       const article = await prepareArticle(conn, slug, SITE_DOMAIN);
       article._slug = slug;
       articles.push(article);
+    }
+
+    // 2026-11-13 — send-time idempotence. Before creating a NEW message, look at
+    // the draft box: an article whose title already sits in an existing message
+    // must NOT be pushed again (that is exactly how "already published, pushed
+    // again" appears in the 公众号 backend). `skipDedupe` exists for an explicit
+    // "I really want a second copy" call.
+    if (!skipDedupe) {
+      const existingDrafts = await listDrafts().catch((e) => {
+        console.warn(`⚠️  draft/batchget failed before dedupe (${e.message}) — creating the draft anyway`);
+        return null;
+      });
+      if (Array.isArray(existingDrafts)) {
+        const { dup, kept } = partitionByDrafts(
+          articles.map((a) => ({ slug: a._slug, title: a.title, ref: a })),
+          existingDrafts
+        );
+        kept.forEach((k) => { k.ref._keep = true; });
+        const keptArticles = kept.map((k) => k.ref);
+        if (dup.length) {
+          console.log(`\n♻️  ${dup.length} article(s) already in the draft box — reusing instead of re-creating:`);
+          for (const d of dup) console.log(`   - ${d.slug} → media_id ${d.mediaId}`);
+          appendLog(
+            { time: new Date().toISOString(), action: 'skip-duplicate', slugs: dup.map((d) => d.slug), mediaIds: dup.map((d) => d.mediaId) },
+            LOG_DIR,
+            LOG_FILE
+          );
+        }
+        if (!keptArticles.length) {
+          mediaId = dup[0].mediaId;
+          action = 'draft-exists';
+          console.log(`\n✅ Nothing new to create — reusing media_id ${mediaId}`);
+          return;
+        }
+        articles.length = 0;
+        articles.push(...keptArticles);
+        sortedSlugs = articles.map((a) => a._slug);
+      }
     }
 
     console.log('\n📝 Creating the WeChat draft box entry...');
@@ -825,72 +898,129 @@ async function listPublished() {
 }
 
 /**
- * Reconcile the channel_plan calendar with the real WeChat backend:
- *   - draft rows whose media_id IS in the draft box → keep draft;
- *   - draft rows whose titles appear in freepublish → upgrade to published;
- *   - draft rows whose media_id is missing AND not found in freepublish →
- *     UNCERTAIN (no auto-write): WeChat provides no API for mass-sent
- *     (push-notification) records, so a missing draft may mean "already
- *     mass-sent manually" as well as "never created". Rollback to todo would
- *     re-queue a published issue and risk a duplicate mass-send, so these rows
- *     are reported for manual confirmation instead.
- *   - published rows are never downgraded (title match only confirms them).
+ * Reconcile channel_plan with the REAL WeChat backend (2026-11-13 rewrite).
+ * ============================================================================
+ * Run BEFORE every publish tick (and on demand via wechat_sync_progress). Only
+ * `status='draft'` rows are examined — todo/failed/review_failed are queue states
+ * and must not be touched, published rows are never downgraded.
+ *
+ * Decisions per draft row (first match wins):
+ *   a) row.draft_ids ∩ draft box media_ids  → keep `draft`
+ *   b) draft_ids empty, title uniquely matches a draft message → `draft` + backfill media_id
+ *   c) title uniquely matches freepublish    → `published` (+ article_id when known)
+ *   d) neither                               → `deleted` (terminal: never re-sent)
+ *
+ * Why `deleted` and not `failed`: `failed` is a QUEUE status — the scheduler would
+ * re-draft all of them on the next tick, flooding the draft box (the exact
+ * duplicate incident this whole task is about). `deleted` sits in NO_AUTO_RETRY,
+ * so the only way back is a human reset to `todo`.
+ *
+ * Safety: a fetch failure aborts the WHOLE platform run with zero writes — never
+ * guess deletions from a partial list. Ambiguous title matches are reported, never
+ * written. dryRun computes the same report with zero DB writes.
+ *
  * `fetchers` is an injection seam for tests ({listDrafts, listPublished}).
- * @returns {Promise<{ok:boolean, dryRun:boolean, report:Object}>}
+ * @returns {Promise<{ok:boolean, dryRun:boolean, observedAt:string, report:Object}>}
  */
 async function syncProgressFromWechat({ siteKey, dryRun = false, fetchers } = {}) {
-  const SITE = t.site.loadSite(siteKey);
+  // siteKey is optional: the scheduler passes it explicitly, CLI/tools fall back to
+  // the ambient site resolution (SITE_KEY / argv).
+  const SITE = siteKey ? t.site.loadSite(siteKey) : t.site.loadSite();
   const f = fetchers || { listDrafts, listPublished };
   const drafts = await f.listDrafts();
   const published = await f.listPublished();
   const draftIds = new Set(drafts.map((d) => d.media_id));
-  const publishedTitles = new Set(published.flatMap((p) => p.titles));
+  const draftIndex = buildTitleIndex(drafts.map((d) => ({ titles: d.titles, payload: d.media_id })));
+  const publishedIndex = buildTitleIndex(published.map((p) => ({ titles: p.titles, payload: p.article_id })));
 
   const rows = await t.plan.channel.list({ platform: 'wechat' });
-  const report = { site: SITE.siteKey, drafts: drafts.length, published: published.length, changes: [], unchanged: [], uncertain: [] };
+  const report = {
+    site: SITE.siteKey,
+    drafts: drafts.length,
+    published: published.length,
+    kept: [],
+    backfilled: [],
+    upgraded: [],
+    deleted: [],
+    notable: [], // ambiguous title matches, missing articles — reported only
+    unchanged: [],
+  };
 
   await t.db.withConn(async (conn) => {
     for (const row of rows) {
-      // v7: one row = one slug; in-issue order = row id order
-      const titles = [];
+      if (row.status !== 'draft' && row.status !== 'published') {
+        report.unchanged.push({ id: row.id, period: row.period, status: row.status, reason: 'queue state — untouched' });
+        continue;
+      }
+      let title = null;
       try {
         const detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', row.slug, row.lang || 'zh-hans');
-        if (detail && detail.title) titles.push(detail.title);
-      } catch (_) { /* article missing → skip */ }
-      const matchedDraft = row.draft_ids.some((id) => draftIds.has(id));
-      const matchedPublished = titles.some((title) => publishedTitles.has(title));
-
-      if (row.status === 'draft') {
-        if (matchedDraft) {
-          report.unchanged.push({ id: row.id, period: row.period, status: 'draft', reason: 'draft media_id exists in the draft box' });
-        } else if (matchedPublished) {
-          if (!dryRun) await t.plan.channel.markStatus(row.id, 'published', row.draft_ids);
-          report.changes.push({ id: row.id, period: row.period, from: 'draft', to: 'published', reason: 'already mass-sent (title matched in freepublish list)' });
-        } else {
-          report.uncertain.push({
-            id: row.id,
-            period: row.period,
-            status: 'draft',
-            reason:
-              'draft media_id missing from the draft box and no freepublish record — ' +
-              'WeChat exposes no API for mass-sent (push) records, so the issue may have been ' +
-              'mass-sent manually. NOT auto-modified; confirm with the mp.weixin.qq.com 发表记录.',
-          });
-        }
-      } else if (row.status === 'published') {
-        report.unchanged.push({
-          id: row.id,
-          period: row.period,
-          status: 'published',
-          reason: matchedPublished ? 'confirmed in the publish list' : 'kept (published rows are never downgraded)',
-        });
-      } else {
-        report.unchanged.push({ id: row.id, period: row.period, status: row.status, reason: 'no change' });
+        title = (detail && detail.title) || null;
+      } catch (_) {
+        title = null;
       }
+      const mediaMatches = (row.draft_ids || []).filter((id) => draftIds.has(id));
+      const pubMatch = title ? lookupTitle(publishedIndex, title) : { hit: false, unique: false, matches: [], via: null };
+      const draftMatch = title ? lookupTitle(draftIndex, title) : { hit: false, unique: false, matches: [], via: null };
+
+      if (row.status === 'published') {
+        report.unchanged.push({ id: row.id, period: row.period, status: 'published', reason: 'published rows are never downgraded' });
+        continue;
+      }
+
+      // a) known media_id still sitting in the draft box
+      if (mediaMatches.length) {
+        report.kept.push({ id: row.id, period: row.period, mediaId: mediaMatches[0], reason: 'media_id found in the draft box' });
+        continue;
+      }
+      // c) already published to the account homepage
+      if (pubMatch.hit) {
+        if (!pubMatch.unique) {
+          report.notable.push({ id: row.id, title, reason: 'published title matched several messages — not written' });
+          continue;
+        }
+        if (!dryRun) {
+          await channelRepo.markStatus(conn, Number(process.env.APP_ID || 1), row.id, 'published', row.draft_ids);
+          if (pubMatch.matches[0]) {
+            await channelRepo.setArticleId(conn, Number(process.env.APP_ID || 1), row.id, pubMatch.matches[0]);
+          }
+        }
+        report.upgraded.push({ id: row.id, period: row.period, from: 'draft', to: 'published', articleId: pubMatch.matches[0] || null });
+        continue;
+      }
+      // b) no media_id but the title is uniquely in a draft message → backfill
+      if (draftMatch.hit) {
+        if (!draftMatch.unique) {
+          report.notable.push({ id: row.id, title, reason: 'title matched several draft messages — backfill skipped' });
+          continue;
+        }
+        const mediaId = draftMatch.matches[0];
+        if (!dryRun) {
+          await channelRepo.appendDraftIds(conn, Number(process.env.APP_ID || 1), row.id, [mediaId]);
+        }
+        report.backfilled.push({ id: row.id, period: row.period, mediaId, reason: 'title uniquely matched a draft message' });
+        continue;
+      }
+      // d) no evidence anywhere → terminal, never re-send
+      if (!dryRun) {
+        await channelRepo.markStatus(conn, Number(process.env.APP_ID || 1), row.id, 'deleted');
+        await channelRepo.appendNotes(
+          conn,
+          Number(process.env.APP_ID || 1),
+          row.id,
+          `[对账 ${new Date().toISOString()}] 草稿箱与发表记录均无此篇（draft_ids 为空），判 deleted 终态；如确认从未发出，人工改回 todo 才会重发`
+        );
+      }
+      report.deleted.push({
+        id: row.id,
+        period: row.period,
+        title,
+        reason: 'not in draft box and not in freepublish — terminal (no auto re-send)',
+      });
     }
   });
 
-  return { ok: true, dryRun, report };
+  return { ok: true, dryRun, observedAt: new Date().toISOString(), report };
 }
 
 // ==================== Mass-send / preview / delete (push capabilities) ====================
@@ -1235,6 +1365,14 @@ async function publishRewrittenToWechat({ articles, siteKey, dryRun = false }) {
       LOG_DIR,
       LOG_FILE
     );
+    // 2026-11-13 — Mode B also lands the issue in channel_plan immediately, so a
+    // rewritten draft can never exist on the platform without a local row (that
+    // "message created, no row" window is how duplicates were born).
+    try {
+      await t.plan.channel.recordWechatIssueCreated({ slugs, mediaId, notes: 'Mode B (harness rewrite) → draft box' });
+    } catch (e) {
+      console.warn(`⚠️  recordWechatIssueCreated failed (${e.message}) — draft exists but channel_plan was not updated`);
+    }
   });
 
   return { mediaId, action: 'draft' };
@@ -1256,6 +1394,7 @@ module.exports = {
   massDelete,
   deletePublished,
   publishDraftByMediaId,
+  getPublishStatus,
   getStats,
   getStatsOverview,
   STATS_ENDPOINTS,

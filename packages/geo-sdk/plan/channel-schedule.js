@@ -205,12 +205,18 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
 
   // step ① — audit (审核) check BEFORE any publishing (plan A: merged into the
   // unified executor). Real runs advance review states for juejin + csdn;
-  // a platform failure is recorded and does NOT block the publish loop.
+  // wechat has no review pipeline, but it needs a read-only TRUTH pass against the
+  // draft box + freepublish list so "已发布/已删草稿" never stays mislabeled as
+  // `draft` (2026-11-13). It only runs when a wechat slot is due this tick, so we
+  // never burn API quota on idle platforms. A platform failure is recorded and
+  // does NOT block the publish loop.
   const audit = dryRun ? { skipped: 'dry_run' } : {};
   if (!dryRun) {
-    for (const p of ['juejin', 'csdn']) {
+    const auditPlatforms = ['juejin', 'csdn'];
+    if (due.some((s) => s.platform === 'wechat')) auditPlatforms.push('wechat');
+    for (const p of auditPlatforms) {
       try {
-        audit[p] = await channel.syncStatuses(p);
+        audit[p] = await channel.syncStatuses(p, { siteKey });
       } catch (e) {
         audit[p] = { ok: false, error: e.message };
       }
@@ -234,14 +240,17 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
       });
     }
     const asDraft = AS_DRAFT_BY_PLATFORM[s.platform] === true;
+    // Declared OUTSIDE the try so the catch branch can still record WHICH articles
+    // the failed attempt was carrying (2026-11-13: a thrown access_token/cover
+    // error used to leave channel_plan completely untouched).
+    let next = null;
+    let slugs = [];
+    let pub = null;
     try {
       // 2026-11-11 — 闸门隔离后的候选重试：publishToChannel 命中 G17 会把不合格稿
       // 隔离成 review_failed（从队列移出）并返回 blocked:true。旧行为是直接失败，
       // 这个槽当天就此报废；现在换下一批候选再试，最多 GATE_RETRY_MAX 轮，
       // 这样队头压着坏稿也不会让整个槽连续多日空转。
-      let next = null;
-      let slugs = [];
-      let pub = null;
       for (let attempt = 1; attempt <= GATE_RETRY_MAX; attempt += 1) {
         next = await channel.nextDue(s.platform, { count: s.count || 1, register: !dryRun });
         if (!next) break;
@@ -317,17 +326,20 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
         const mediaId = (pub.refs && pub.refs.mediaId) || null;
         if (group.length) {
           try {
-            await channel.recordWechatIssue({
+            // 2026-11-13: recordWechatIssueCreated appends the media_id (never
+            // overwrites it) and reuses the existing 第N期 when the same message
+            // is re-recorded — so "which message is this issue" survives re-runs
+            // and a retry can never mint a second phantom 期.
+            await channel.recordWechatIssueCreated({
               slugs: group,
               mediaId,
-              status: 'draft', // draft box is the terminal state — we never mass-send
               topic: group.length === 1 ? null : `${group.length} 篇合辑`,
-              notes: `merged into one WeChat message (media_id: ${mediaId || 'n/a'})`,
+              notes: `merged into one WeChat message (media_id: ${mediaId || 'n/a'})${pub.action === 'draft-exists' ? ' [reused existing draft]' : ''}`,
             });
-            fired.loggedIssue = { slugs: group, mediaId };
+            fired.loggedIssue = { slugs: group, mediaId, reused: pub.action === 'draft-exists' };
           } catch (logErr) {
             // logging failure must not mask the publish result
-            console.error('[channel_publish_due] recordWechatIssue failed:', logErr.message);
+            console.error('[channel_publish_due] recordWechatIssueCreated failed:', logErr.message);
           }
         }
       }
@@ -375,11 +387,40 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
       if (publishedUrls.length) fired.urls = publishedUrls;
       results.push(fired);
     } catch (e) {
+      // 2026-11-13 — exceptions (access_token 40164 IP whitelist, missing featured
+      // image, draft/add failure) used to leave channel_plan COMPLETELY untouched
+      // and the slot un-stamped, so the ticker retried the same batch for the whole
+      // 45-minute window with no evidence in the DB. Now: record one `failed` row
+      // per candidate with the real error, then stamp the slot so the day's window
+      // is closed (a retry needs an explicit reset, same rule as juejin/csdn).
+      if (!dryRun && Array.isArray(slugs) && slugs.length) {
+        const attemptAt = localStamp(new Date());
+        for (const slug of slugs) {
+          try {
+            await channel.recordPublish({
+              platform: s.platform,
+              slug,
+              status: 'failed',
+              notes: `[attempt ${attemptAt}] 调度执行异常：${e.message.slice(0, 300)}`,
+              error: { code: 'DISPATCH_ERROR', message: e.message.slice(0, 1000) },
+              stage: 'dispatch',
+            });
+          } catch (logErr) {
+            console.error('[channel_publish_due] recordPublish(exception) failed:', logErr.message);
+          }
+        }
+        try {
+          await withConn((conn) => repo.markLastRun(conn, appId, s.id, localStamp(now)));
+        } catch (markErr) {
+          console.error('[channel_publish_due] markLastRun after exception failed:', markErr.message);
+        }
+      }
       results.push({
         platform: s.platform,
         publish_time: s.publish_time,
         status: 'failed',
         detail: e.message,
+        slugs,
       });
     }
   }
