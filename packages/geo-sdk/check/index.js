@@ -320,7 +320,8 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   if (isPublished) {
     try {
       const postId = Number(dbArticle.wp_post_id);
-      const wpPost = await t.wp.api(`/posts/${postId}?_fields=id,categories,tags`);
+      const WP_OPTS = { siteKey: S.siteKey };
+      const wpPost = await t.wp.api(`/posts/${postId}?_fields=id,categories,tags`, WP_OPTS);
       const wpCatIds = new Set(wpPost.categories || []);
       const wpTagIds = new Set(wpPost.tags || []);
 
@@ -328,7 +329,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
       const planCat = (taxCur && taxCur.plan_category) || (taxSrc && taxSrc.plan_category) || '';
       let planCatId = null;
       if (planCat) {
-        const wpCats = await t.wp.api(`/categories?slug=${encodeURIComponent(planCat)}&_fields=id,slug`);
+        const wpCats = await t.wp.api(`/categories?slug=${encodeURIComponent(planCat)}&_fields=id,slug`, WP_OPTS);
         if (wpCats && wpCats.length) planCatId = wpCats[0].id;
       }
 
@@ -336,7 +337,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
       const planTagSlugs = effTags;
       const planTagIds = [];
       if (planTagSlugs.length) {
-        const wpTagsAll = await t.wp.api(`/tags?per_page=100&_fields=id,slug`);
+        const wpTagsAll = await t.wp.api(`/tags?per_page=100&_fields=id,slug`, WP_OPTS);
         const slugToId = {};
         (wpTagsAll || []).forEach((x) => { slugToId[x.slug] = x.id; });
         for (const s of planTagSlugs) {
