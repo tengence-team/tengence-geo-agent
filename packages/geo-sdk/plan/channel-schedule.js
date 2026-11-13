@@ -278,7 +278,19 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
                 .filter((r) => Array.isArray(r) && r[2] === false)
                 .map((r) => String(r[0]).trim())
                 .slice(0, 6);
-              return { ok: !!(report && report.ok), failures };
+              const gateOk = !!(report && report.ok);
+              if (gateOk) {
+                // G20 封面体检：字段有值但 URL 404 的稿子不该进入 ready，否则整期在建稿
+                // 阶段被一篇坏封面拖崩（实测：ai-marketing 无封面 → 整期报错）。
+                let cover = '';
+                await t.db.withConn(async (conn) => {
+                  const d = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug, 'zh-hans');
+                  cover = (d && d.featured_image) || '';
+                });
+                const probe = await t.syndicate.wechat.probeCoverUrl(cover);
+                if (!probe.ok) return { ok: false, failures: [`封面不可用（G20）: ${probe.reason}`] };
+              }
+              return { ok: gateOk, failures };
             },
           });
           wechatAssembly = { perIssue, ready: assembled.ready.map((x) => x.slug), needsRepair: assembled.needsRepair, shortage: assembled.shortage };
@@ -303,6 +315,9 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
             asDraft,
             dryRun,
             siteKey,
+            // 微信一期：slugs 已按 publish_order（历史发布顺序）排好，不允许再按
+            // 发布时间重排 —— 否则头条变成"最近发布的那篇"，队列顺序被丢掉。
+            keepOrder: s.platform === 'wechat',
           });
           if (!pub || pub.ok || !pub.blocked) break;
           if (attempt === GATE_RETRY_MAX) break;

@@ -156,6 +156,33 @@ function fail(err) {
 }
 
 /** Delegate to a geo-cli bin (canonical orchestration); returns { code, stdout, stderr } */
+// Async sibling of runCli: spawnSync freezes the whole MCP server (single-threaded
+// HTTP) for the full child runtime, so any slow CLI made every other tool call look
+// dead and tripped the client's per-request timeout. Use this for long CLIs.
+function runCliAsync(binName, args, opts = {}) {
+  const binPath = require.resolve(`@tengence/geo-cli/bin/${binName}.js`);
+  const sitesRoot = t.site.SITES_ROOT;
+  return new Promise((resolve) => {
+    const { spawn } = require('node:child_process');
+    const child = spawn(process.execPath, [binPath, ...args], {
+      env: { ...process.env, ...(sitesRoot ? { SITES_ROOT: sitesRoot } : {}), ...opts.env },
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (d) => { stdout += d.toString(); });
+    child.stderr.on('data', (d) => { stderr += d.toString(); });
+    const timer = setTimeout(() => child.kill('SIGKILL'), opts.timeout || 600000);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, stdout: stdout.trim(), stderr: stderr.trim() });
+    });
+    child.on('error', (e) => {
+      clearTimeout(timer);
+      resolve({ code: 1, stdout: '', stderr: String(e && e.message) });
+    });
+  });
+}
+
 function runCli(binName, args, opts = {}) {
   const binPath = require.resolve(`@tengence/geo-cli/bin/${binName}.js`);
   // Propagate the bound workspace to the child process: geo-cli resolves the site
@@ -1351,7 +1378,7 @@ const tools = [
       const cliArgs = ['--query', args.query, '--slug', args.slug, '--site', cliSite(args)];
       if (args.count) cliArgs.push('--count', String(args.count));
       if (args.dry_run) cliArgs.push('--dry-run');
-      const r = runCli('image-acquire', cliArgs);
+      const r = await runCliAsync('image-acquire', cliArgs);
       return ok({ ok: r.code === 0, exit_code: r.code, output: r.stdout || r.stderr });
     },
   },
@@ -1948,7 +1975,9 @@ const tools = [
           slugs: args.slugs || [],
           articles: args.articles || [],
           asDraft: args.asDraft !== false,
-          keepOrder: !!args.keepOrder,
+          // 默认保序：slugs 来自 publish_order 升序的候选队列，重排会让头条变成
+          // "最近发布的那篇"（历史 bug）。只有显式 keepOrder:false 才按发布时间重排。
+          keepOrder: args.keepOrder !== false,
           dryRun: !!args.dryRun,
           siteKey: site.siteKey,
         });
@@ -3327,7 +3356,19 @@ const tools = [
               site: site.siteKey,
               overrides: rw ? { title: rw.title, contentMd: rw.contentMd } : null,
             });
-            return { ok: !!r.ok, failures: gateFailures(r) };
+            const failures = gateFailures(r);
+            if (r.ok) {
+              // G20 封面体检：闸门只看 featured_image 字段是否为空，字段有值但 URL 404
+              // 的稿子会一路过门、到建稿下载封面才炸（本期 ai-marketing 就是这么卡的）。
+              let cover = '';
+              await t.db.withConn(async (conn) => {
+                const d = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', slug, 'zh-hans');
+                cover = (d && d.featured_image) || '';
+              });
+              const probe = await t.syndicate.wechat.probeCoverUrl(cover);
+              if (!probe.ok) return { ok: false, failures: [`封面不可用（G20）: ${probe.reason}`] };
+            }
+            return { ok: !!r.ok, failures };
           },
         });
         return ok({ ok: true, perIssue, candidates, ...assembled });
@@ -3447,7 +3488,10 @@ const tools = [
           platform: 'wechat',
           slugs: assembled.ready.map((x) => x.slug),
           asDraft: true,
-          keepOrder: !!args.keepOrder,
+          // 顺序即语义：assembleIssue 的 ready 是按 publish_order 升序排好的（历史发布顺序），
+          // 头条必须是队列里最早的一篇。默认保序，只有显式 keepOrder:false 才交给
+          // syncWechat 按发布时间新→旧重排。
+          keepOrder: args.keepOrder !== false,
           dryRun: !!args.dryRun,
           siteKey: site.siteKey,
         });

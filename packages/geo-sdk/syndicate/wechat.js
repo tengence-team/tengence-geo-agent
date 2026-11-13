@@ -481,6 +481,31 @@ function cleanWechatHtml(html) {
   return out;
 }
 
+/**
+ * 微信建稿前的封面体检（G20）：封面唯一来源是 articles.featured_image（见
+ * channel.js featuredImageFor 的注释），但历史数据里出现过"字段有值、URL 却是 404"
+ * 的情况 —— 闸门只看字段是否为空，于是这种稿子照样通过，直到建稿下载封面才炸。
+ * 这里按真正要发的那份封面做一次 HEAD 探测：404 / 非图片 → 判不可用；网络异常
+ * 视为"无法判定"，放行（不因一次抖动把好稿拦掉）。
+ * @param {string} url
+ * @param {{timeoutMs?:number}} [opts]
+ * @returns {Promise<{ok:boolean, reason?:string, status?:number}>}
+ */
+async function probeCoverUrl(url, { timeoutMs = 2500 } = {}) {
+  const target = String(url || '').trim();
+  if (!target) return { ok: false, reason: 'no cover url' };
+  try {
+    const res = await fetch(target, { method: 'HEAD', signal: AbortSignal.timeout(timeoutMs) });
+    const type = String(res.headers.get('content-type') || '');
+    if (res.status === 404 || res.status === 410) return { ok: false, reason: `cover http ${res.status}`, status: res.status };
+    if (res.status >= 400) return { ok: false, reason: `cover http ${res.status}`, status: res.status };
+    if (!type.startsWith('image/')) return { ok: false, reason: `cover not an image (${type || 'unknown'})`, status: res.status };
+    return { ok: true, status: res.status };
+  } catch (e) {
+    return { ok: true, reason: `cover probe skipped (${e && e.message})` };
+  }
+}
+
 async function prepareArticle(conn, slug, siteDomain, overrides = {}) {
   const APP_ID = process.env.APP_ID || '1';
 
@@ -488,6 +513,9 @@ async function prepareArticle(conn, slug, siteDomain, overrides = {}) {
 
   const detail = await t.db.articles.getDetail(conn, APP_ID, slug, 'zh-hans');
   if (!detail) throw new Error(`Article not found: ${slug}`);
+  // WP read must be scoped to the current site; without siteKey wpTarget() falls
+  // back to the non-existent default `sites/tengence` and the cover lookup dies.
+  const siteKey = overrides.siteKey;
 
   const articleId = detail.id;
   const title = overrides.titleOverride || detail.title;
@@ -508,9 +536,9 @@ async function prepareArticle(conn, slug, siteDomain, overrides = {}) {
   let featuredImage = null;
   if (detail.wp_post_id) {
     try {
-      const wpPost = await t.wp.posts.get(detail.wp_post_id);
+      const wpPost = await t.wp.posts.get(detail.wp_post_id, '', { siteKey });
       if (wpPost.featured_media) {
-        const mediaRes = await t.wp.api(`/media/${wpPost.featured_media}?_fields=source_url`);
+        const mediaRes = await t.wp.api(`/media/${wpPost.featured_media}?_fields=source_url`, { siteKey });
         if (mediaRes && mediaRes.source_url) {
           featuredImage = mediaRes.source_url;
           console.log(`  Cover source: WP media library`);
@@ -829,8 +857,8 @@ async function syncWechat({ slugs, dryRun = false, shouldPublish = false, siteKe
       // 标题/正文，不改变 media_id / 期号 / 状态机。
       const rewritten = preferRewritten ? readRewrittenExport(SITE.siteDir, slug) : null;
       const article = await prepareArticle(conn, slug, SITE_DOMAIN, rewritten
-        ? { titleOverride: rewritten.title, contentMdOverride: rewritten.contentMd }
-        : {});
+        ? { siteKey: SITE.siteKey, titleOverride: rewritten.title, contentMdOverride: rewritten.contentMd }
+        : { siteKey: SITE.siteKey });
       article._slug = slug;
       article._rewritten = !!rewritten;
       articles.push(article);
@@ -1413,6 +1441,7 @@ async function publishRewrittenToWechat({ articles, siteKey, dryRun = false }) {
       // reuse the full md→HTML + image-upload + cover pipeline, but feed the
       // harness-rewritten title/body instead of the DB original
       const article = await prepareArticle(conn, a.slug, SITE_DOMAIN, {
+        siteKey: SITE.siteKey,
         titleOverride: a.title,
         contentMdOverride: a.contentMd,
       });
@@ -1442,6 +1471,7 @@ async function publishRewrittenToWechat({ articles, siteKey, dryRun = false }) {
 }
 
 module.exports = {
+  probeCoverUrl,
   syncWechat,
   deleteDraft,
   readRewrittenExport,
