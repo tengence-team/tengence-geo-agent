@@ -222,10 +222,10 @@ test('isNonSpecificPage: homepage / level-1 channel / level-2 landing blocked; d
   assert.equal(isNonSpecificPage('https://www.tengence.com/zh-hans/blog/article/best-geo-tools-comparison-2026/'), false);
 });
 
-test('MCP registry: exposes 78 tools — standards moved to geo://standard/* resources, 17 channel tools, 8 wechat tools, 2 GSC read tools, 2 translation tools, 10 term/author-name tools', () => {
+test('MCP registry: exposes 82 tools — standards moved to geo://standard/* resources, 17 channel tools, 12 wechat tools, 2 GSC read tools, 2 translation tools, 10 term/author-name tools', () => {
   // The count grows with every new domain tool; if it changes, update this number and
   // add the corresponding per-domain assertion below (do not just bump blindly).
-  assert.equal(tools.length, 78, 'expected 78 tools (standards as resources, channel + wechat + csdn/aliyun + gsc read + taxonomy + translation + term/author names + site_geo_plan_skill + audit)');
+  assert.equal(tools.length, 82, 'expected 82 tools (standards as resources, channel + wechat + wechat issue assembly/draft delete + csdn/aliyun + gsc read + taxonomy + translation + term/author names + site_geo_plan_skill + audit)');
   // standards are exposed as MCP resources, not tools (capability-surface refactor) — assert no legacy
   // tool leaks back.
   for (const n of ['standards_list', 'standards_read']) {
@@ -243,7 +243,7 @@ test('MCP registry: exposes 78 tools — standards moved to geo://standard/* res
   for (const n of ['wechat_status', 'wechat_sync_progress']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
-  for (const n of ['wechat_mass_preview', 'wechat_mass_send', 'wechat_mass_status', 'wechat_article_delete', 'wechat_draft_publish', 'wechat_stats', 'wechat_draft_update']) {
+  for (const n of ['wechat_mass_preview', 'wechat_mass_send', 'wechat_mass_status', 'wechat_article_delete', 'wechat_draft_publish', 'wechat_stats', 'wechat_draft_update', 'wechat_issue_preview', 'wechat_rewrite_packet', 'wechat_issue_publish', 'wechat_draft_delete']) {
     assert.ok(registry.has(n), `registry missing ${n}`);
   }
   for (const n of ['search_gsc_stats', 'search_gsc_inspect']) {

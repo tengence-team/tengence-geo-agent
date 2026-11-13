@@ -262,6 +262,19 @@ const GEO_META_KEYS = Object.keys(ARTICLE_FIELD_ROUTES).filter(
 );
 
 
+/**
+ * G17/G18/G19 闸门报告 → 失败项名称数组（最多 6 项）。
+ * checkArticle 的 rows 形如 [名称, 说明, ok]，ok=false 的即失败项。
+ */
+function gateFailures(report) {
+  const rows = (report && Array.isArray(report.rows)) ? report.rows : [];
+  return rows
+    .filter((r) => Array.isArray(r) && r[2] === false)
+    .map((r) => String(r[0]).trim())
+    .filter(Boolean)
+    .slice(0, 6);
+}
+
 const tools = [
   // ---------- workspace ----------
   {
@@ -3277,6 +3290,205 @@ const tools = [
           }
         }
         return ok({ ok: true, ...result, statusUpdated });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wechat_issue_preview',
+    title: '微信本期选题预筛',
+    description:
+      '只读预览微信这一期会发哪几篇：按「已登记 todo 优先 → blog publish_order」取有序候选，逐篇跑 G17/G18/G19 闸门，' +
+      'PASS 的进 ready（凑满 perIssue 即停），FAIL 的进 needsRepair（不丢弃，供按渠道改写后再发）。零写入，可反复调用。' +
+      'perIssue 优先级：参数 > schedule.count > 环境变量 WECHAT_PER_ISSUE > 3。',
+    inputSchema: z.object({
+      perIssue: z.number().optional().describe('本期几篇（默认 3，见优先级说明）'),
+      limit: z.number().optional().describe('最多考察几篇候选（默认 8）'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const site = withSite(args);
+        const ch = t.plan.channel;
+        const perIssue = ch.wechatIssue.resolvePerIssue({ perIssue: args.perIssue });
+        const cap = args.limit || ch.wechatIssue.DEFAULT_MAX_CANDIDATES;
+        const candidates = await ch.wechatIssueCandidates({ limit: cap });
+        const assembled = await ch.wechatIssue.assembleIssue({
+          candidates,
+          perIssue,
+          maxCandidates: cap,
+          check: async (slug) => {
+            // 有渠道改写稿时校验改写稿 —— 修好的文章才能算"可发"
+            const rw = t.syndicate.wechat.readRewrittenExport(site.siteDir, slug);
+            const r = await t.check.checkArticle({
+              slug,
+              lang: 'zh-hans',
+              site: site.siteKey,
+              overrides: rw ? { title: rw.title, contentMd: rw.contentMd } : null,
+            });
+            return { ok: !!r.ok, failures: gateFailures(r) };
+          },
+        });
+        return ok({ ok: true, perIssue, candidates, ...assembled });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wechat_rewrite_packet',
+    title: '微信改写工单',
+    description:
+      '给"闸门没过、但决定要发"的文章出一份改写工单：原文 markdown + 失败项（G17/G18/G19 具体哪几项）+ 微信渠道改写规则。' +
+      '改写完成后用 channel_check(platform=wechat) 复检，再走 wechat_issue_publish 的 articles[] 建稿。只读，不生成内容。',
+    inputSchema: z.object({
+      slug: z.string().describe('article slug'),
+      lang: z.string().optional().describe('language (default zh-hans)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const site = withSite(args);
+        const lang = args.lang || 'zh-hans';
+        let detail = null;
+        await t.db.withConn(async (conn) => {
+          detail = await t.db.articles.getDetail(conn, process.env.APP_ID || '1', args.slug, lang);
+        });
+        if (!detail) return fail(new Error(`Article not found: ${args.slug} (${lang})`));
+        const report = await t.check.checkArticle({ slug: args.slug, lang, site: site.siteKey });
+        const plat = t.syndicate.registry.getPlatform('wechat');
+        const existing = t.syndicate.wechat.readRewrittenExport(site.siteDir, args.slug);
+        return ok({
+          ok: true,
+          slug: args.slug,
+          lang,
+          title: detail.title,
+          contentMd: detail.content_longtext || '',
+          gate: { ok: !!report.ok, failures: gateFailures(report) },
+          rewriteRules: plat ? plat.rewrite : null,
+          existingRewritten: existing ? { title: existing.title, path: existing.path } : null,
+        });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wechat_issue_publish',
+    title: '微信建一期（N 篇一条图文）',
+    description:
+      '按「每期 N 篇（默认 3）」建 ONE 图文消息。两条路：① slugs[] → 先逐篇跑闸门、凑满 perIssue 篇合格稿再建（' +
+      '不合格的回报在 needsRepair，不会被判死）；② articles[]（改写稿 {slug,title,contentMd}）→ 直接建稿，用于把闸门' +
+      '不过的文章按渠道规则改写后发出去。成功后写 channel_plan（published/draft + media_id + 期号）。dryRun 只预览。',
+    inputSchema: z.object({
+      perIssue: z.number().optional().describe('本期几篇（默认 3）'),
+      slugs: z.array(z.string()).optional().describe('Mode A：按这些 slug 建稿（会先跑闸门凑满）'),
+      articles: z
+        .array(
+          z.object({
+            slug: z.string(),
+            title: z.string(),
+            contentMd: z.string(),
+            summary: z.string().optional(),
+          })
+        )
+        .optional()
+        .describe('Mode B：改写稿（每篇一项）'),
+      keepOrder: z.boolean().optional().describe('true = 按传入顺序（第一篇为头条）'),
+      dryRun: z.boolean().optional().describe('只预览，不建稿'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const site = withSite(args);
+        const ch = t.plan.channel;
+        const perIssue = ch.wechatIssue.resolvePerIssue({ perIssue: args.perIssue });
+        const rewritten = Array.isArray(args.articles) ? args.articles : [];
+        const slugsIn = Array.isArray(args.slugs) ? args.slugs : [];
+        if (rewritten.length && slugsIn.length) return fail(new Error('wechat_issue_publish accepts slugs[] or articles[], not both'));
+
+        if (rewritten.length) {
+          for (const a of rewritten) {
+            if (!a.slug || !a.title || !a.contentMd) return fail(new Error('articles[] requires slug/title/contentMd'));
+          }
+          const res = await t.syndicate.wechat.publishRewrittenToWechat({
+            articles: rewritten,
+            siteKey: site.siteKey,
+            dryRun: !!args.dryRun,
+          });
+          return ok({ ok: true, mode: 'rewritten', perIssue, actualCount: rewritten.length, ...res });
+        }
+
+        const cap = Math.max(perIssue, 8);
+        const candidates = slugsIn.length
+          ? slugsIn.map((slug, i) => ({ slug, order: i + 1 }))
+          : await ch.wechatIssueCandidates({ limit: cap });
+        const assembled = await ch.wechatIssue.assembleIssue({
+          candidates,
+          perIssue,
+          maxCandidates: cap,
+          check: async (slug) => {
+            // 有渠道改写稿时校验改写稿 —— 修好的文章才能算"可发"
+            const rw = t.syndicate.wechat.readRewrittenExport(site.siteDir, slug);
+            const r = await t.check.checkArticle({
+              slug,
+              lang: 'zh-hans',
+              site: site.siteKey,
+              overrides: rw ? { title: rw.title, contentMd: rw.contentMd } : null,
+            });
+            return { ok: !!r.ok, failures: gateFailures(r) };
+          },
+        });
+        if (!assembled.ready.length) {
+          return ok({ ok: false, reason: 'no gate-passing candidate', assembled });
+        }
+        const res = await t.syndicate.channel.publishToChannel({
+          platform: 'wechat',
+          slugs: assembled.ready.map((x) => x.slug),
+          asDraft: true,
+          keepOrder: !!args.keepOrder,
+          dryRun: !!args.dryRun,
+          siteKey: site.siteKey,
+        });
+        const mediaId = (res.refs && res.refs.mediaId) || null;
+        if (!args.dryRun && res.ok && mediaId) {
+          try {
+            await ch.recordWechatIssueCreated({
+              slugs: assembled.ready.map((x) => x.slug),
+              mediaId,
+              notes: `auto-assembled ${assembled.ready.length}/${perIssue} 篇（闸门预筛）`,
+            });
+          } catch (e) {
+            console.warn('[wechat_issue_publish] recordWechatIssueCreated failed:', e.message);
+          }
+        }
+        return ok({ ok: !!res.ok, perIssue, actualCount: assembled.ready.length, assembled, ...res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wechat_draft_delete',
+    title: '删除公众号草稿',
+    description:
+      '删除草稿箱里的一条消息（draft/delete）。与 wechat_article_delete（freepublish/delete，只能删已发布）不同。' +
+      'IRREVERSIBLE —— 先确认 media_id（见 wechat_status drafts），带 confirm:"YES" 才真删；dryRun 只打印载荷。',
+    inputSchema: z.object({
+      media_id: z.string().describe('draft box media_id'),
+      confirm: z.enum(['YES']).optional().describe('必须为 YES 才真删'),
+      dryRun: z.boolean().optional().describe('只打印载荷不删除'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const site = withSite(args);
+        const res = await t.syndicate.wechat.deleteDraft(args.media_id, {
+          dryRun: !!args.dryRun || args.confirm !== 'YES',
+          siteKey: site.siteKey,
+        });
+        return ok({ ok: true, ...res });
       } catch (e) {
         return fail(e);
       }
