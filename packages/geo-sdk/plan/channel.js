@@ -926,6 +926,22 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3, 
  *   does NOT insert — a pure read with zero side effects.
  * @returns {Promise<object|null>}
  */
+/**
+ * 微信一期的有序候选（只读）：已登记的 calendar todo 行优先，其余按 blog publish_order 升序。
+ * `register:false` 保证这个函数不写库 —— 预筛/预览要能安全地反复调用。
+ * @param {{limit?:number}} [opts]
+ * @returns {Promise<Array<{slug:string, title:?string, rowId:?number, order:number}>>}
+ */
+async function wechatIssueCandidates({ limit = 8 } = {}) {
+  const d = await nextDue('wechat', { count: limit, register: false });
+  return ((d && d.tasks) || []).map((x, i) => ({
+    slug: x.slug,
+    title: x.title || x.topic || null,
+    rowId: x.id == null ? null : x.id,
+    order: i + 1,
+  }));
+}
+
 async function nextDue(platform, { count = 1, register = true } = {}) {
   const appId = DEFAULT_APP_ID();
   const langs = PLATFORM_LANGS[platform] || ['zh-hans'];
@@ -988,6 +1004,8 @@ async function nextDue(platform, { count = 1, register = true } = {}) {
 }
 
 module.exports = {
+  wechatIssueCandidates,
+  wechatIssue: require('./wechat-issue'),
   // (parseWechatPlanText / importWechatPlan removed 2026-10-07 — no document parsing)
   importWechatIssues,
   recordWechatIssue,

@@ -246,12 +246,68 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
     let next = null;
     let slugs = [];
     let pub = null;
+    /** wechat 专用：本轮的凑篇结果（perIssue / 入选 / 待改写 / 缺口），供结果与告警使用 */
+    let wechatAssembly = null;
     try {
       // 2026-11-11 — 闸门隔离后的候选重试：publishToChannel 命中 G17 会把不合格稿
       // 隔离成 review_failed（从队列移出）并返回 blocked:true。旧行为是直接失败，
       // 这个槽当天就此报废；现在换下一批候选再试，最多 GATE_RETRY_MAX 轮，
       // 这样队头压着坏稿也不会让整个槽连续多日空转。
       for (let attempt = 1; attempt <= GATE_RETRY_MAX; attempt += 1) {
+        if (s.platform === 'wechat') {
+          // 2026-11-13 — 微信一期 N 篇（默认 3，可由 schedule.count / 参数覆盖）：
+          // 先按「已登记 todo 优先 → publish_order」取有序候选，逐篇跑 G17/G18/G19 闸门，
+          // 凑满 perIssue 篇合格稿才建 ONE 图文消息。闸门不过的文章进 needsRepair
+          // （不落 review_failed、不判死），留待按渠道改写后进后续期次。
+          // 旧行为是「取 N 篇直接发 → 闸门拦掉几篇 → 一期只剩 1 篇」（实测事故）。
+          const perIssue = channel.wechatIssue.resolvePerIssue({ scheduleCount: s.count });
+          const cap = Math.max(perIssue, channel.wechatIssue.DEFAULT_MAX_CANDIDATES);
+          const candidates = await channel.wechatIssueCandidates({ limit: cap });
+          const assembled = await channel.wechatIssue.assembleIssue({
+            candidates,
+            perIssue,
+            maxCandidates: cap,
+            check: async (slug) => {
+              // 有渠道改写稿时校验改写稿（与建稿内容一致）
+              const rw = t.syndicate.wechat.readRewrittenExport(siteDir, slug);
+              const report = await t.check.checkArticle({
+                slug, lang: 'zh-hans', site: siteKey,
+                overrides: rw ? { title: rw.title, contentMd: rw.contentMd } : null,
+              });
+              const failures = ((report && report.rows) || [])
+                .filter((r) => Array.isArray(r) && r[2] === false)
+                .map((r) => String(r[0]).trim())
+                .slice(0, 6);
+              return { ok: !!(report && report.ok), failures };
+            },
+          });
+          wechatAssembly = { perIssue, ready: assembled.ready.map((x) => x.slug), needsRepair: assembled.needsRepair, shortage: assembled.shortage };
+          if (!assembled.ready.length) {
+            if (dryRun) {
+              // dryRun 什么都不写：即使本 tick 没有合格稿，也要如实报"会发哪几篇候选"，
+              // 而不是伪装成"没到期的文章"（dry-run 的用途就是照镜子）。
+              next = { tasks: candidates.slice(0, perIssue) };
+              slugs = next.tasks.map((x) => x.slug);
+              pub = { ok: true, results: slugs.map((slug) => ({ slug, ok: true, dryRun: true })) };
+              break;
+            }
+            next = null;
+            break;
+          }
+          next = { tasks: assembled.ready };
+          slugs = assembled.ready.map((x) => x.slug);
+          pub = await publishToChannel({
+            platform: s.platform,
+            slugs,
+            articles: [],
+            asDraft,
+            dryRun,
+            siteKey,
+          });
+          if (!pub || pub.ok || !pub.blocked) break;
+          if (attempt === GATE_RETRY_MAX) break;
+          continue;
+        }
         next = await channel.nextDue(s.platform, { count: s.count || 1, register: !dryRun });
         if (!next) break;
         slugs = next.tasks.map((x) => x.slug);
@@ -273,12 +329,24 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
         results.push({
           platform: s.platform,
           publish_time: s.publish_time,
+          asDraft,
           status: 'no_due_articles',
-          detail: 'no unpublished blog articles left for this platform today',
+          detail: wechatAssembly
+            ? `no gate-passing candidate this tick (perIssue=${wechatAssembly.perIssue}, needsRepair=${wechatAssembly.needsRepair.map((x) => x.slug).join(',') || 'none'}) — 这些文章等待按渠道改写`
+            : 'no unpublished blog articles left for this platform today',
+          ...(wechatAssembly
+            ? { perIssue: wechatAssembly.perIssue, actualCount: 0, needsRepair: wechatAssembly.needsRepair, shortage: wechatAssembly.shortage }
+            : {}),
         });
         continue;
       }
       const fired = { platform: s.platform, publish_time: s.publish_time, count: s.count, asDraft, ok: !!pub.ok };
+      if (wechatAssembly) {
+        fired.perIssue = wechatAssembly.perIssue;
+        fired.actualCount = wechatAssembly.ready.length;
+        fired.needsRepair = wechatAssembly.needsRepair;
+        if (wechatAssembly.shortage) fired.shortage = wechatAssembly.shortage;
+      }
       if (!pub.ok) {
         fired.status = 'failed';
         // Surface the REAL per-article failure reasons (platform err_no/err_msg, stage,
