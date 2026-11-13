@@ -989,6 +989,40 @@ const tools = [
         const siteKey = S.siteKey;
         const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
 
+        // ---- 1a. cover pre-flight (G20 at the write boundary, 2026-11-13) ----
+        // Writing a cover is the one moment where "the field has a value but the URL is
+        // dead" is cheap to prevent: verify the media id / URL BEFORE anything touches
+        // WP or the DB. A failure here returns with zero writes (the ai-marketing
+        // incident was exactly a cover that existed in name only).
+        let coverPreflight = null;
+        if (args.featured_media !== undefined) {
+          // getMedia throws on a WP 404 — translate that into one readable line instead
+          // of dumping the whole "Page not found" HTML body into the tool result.
+          let media = null;
+          try {
+            media = await t.wp.media.getMedia(args.featured_media, { siteKey });
+          } catch (e) {
+            media = null;
+          }
+          if (!media || !media.url) {
+            return fail(new Error(`cover media ${args.featured_media} not found in the WP media library — nothing was written`));
+          }
+          const probe = await t.util.probeCover(media.url);
+          if (!probe.ok) {
+            return fail(new Error(`cover not reachable: ${media.url} — ${probe.reason} — nothing was written`));
+          }
+          coverPreflight = { media_id: args.featured_media, url: media.url };
+          // no explicit image URL → mirror the media's own source_url (WP is the truth
+          // for the attachment's location; hand-written URLs drift from it)
+          if (args.image === undefined) args.image = media.url;
+        } else if (args.image !== undefined) {
+          const probe = await t.util.probeCover(args.image);
+          if (!probe.ok) {
+            return fail(new Error(`cover not reachable: ${args.image} — ${probe.reason} — nothing was written`));
+          }
+          coverPreflight = { media_id: null, url: args.image };
+        }
+
         // ---- 1. split the incoming fields by destination ----
         const wpBody = {};
         const metaPatch = {};
@@ -1240,6 +1274,7 @@ const tools = [
         return ok({
           ok: true,
           wp_post_id: postId,
+          cover_preflight: coverPreflight || undefined,
           plan,
           applied,
           before,

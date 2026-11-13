@@ -51,7 +51,7 @@
     "@tengence/geo-agent"
   ],
   "scripts": {
-    "test": "SITES_ROOT=examples DB_DRIVER=sqlite DB_PATH=/tmp/geo-tests.sqlite node --test tests/*.test.js",
+    "test": "COVER_PROBE=0 SITES_ROOT=examples DB_DRIVER=sqlite DB_PATH=/tmp/geo-tests.sqlite node --test tests/*.test.js",
     "test:sqlite": "SITES_ROOT=examples DB_DRIVER=sqlite DB_PATH=/tmp/geo-tests.sqlite node --test tests/sqlite-*.test.js",
     "build": "node scripts/check-workspaces.js",
     "geo:sdk-smoke": "SITES_ROOT=examples node dev/sdk-smoke.js",

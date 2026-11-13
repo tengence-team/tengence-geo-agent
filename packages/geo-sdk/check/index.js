@@ -593,6 +593,14 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   //          70% — the skeleton batch's 7/7 such links are padding, not research
   //          (user: "引用的文章都没具体到文章").
 
+  // ===== G20: the cover must be USABLE, not merely present (2026-11-13) =====
+  // "present" only proves the column holds a string; a 404 / non-image URL passes it
+  // and then explodes when the 公众号 draft downloads the cover (ai-marketing incident).
+  // Probe the exact URL that will be uploaded once. Network flakes / disabled probe
+  // are reported as skipped and pass — never kill a good article over a blip.
+  const coverUrl = String((dbArticle && dbArticle.featured_image) || fm.featured_image || seo.featured_image || '').trim();
+  const coverProbe = hasFeaturedImage ? await require('../util').probeCover(coverUrl) : null;
+
   const rows = [
     // 4th element soft=true means the row is informational only and doesn't affect
     // the exit code (word count inferred from dir when --type is not explicit)
@@ -608,6 +616,17 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     // which let plan-driven articles publish without a featured image). See the
     // isPublished demotion loop below, which skips rows with the alwaysHard marker.
     ['front-matter featured_image (featured-image hard check, §5-②)', hasFeaturedImage ? 'present' : 'missing', hasFeaturedImage, hasFeaturedImage, true],
+    // G20 (2026-11-13): present ≠ usable. alwaysHard, and deliberately NOT demoted when
+    // isPublished is true (the demotion loop only touches rows without the marker) —
+    // a live post whose cover 404s is still a defect, and a draft must not be built
+    // with a dead cover either ("即使是 draft，建稿也要严格检查配图").
+    [
+      'featured_image reachable (G20, HEAD probe)',
+      !hasFeaturedImage ? 'n/a (no cover)' : coverProbe.skipped ? 'probe skipped' : coverProbe.ok ? 'ok' : coverProbe.reason,
+      !hasFeaturedImage ? false : coverProbe.ok === true,
+      false,
+      true,
+    ],
     // meta_description length is language-specific (aligned with translation gate T8
     // and the published-article convention): zh-hans 165-175, en 150-160, zh-hant 60-80.
     // A universal 165-175 range would make en/zh-hant forever fail the publish gate

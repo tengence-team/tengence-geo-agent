@@ -194,33 +194,11 @@ async function setFeaturedImage({ appId, slug, url, lang = null, probe = null, c
   return injected ? run(injected) : conn.withConn(run);
 }
 
-/** HEAD probe: 200 + image/* counts as usable; network errors are reported as skip. */
-async function defaultProbe(url, { timeoutMs = 2500 } = {}) {
-  const http = require('http');
-  const https = require('https');
-  const mod = url.startsWith('https:') ? https : http;
-  return new Promise((resolve) => {
-    let settled = false;
-    const done = (v) => {
-      if (!settled) {
-        settled = true;
-        resolve(v);
-      }
-    };
-    const req = mod.request(url, { method: 'HEAD', timeout: timeoutMs }, (res) => {
-      const type = String(res.headers['content-type'] || '');
-      res.resume();
-      if (res.statusCode >= 400) return done({ ok: false, reason: `http ${res.statusCode}` });
-      if (!/^image\//i.test(type)) return done({ ok: false, reason: `not an image (${type || 'unknown'})` });
-      return done({ ok: true, status: res.statusCode, type });
-    });
-    req.on('timeout', () => {
-      req.destroy();
-      done({ ok: true, skipped: true, reason: 'probe timeout — not treated as a hard failure' });
-    });
-    req.on('error', (e) => done({ ok: true, skipped: true, reason: `probe error: ${e.code || e.message}` }));
-    req.end();
-  });
+/** HEAD probe — single implementation lives in geo-sdk/util.js (see probeCover). */
+async function defaultProbe(url, opts = {}) {
+  const verdict = await require('../util').probeCover(url, opts);
+  if (!verdict || verdict.ok) return verdict || { ok: true };
+  return { ...verdict, reason: `cover ${verdict.reason}` };
 }
 
 /**

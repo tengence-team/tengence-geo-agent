@@ -491,19 +491,12 @@ function cleanWechatHtml(html) {
  * @param {{timeoutMs?:number}} [opts]
  * @returns {Promise<{ok:boolean, reason?:string, status?:number}>}
  */
-async function probeCoverUrl(url, { timeoutMs = 2500 } = {}) {
-  const target = String(url || '').trim();
-  if (!target) return { ok: false, reason: 'no cover url' };
-  try {
-    const res = await fetch(target, { method: 'HEAD', signal: AbortSignal.timeout(timeoutMs) });
-    const type = String(res.headers.get('content-type') || '');
-    if (res.status === 404 || res.status === 410) return { ok: false, reason: `cover http ${res.status}`, status: res.status };
-    if (res.status >= 400) return { ok: false, reason: `cover http ${res.status}`, status: res.status };
-    if (!type.startsWith('image/')) return { ok: false, reason: `cover not an image (${type || 'unknown'})`, status: res.status };
-    return { ok: true, status: res.status };
-  } catch (e) {
-    return { ok: true, reason: `cover probe skipped (${e && e.message})` };
-  }
+async function probeCoverUrl(url, { timeoutMs = 2500, cache = true } = {}) {
+  // one implementation only: geo-sdk/util.js probeCover (same verdict as before:
+  // 404/非图片 → unusable, 网络异常 → skipped+ok)
+  const verdict = await require('../util').probeCover(url, { timeoutMs, cache });
+  if (!verdict || verdict.ok) return verdict || { ok: true };
+  return { ...verdict, reason: `cover ${verdict.reason}` };
 }
 
 async function prepareArticle(conn, slug, siteDomain, overrides = {}) {

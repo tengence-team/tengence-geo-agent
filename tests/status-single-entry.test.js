@@ -60,3 +60,22 @@ test('plan status helpers are thin shims (no status vocabulary of their own)', (
   assert.ok(/articleState\.setState/.test(src), 'plan.updateStatus must delegate to articleState.setState');
   assert.ok(!/repo\.updateStatus\([^)]*plan_status/.test(src), 'plan/index.js must not hand plan_status to repo.updateStatus');
 });
+
+// Cover probing is the same class of problem as status: two implementations drift,
+// and then one caller says "cover ok" while another says "404". Only geo-sdk/util.js
+// may perform the HEAD request.
+test('cover HEAD probe lives only in geo-sdk/util.js', () => {
+  const ALLOW_PROBE = path.join('packages', 'geo-sdk', 'util.js');
+  const hits = [];
+  for (const dir of SCAN_DIRS) {
+    for (const file of walk(path.join(ROOT, dir))) {
+      const rel = path.relative(ROOT, file);
+      if (rel === ALLOW_PROBE) continue;
+      const text = fs.readFileSync(file, 'utf8');
+      // diagnose/* legitimately HEAD arbitrary URLs (CDN / TLS / infra probes).
+      // Only a COVER probe is forbidden outside util.js.
+      if (/method:\s*['"]HEAD['"]/.test(text) && /\bcover\b|featured_image/i.test(text)) hits.push(rel);
+    }
+  }
+  assert.deepEqual(hits, [], `cover probes must call util.probeCover instead of their own HEAD request:\n${hits.join('\n')}`);
+});
