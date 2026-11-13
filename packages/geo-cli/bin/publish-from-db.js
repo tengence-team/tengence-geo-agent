@@ -196,15 +196,25 @@ async function main() {
           // "-" after G17, so the forced-rewrite branch silently never ran.
           const g17Failed = gateReport.rows.some((r) => /^substantive content \(G17/.test(String(r[0])) && !r[2]);
           if (g17Failed) {
+            // status unification (2026-11-13): state goes through article-state (draft,
+            // i.e. `written`), and the reason lands in plan.notes — the undocumented
+            // `blocked` plan_status value is gone.
+            try {
+              await getState().articleState.setState({
+                appId: getState().CONFIG.app_id,
+                slug,
+                lang,
+                to: 'written',
+                allowDowngrade: true,
+              });
+            } catch (e) {
+              console.log(`  ⚠ state write skipped: ${e.code || e.message}`);
+            }
             await connection.query(
-              "UPDATE tengence_geo_articles SET status = 'draft' WHERE id = ? AND app_id = ?",
-              [articleId, getState().CONFIG.app_id]
-            );
-            await connection.query(
-              "UPDATE tengence_geo_article_plan SET plan_status = 'blocked', notes = COALESCE(notes, '') || ' [G17 forced rewrite: no substantive content; rewrite before publishing]' WHERE app_id = ? AND (slug = ? OR id = ?)",
+              "UPDATE tengence_geo_article_plan SET notes = COALESCE(notes, '') || ' [G17 forced rewrite: no substantive content; rewrite before publishing]' WHERE app_id = ? AND (slug = ? OR id = ?)",
               [getState().CONFIG.app_id, slug, articleId]
             );
-            console.log(`  ✍️  G17 forced rewrite: articles.${articleId} → draft, plan row → blocked (no manual override)`);
+            console.log(`  ✍️  G17 forced rewrite: article ${articleId} → written (draft), note appended (no manual override)`);
           }
           console.log('>>> Some checks failed (must pass the gate before publishing, see AGENTS.md)');
           gateSkipped++;

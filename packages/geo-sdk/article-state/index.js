@@ -39,8 +39,10 @@ function toArticleState(row, appId = null) {
     appId: appId,
     slug: row ? row.slug : null,
     lang: row ? normalizeLang(row.lang) : null,
+    title: (row && (row.title || null)) || null,
     articleId: article ? article.id : null,
     state,
+    planStatus: row ? row.plan_status || null : null,
     articleStatus: article ? String(article.status || '').toLowerCase() || null : null,
     wpPostId: article && hasWpPost(article.wp_post_id) ? Number(article.wp_post_id) : null,
     featuredImage: (row && row.featured_image) || null,
@@ -104,11 +106,36 @@ async function list({ appId, state, readyToPublish = false, lang = null, limit =
     const rows = await repo.selectList(c, appId, {
       lang: lang ? normalizeLang(lang) : null,
       readyToPublish,
-      limit,
+      // the state filter is applied AFTER the SQL limit (state is derived, not a
+      // column), so a small limit would silently return "no queued rows"
+      limit: wanted ? Math.max(Number(limit) || 0, 5000) : limit,
     });
     const mapped = rows.map((r) => toArticleState(r, appId));
     const filtered = wanted ? mapped.filter((r) => wanted.includes(r.state)) : mapped;
     return filtered.slice(0, Number(limit) || DEFAULT_LIMIT);
+  };
+  return injected ? run(injected) : conn.withConn(run);
+}
+
+/**
+ * Re-derive the plan_status COLUMN from the article row (mirror only, no article
+ * writes). Only this module may touch plan_status; reconcile and maintenance
+ * passes call this instead of writing the column themselves.
+ * @param {{appId:number, slug:string, lang:string, conn?:object}} args
+ */
+async function syncPlanMirror({ appId, slug, lang, conn: injected } = {}) {
+  if (!slug) throw new Error('articleState.syncPlanMirror requires slug');
+  const l = requireLang(lang, slug);
+  const run = async (c) => {
+    const row = await repo.selectOne(c, appId, slug, l);
+    if (!row) return { updated: false, reason: 'not-found' };
+    const st = deriveState({
+      planStatus: row.plan_status,
+      article: row.article_id ? { id: row.article_id, status: row.article_status, wp_post_id: row.article_wp_post_id } : null,
+    });
+    if (st === row.plan_status) return { updated: false, state: st };
+    await repo.updatePlanStatus(c, appId, slug, l, st);
+    return { updated: true, state: st, from: row.plan_status };
   };
   return injected ? run(injected) : conn.withConn(run);
 }
@@ -231,6 +258,15 @@ async function audit({ appId, fix = false, dryRun = true, conn: injected } = {})
         fixed.fkMismatch += 1;
       }
     }
+    // drift repair: the plan column is a mirror, so bring it back in line with the
+    // article row. (Fixing the CAUSE — an article that should be live — needs the WP
+    // truth and therefore `plan sync`, never a blind article write.)
+    let mirrored = 0;
+    for (const item of report.drift) {
+      const r = await syncPlanMirror({ appId, slug: item.slug, lang: item.lang, conn: c });
+      if (r && r.updated) mirrored += 1;
+    }
+    fixed.driftMirrored = mirrored;
     report.fixed = fixed;
     return report;
   };
@@ -244,6 +280,7 @@ module.exports = {
   setState,
   setFeaturedImage,
   audit,
+  syncPlanMirror,
   derive: deriveState,
   validateTransition,
   defaultProbe,

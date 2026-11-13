@@ -19,7 +19,7 @@ const ORDER = 'p.publish_order ASC, p.publish_batch ASC, p.id ASC';
 /** Read the (plan, article) pair for one slug+lang. Either side may be null. */
 async function selectOne(conn, appId, slug, lang) {
   const [rows] = await conn.query(
-    `SELECT p.id AS plan_id, p.slug, p.lang, p.node_type, p.hub_cluster, p.matrix_code,
+    `SELECT p.id AS plan_id, p.slug, p.lang, p.title AS title, p.node_type, p.hub_cluster, p.matrix_code,
             p.publish_batch, p.publish_order, p.category, p.tags, p.focus_keyword,
             p.notes, p.article_id AS plan_article_id, p.wp_post_id AS plan_wp_post_id,
             p.plan_status,
@@ -65,7 +65,7 @@ async function selectList(conn, appId, filters = {}) {
     where.push('COALESCE(a.wp_post_id, 0) > 0');
   }
   const [rows] = await conn.query(
-    `SELECT p.id AS plan_id, p.slug, p.lang, p.node_type, p.hub_cluster, p.matrix_code,
+    `SELECT p.id AS plan_id, p.slug, p.lang, p.title AS title, p.node_type, p.hub_cluster, p.matrix_code,
             p.publish_batch, p.publish_order, p.category, p.tags, p.focus_keyword,
             p.notes, p.article_id AS plan_article_id, p.wp_post_id AS plan_wp_post_id,
             p.plan_status,

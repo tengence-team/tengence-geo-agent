@@ -235,6 +235,13 @@ test('nextDue: derived from blog publish_order, skipping slugs already sent', as
         [slug, slug, order]
       );
       ids.push(r.insertId);
+      // the article row is the truth now: publish + wp_post_id, else it is not a candidate
+      await conn.query(
+        `INSERT INTO tengence_geo_articles
+           (app_id, slug, title, lang, content_longtext, status, wp_post_id)
+         VALUES (1, ?, ?, 'zh-hans', ?, 'publish', ?)`,
+        [slug, slug, `# ${slug}\nbody`, 5000 + order]
+      );
     }
     // blog-a already dispatched to wechat → must be skipped
     await conn.query(

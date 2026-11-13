@@ -22,6 +22,7 @@
  */
 
 const repo = require('../db/plan');
+const articleState = require('../article-state');
 const { TABLES } = require('../db/schema');
 const { withConn } = require('../db/connection');
 
@@ -82,44 +83,70 @@ async function upsert(record, { appId = DEFAULT_APP_ID(), lang } = {}) {
   return withConn((conn) => repo.upsert(conn, appId, record, { lang }));
 }
 
-/** Status transition (the single write entry for status) */
+/**
+ * Status transition — COMPATIBILITY SHIM (2026-11-13 status unification).
+ * plan_status is no longer an independent fact: it is routed to
+ * articleState.setState(), which derives and stores the truth on the ARTICLE row.
+ * Only non-status columns (published_url / notes / article_id / queued_at and the
+ * plan-side wp_post_id mirror that nextDue() reads) are written here.
+ */
 async function updateStatus(slug, fields, { appId = DEFAULT_APP_ID(), lang } = {}) {
   if (!slug) throw new Error('plan.updateStatus requires slug');
-  return withConn((conn) => repo.updateStatus(conn, appId, slug, fields, { lang }));
+  const { plan_status: to, published_at: at, ...rest } = fields || {};
+  if (to) {
+    await articleState.setState({
+      appId, slug, lang, to,
+      wpPostId: fields.wp_post_id === undefined ? null : fields.wp_post_id,
+      at,
+    });
+  }
+  if (Object.keys(rest).length) {
+    return withConn((conn) => repo.updateStatus(conn, appId, slug, rest, { lang }));
+  }
+  return { updated: Boolean(to), via: 'article-state' };
 }
 
-/** After a draft push succeeds: written → queued, backfill article_id / wp_post_id / queued_at */
+/**
+ * After a draft push succeeds: written → queued. The state itself lives on the
+ * article row (article-state); the plan row keeps only the queue mirror columns
+ * (article_id / wp_post_id / queued_at) that nextDue() reads.
+ */
 async function markQueued(slug, { articleId, wpPostId, queuedAt } = {}, { appId = DEFAULT_APP_ID(), lang } = {}) {
   const ts = queuedAt || new Date();
-  return updateStatus(slug, {
-    plan_status: 'queued',
-    article_id: articleId,
-    wp_post_id: wpPostId,
-    queued_at: ts instanceof Date ? ts.toISOString().slice(0, 19).replace('T', ' ') : ts,
-  }, { appId, lang });
+  const stamp = ts instanceof Date ? ts.toISOString().slice(0, 19).replace('T', ' ') : ts;
+  await articleState.setState({ appId, slug, lang, to: 'queued', wpPostId: wpPostId || null });
+  const mirror = { queued_at: stamp };
+  if (articleId !== undefined && articleId !== null) mirror.article_id = articleId;
+  if (wpPostId !== undefined && wpPostId !== null) mirror.wp_post_id = wpPostId;
+  const res = await withConn((conn) => repo.updateStatus(conn, appId, slug, mirror, { lang }));
+  return { updated: true, via: 'article-state', mirror: res };
 }
 
-/** After promotion succeeds: queued → published, backfill wp_post_id / published_url / published_at */
+/**
+ * After promotion succeeds: queued → published. State is written to the article
+ * row (article-state); the plan row keeps wp_post_id / published_url for reporting.
+ */
 async function markPublished(slug, { wpPostId, publishedUrl, publishedAt } = {}, { appId = DEFAULT_APP_ID(), lang } = {}) {
   const ts = publishedAt || new Date();
-  return updateStatus(slug, {
-    plan_status: 'published',
-    wp_post_id: wpPostId,
-    published_url: publishedUrl,
-    published_at: ts instanceof Date ? ts.toISOString().slice(0, 19).replace('T', ' ') : ts,
-  }, { appId, lang });
+  const stamp = ts instanceof Date ? ts.toISOString().slice(0, 19).replace('T', ' ') : ts;
+  await articleState.setState({ appId, slug, lang, to: 'published', wpPostId: wpPostId || null, publishedUrl, at: stamp });
+  const mirror = {};
+  if (wpPostId !== undefined && wpPostId !== null) mirror.wp_post_id = wpPostId;
+  if (publishedUrl) mirror.published_url = publishedUrl;
+  const res = Object.keys(mirror).length
+    ? await withConn((conn) => repo.updateStatus(conn, appId, slug, mirror, { lang }))
+    : { updated: false };
+  return { updated: true, via: 'article-state', mirror: res };
 }
 
-/** Backfill the featured-image path after image acquisition (2026-09-20: writes
- * articles.featured_image; the plan column retired) */
-async function setFeaturedImage(slug, url, { appId = DEFAULT_APP_ID() } = {}) {
-  return withConn(async (conn) => {
-    const [r] = await conn.query(
-      `UPDATE ${TABLES.articles} SET featured_image = ? WHERE app_id = ? AND slug = ?`,
-      [url, appId, slug]
-    );
-    return { affectedRows: r.affectedRows, slug };
-  });
+/**
+ * Backfill the featured-image path after image acquisition. Delegates to
+ * article-state.setFeaturedImage(), which HEAD-probes the URL (200 + image/*)
+ * before writing and mirrors into all three language rows by default.
+ */
+async function setFeaturedImage(slug, url, { appId = DEFAULT_APP_ID(), lang = null, probe = null } = {}) {
+  const r = await articleState.setFeaturedImage({ appId, slug, url, lang, probe });
+  return { affectedRows: r.affectedRows, slug, head: r.head };
 }
 
 /**
@@ -140,50 +167,25 @@ async function setFeaturedImage(slug, url, { appId = DEFAULT_APP_ID() } = {}) {
  *
  * @returns {Promise<{changed:boolean, from:?string}>}
  */
-async function healArticleStatus({ appId, planRow, status, wpPostId, dryRun = false }) {
-  return withConn(async (conn) => {
-    let rows;
-    if (planRow.article_id) {
-      [rows] = await conn.query(
-        `SELECT id, status, wp_post_id FROM ${TABLES.articles} WHERE app_id = ? AND id = ?`,
-        [appId, planRow.article_id]
-      );
-    } else if (planRow.lang) {
-      [rows] = await conn.query(
-        `SELECT id, status, wp_post_id FROM ${TABLES.articles} WHERE app_id = ? AND slug = ? AND lang = ?`,
-        [appId, planRow.slug, String(planRow.lang).trim().toLowerCase()]
-      );
-    } else {
-      [rows] = await conn.query(
-        `SELECT id, status, wp_post_id FROM ${TABLES.articles} WHERE app_id = ? AND slug = ?`,
-        [appId, planRow.slug]
-      );
-    }
-    if (!rows.length) return { changed: false, from: null };
-    const cur = rows[0];
-
-    const set = [];
-    const params = [];
-    if (cur.status !== status) {
-      set.push('status = ?');
-      params.push(status);
-    }
-    if (wpPostId != null && String(cur.wp_post_id) !== String(wpPostId)) {
-      set.push('wp_post_id = ?');
-      params.push(wpPostId);
-    }
-    if (!set.length) return { changed: false, from: cur.status };
-
-    if (dryRun) return { changed: true, from: cur.status };
-
-    set.push('lastmod = NOW()');
-    params.push(appId, cur.id);
-    const [result] = await conn.query(
-      `UPDATE ${TABLES.articles} SET ${set.join(', ')} WHERE app_id = ? AND id = ?`,
-      params
-    );
-    return { changed: result.affectedRows > 0, from: cur.status };
-  });
+async function healArticleStatus({ appId, planRow, state, wpPostId, dryRun = false }) {
+  // Root-cause fix #3 (2026-11-13): keyed on (slug, lang), NOT planRow.article_id.
+  // article_id is shared by all three language rows on 415 rows, so the old lookup
+  // kept repairing whichever language happened to sit there (1197 was never reached).
+  // The write itself goes through article-state.
+  const lang = repo.normalizeLang(planRow.lang) || 'zh-hans';
+  const cur = await articleState.read({ appId, slug: planRow.slug, lang });
+  if (!cur || !cur.articleId) return { changed: false, from: null };
+  const wpDiffers = wpPostId != null && String(cur.wpPostId || '') !== String(wpPostId);
+  if (cur.state === state && !wpDiffers) return { changed: false, from: cur.articleStatus };
+  // published is terminal: a WP-less row must never rewind a live article to draft
+  if (state === 'written' && cur.state === 'published') return { changed: false, from: cur.articleStatus };
+  if (dryRun) return { changed: true, from: cur.articleStatus };
+  try {
+    await articleState.setState({ appId, slug: planRow.slug, lang, to: state, wpPostId, allowDowngrade: true });
+  } catch (e) {
+    return { changed: false, from: cur.articleStatus, error: e.code || e.message };
+  }
+  return { changed: true, from: cur.articleStatus };
 }
 
 /** Derive a geo language code from a WP post's permalink (the language prefix is the
@@ -308,37 +310,24 @@ async function importPlan(site, opts = {}) {
         }
       }
 
-      // 5.5 plan_status reconciliation from DB facts ONLY (no file is read here).
-      //     todo=no articles row for this language | written=ingested |
-      //     queued=WP draft pushed (wp_post_id on either side) | published=promoted.
-      //     The authority chain used to be queue → matrix → articles; both file
-      //     sources are gone (a prose doc is not a data source), so the plan table
-      //     plus the articles table are the only inputs.
+      // 5.5 plan_status is a MIRROR now (2026-11-13 status unification): the article
+      //     row is the truth. Re-derive with the SAME rules the service uses and let
+      //     article-state own the column write — this file no longer sets plan_status.
       for (const p of planRows) {
         const a = bySlugLang.get(`${p.slug}::${repo.normalizeLang(p.lang)}`);
-        let st;
-        // no articles row for THIS language → the translation is not written yet;
-        // never promote it on the strength of another language's facts
-        if (!a) st = 'todo';
-        else if (a.status === 'publish') st = 'published';
-        // queued is sticky while a WP draft exists: articles.wp_post_id can be null
-        // (e.g. the row predates the backfill) while the plan row already records
-        // the pushed draft, so the plan side counts too.
-        else if (a.wp_post_id || p.wp_post_id) st = 'queued';
-        else st = 'written';
-        // published is terminal — a rewind would let promote-daily publish the same
-        // article twice, so the DB's published state always wins.
-        if (p.plan_status === 'published' && st !== 'published') st = 'published';
-        const urlPatch = st === 'published' && !p.published_url ? articleUrl(p.slug) : null;
-        if (st !== p.plan_status || urlPatch) {
-          // lang is mandatory here: slug is shared by all three languages, so a
-          // slug-only update rewrites whichever row the resolver happens to hit and
-          // lets one language's status land on another's row.
-          await repo.updateStatus(conn, appId, p.slug, {
-            plan_status: st,
-            ...(urlPatch ? { published_url: urlPatch } : {}),
-          }, { lang: repo.normalizeLang(p.lang) });
-          if (urlPatch) report.published_url_filled += 1;
+        const st = articleState.derive({
+          planStatus: p.plan_status,
+          article: a ? { status: a.status, wp_post_id: a.wp_post_id } : null,
+        });
+        if (st !== p.plan_status) {
+          const r = await articleState.syncPlanMirror({ appId, slug: p.slug, lang: repo.normalizeLang(p.lang) });
+          if (r && r.updated) report.status_mirrored = (report.status_mirrored || 0) + 1;
+        }
+        if (st === 'published' && !p.published_url) {
+          await repo.updateStatus(conn, appId, p.slug, { published_url: articleUrl(p.slug) }, {
+            lang: repo.normalizeLang(p.lang),
+          });
+          report.published_url_filled += 1;
         }
       }
 
@@ -396,14 +385,18 @@ async function importPlan(site, opts = {}) {
           [appId]
         );
         for (const c of categories) {
-          await repo.upsert(conn, appId, {
+          const hub = await repo.upsert(conn, appId, {
             slug: c.slug,
             node_type: 'hub',
             hub_cluster: CATEGORY_CLUSTER[c.slug] || null,
             title: `${c.name}枢纽页`,
             category: c.slug,
-            plan_status: 'paused',
             notes: '类目枢纽页（Hub & Spoke 拓扑标注，非文章，不参与发布队列）',
+          });
+          // hub rows are pre-writing holds, so `paused` is the legal plan-only state —
+          // set it through the single entry rather than in the INSERT.
+          await articleState.setState({
+            appId, slug: c.slug, lang: repo.normalizeLang(hub && hub.lang) || 'zh-hans', to: 'paused', conn,
           });
           report.hub_rows += 1;
         }
@@ -596,22 +589,27 @@ async function reconcile({
     // independently drifted, and that drift is exactly what we must repair. Keyed by
     // article_id (exact) then slug+lang, so a slug with mixed-language publish states
     // never bleeds one language's status onto another.
-    const articlesStatus = to === 'published' ? 'publish' : 'draft';
     const articlesWpPostId = wp ? wp.id : null;
-    const healed = await healArticleStatus({ appId, planRow: p, status: articlesStatus, wpPostId: articlesWpPostId, dryRun });
+    const healedState = to === 'published' ? 'published' : to === 'queued' ? 'queued' : 'written';
+    const healed = await healArticleStatus({ appId, planRow: p, state: healedState, wpPostId: articlesWpPostId, dryRun });
     if (healed.changed) {
       report.articles_updated.push({
         slug: p.slug,
         lang: p.lang || null,
         from: healed.from,
-        to: articlesStatus,
+        to: healedState,
         wp_post_id: articlesWpPostId,
       });
     }
 
     if (changed) {
       if (!dryRun) {
-        await updateStatus(p.slug, { plan_status: to, ...patch }, { appId });
+        // plan_status is a mirror: state was already written above through article-state.
+        // Only non-status mirror columns go straight to the plan row — always with lang.
+        if (Object.keys(patch).length) {
+          await updateStatus(p.slug, patch, { appId, lang: p.lang || 'zh-hans' });
+        }
+        await articleState.syncPlanMirror({ appId, slug: p.slug, lang: p.lang || 'zh-hans' });
       }
       report.updated.push({
         slug: p.slug,

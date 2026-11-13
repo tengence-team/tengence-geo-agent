@@ -1092,54 +1092,75 @@ async function publishArticle(connection, articleId, options = {}) {
   s.logger(`  Status: ${result.status}`);
   s.logger(`  Link: ${result.link}`);
 
-  // 8. update the DB
+  // 8. write the DB — through the single status entry (article-state), with this
+  //    article's language. The old code called articles.markPublished and
+  //    plan.markPublished/markQueued separately, which is how plan and articles
+  //    drifted apart (2026-11-13: 54 rows plan=published / articles=draft).
   s.logger('\n[8/8] Updating the DB...');
-  await s.t.db.articles.markPublished(connection, articleId, s.CONFIG.app_id, {
-    wpPostId: result.id,
-    status: result.status,
-    excerpt: postExcerpt,
-  });
-  // 8.1 write back articles.featured_image (post-publish/update, per the actual binding)
+
+  // 8.1 verify the REAL WP status first: WP can park a future-dated status=publish
+  //     request as `future` (2026-11-05 drift fix) — never trust the request alone.
+  let liveStatus = result.status;
+  try {
+    const live = await promote.verifyPublished(s.t.wp, result.id);
+    if (live.status) liveStatus = live.status;
+    if (live.link) result.link = live.link;
+  } catch (e) {
+    s.logger(`  ⚠️ Could not re-read the live status (${e.message}); trusting the REST response`);
+  }
+
+  // 8.2 one state write for this language row
+  const isLive = liveStatus === 'publish';
+  const articleUrl = `${s.CONFIG.urls.article}${article.slug}/`;
+  try {
+    await s.t.articleState.setState({
+      appId: s.CONFIG.app_id,
+      slug: article.slug,
+      lang: article.lang,
+      to: isLive ? 'published' : 'queued',
+      wpPostId: result.id,
+      publishedUrl: isLive ? articleUrl : null,
+    });
+    s.logger(`  ✓ Article state → ${isLive ? 'published' : 'queued'} (${article.lang})`);
+  } catch (e) {
+    s.logger(`  ⚠️ Article state write-back failed: ${e.code || e.message}`);
+  }
+  if (postExcerpt) {
+    await connection.query('UPDATE tengence_geo_articles SET excerpt = ? WHERE id = ?', [postExcerpt, articleId]);
+  }
+
+  // 8.3 featured image — HEAD-gated mirror into the DB (all language rows)
   if (featuredImage && featuredImage.productionUrl) {
-    await connection.query(
-      'UPDATE tengence_geo_articles SET featured_image = ? WHERE id = ?',
-      [featuredImage.productionUrl, articleId]
-    );
-    s.logger(`  ✓ Featured image written back to articles: ${featuredImage.productionUrl}`);
+    try {
+      const r = await s.t.articleState.setFeaturedImage({
+        appId: s.CONFIG.app_id,
+        slug: article.slug,
+        url: featuredImage.productionUrl,
+      });
+      s.logger(`  ✓ Featured image written back to articles (${r.affectedRows} rows): ${featuredImage.productionUrl}`);
+    } catch (e) {
+      s.logger(`  ⚠️ Featured image write-back failed (${e.code || e.message}): ${featuredImage.productionUrl}`);
+    }
   }
   s.logger(`  ✓ DB updated`);
 
-  // 8.5 write back the article plan table (the single write entry for plan status/URL;
-  // idempotent). Verify the REAL WP status first — never trust the request alone:
-  // WP can park a future-dated status=publish request as `future` (2026-11-05 drift fix).
+  // 8.5 plan row mirror (queue columns only — the state now lives on the article row,
+  //     idempotent). Kept for nextDue() until the scheduler reads article-state.
   try {
-    let liveStatus = result.status;
-    try {
-      const live = await promote.verifyPublished(s.t.wp, result.id);
-      if (live.status) liveStatus = live.status;
-      if (live.link) result.link = live.link;
-    } catch (e) {
-      s.logger(`  ⚠️ Could not re-read the live status (${e.message}); trusting the REST response`);
-    }
-    if (liveStatus === 'publish') {
-      // Target the row for THIS article's language: a translation publishes its own
-      // post id onto its own (app_id, slug, lang) row, never onto the zh-hans row.
-      await s.t.plan.markPublished(article.slug, {
-        wpPostId: result.id,
-        publishedUrl: `${s.CONFIG.urls.article}${article.slug}/`,
-      }, { lang: article.lang });
-      s.logger(`  ✓ Plan table updated: ${article.slug} → published`);
+    if (isLive) {
+      await s.t.plan.markPublished(article.slug, { wpPostId: result.id, publishedUrl: articleUrl }, { lang: article.lang });
+      s.logger(`  ✓ Plan mirror: ${article.slug} (${article.lang}) → published`);
     } else {
       // Plan rows track the zh-hans SOURCE post — the row the daily queue promotes.
       // Publishing a translation used to repoint the plan at the translation, so the
       // queue would then promote the zh-hant post as if it were the source
       // (2026-10-05: A11 ended up with plan.wp_post_id = zh-hant 1547 instead of 1145).
       const planWpPostId = await resolvePlanSourceWpId(connection, article, s.CONFIG.app_id, result.id);
-      await s.t.plan.markQueued(article.slug, { articleId, wpPostId: planWpPostId });
-      s.logger(`  ✓ Plan table updated: ${article.slug} → queued (source post ${planWpPostId})`);
+      await s.t.plan.markQueued(article.slug, { articleId, wpPostId: planWpPostId }, { lang: article.lang });
+      s.logger(`  ✓ Plan mirror: ${article.slug} (${article.lang}) → queued (source post ${planWpPostId})`);
     }
   } catch (e) {
-    console.warn(`  ⚠️ Plan write-back failed (does not affect the publish result): ${e.message}`);
+    console.warn(`  ⚠️ Plan mirror write failed (does not affect the publish result): ${e.code || e.message}`);
   }
 
   // 9. after a successful publish, submit the Google Search Console sitemap (soft

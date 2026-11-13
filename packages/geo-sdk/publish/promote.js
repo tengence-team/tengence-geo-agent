@@ -118,7 +118,7 @@ async function confirmPlanPublished(plan, { slug, lang, wpPostId, link, log = ()
  * @returns {Promise<{ok: boolean, status?: string, link?: string, reason?: string}>}
  */
 async function promoteToPublish(deps, opts) {
-  const { wp, plan } = deps;
+  const { wp, plan, articleState } = deps;
   const { postId, slug, lang, siteKey, domain, log = () => {} } = opts;
 
   // 1. clamp: explicit slot first; otherwise pre-read the post's own date —
@@ -164,7 +164,24 @@ async function promoteToPublish(deps, opts) {
   // 4. confirmed → per-language plan write-back
   const link = live.link || `https://www.${domain || 'tengence.com'}/blog/article/${slug}/`;
   await confirmPlanPublished(plan, { slug, lang, wpPostId: postId, link, log });
-  return { ok: true, status: live.status, link };
+
+  // 4.1 articles.status — the OTHER half of the 2026-11-13 drift: promote used to
+  //     write the plan table only, so promoted articles stayed `draft` forever.
+  //     Routed through article-state, which requires lang and mirrors wp_post_id.
+  let articlesState;
+  if (articleState && typeof articleState.setState === 'function') {
+    try {
+      await articleState.setState({ slug, lang, to: 'published', wpPostId: postId, publishedUrl: link });
+      articlesState = 'publish';
+      log(`    ✓ Article row updated: ${slug} (${lang}) → publish`);
+    } catch (e) {
+      articlesState = 'failed';
+      log(`    ⚠️ Article write-back failed for ${lang}: ${e.code || e.message}`);
+    }
+  } else {
+    log(`    ⚠️ No articleState facade injected — articles.status left untouched (drift risk)`);
+  }
+  return { ok: true, status: live.status, link, articlesState };
 }
 
 module.exports = {

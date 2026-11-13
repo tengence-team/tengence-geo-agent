@@ -55,12 +55,17 @@ beforeEach(async () => {
 const at = (h, m) => new Date(2026, 9, 11, h, m, 0, 0); // 2026-10-11 local
 
 /** Seed one blog-published article (plan + articles rows) so nextDue has a candidate. */
+let WP_SEQ = 3000;
+
 async function seedArticle(slug, { title = slug, lang = 'zh-hans', order = 1 } = {}) {
+  // article-state's readyToPublish requires BOTH proofs: status=publish AND a
+  // non-empty wp_post_id (2026-11-13: plan-only `published` rows must not qualify).
+  const wpPostId = (WP_SEQ += 1);
   await withConn(async (conn) => {
     await conn.query(
-      `INSERT INTO tengence_geo_articles (app_id, slug, title, lang, content_longtext, target_keywords, status)
-       VALUES (1, ?, ?, ?, ?, ?, 'publish')`,
-      [slug, title, lang, `# ${title}\nbody text`, 'geo,seo']
+      `INSERT INTO tengence_geo_articles (app_id, slug, title, lang, content_longtext, target_keywords, status, wp_post_id)
+       VALUES (1, ?, ?, ?, ?, ?, 'publish', ?)`,
+      [slug, title, lang, `# ${title}\nbody text`, 'geo,seo', wpPostId]
     );
   });
   await t.plan.upsert({ slug, plan_status: 'published', publish_order: order, title }, { lang });

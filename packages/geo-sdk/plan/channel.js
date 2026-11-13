@@ -557,7 +557,9 @@ async function reconcileFromPlatform(platform, { map } = {}) {
     return { platform, source: 'map', inserted: map.length, matched: map.length, unmatched: 0 };
   }
   // live mode: read the platform and match titles back to blog slugs
-  const blog = (await t.plan.list({ limit: 5000 })).filter((r) => r.plan_status === 'published');
+  // published only, judged by the article row (article-state): plan_status alone
+  // said `published` for rows whose article was still draft (2026-11-13 drift).
+  const blog = await t.articleState.list({ appId: DEFAULT_APP_ID(), readyToPublish: true, limit: 5000 });
   const titleToSlug = new Map(blog.map((r) => [(r.title || '').trim().toLowerCase(), r.slug]));
 
   let items = []; // [{title, id}]
@@ -755,7 +757,7 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3, 
   // Skip empty titles and let zh-hans win (platform lists are Chinese): a slug has
   // en/zh-hant rows whose title is often empty, and a naive last-write Map would
   // overwrite the real zh-hans title with '' → title fallback silently dies.
-  const blog = (await t.plan.list({ limit: 5000 })).filter((r) => r.plan_status === 'published');
+  const blog = await t.articleState.list({ appId: DEFAULT_APP_ID(), readyToPublish: true, limit: 5000 });
   const blogTitleBySlug = new Map();
   for (const r of blog) {
     if (!r.title) continue;
@@ -946,10 +948,14 @@ async function nextDue(platform, { count = 1, register = true } = {}) {
   const appId = DEFAULT_APP_ID();
   const langs = PLATFORM_LANGS[platform] || ['zh-hans'];
   const published = await publishedSlugs(platform); // Set<`slug::lang`>
-  const blog = (await t.plan.list({ limit: 5000 })).filter(
-    (r) => r.plan_status === 'published' && langs.includes(r.lang)
+  // candidates = really-published articles (article-state readyToPublish carries both
+  // proofs: articles.status=publish AND a non-empty wp_post_id), history order kept.
+  const blog = (await t.articleState.list({ appId, readyToPublish: true, limit: 5000 })).filter(
+    (r) => langs.includes(r.lang)
   );
-  const sorted = [...blog].sort((a, b) => (a.publish_order || 1e9) - (b.publish_order || 1e9));
+  const sorted = [...blog].sort(
+    (a, b) => ((a.plan && a.plan.publishOrder) || 1e9) - ((b.plan && b.plan.publishOrder) || 1e9)
+  );
   const picked = [];
   await withConn(async (conn) => {
     for (const r of sorted) {
@@ -981,7 +987,7 @@ async function nextDue(platform, { count = 1, register = true } = {}) {
         period: null,
         title: r.title,
         topic: r.title,
-        blogOrder: r.publish_order,
+        blogOrder: r.plan ? r.plan.publishOrder : null,
       });
       if (picked.length >= Math.max(1, count)) break;
     }

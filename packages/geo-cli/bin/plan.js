@@ -142,7 +142,16 @@ async function cmdStatus(opts, slug) {
       console.error(`✗ --set must be one of ${allowed.join('/')}`);
       process.exit(1);
     }
-    const r = await t.plan.updateStatus(slug, { plan_status: opts.set }, { appId: APP_ID });
+    // single status entry: language is mandatory (a slug-wide write is exactly the
+    // bug that put one language's article_id onto all three rows, 2026-11-13)
+    const lang = opts.lang || 'zh-hans';
+    const r = await t.articleState.setState({
+      appId: APP_ID,
+      slug,
+      lang,
+      to: opts.set,
+      wpPostId: opts['wp-post-id'] ? Number(opts['wp-post-id']) : null,
+    });
     console.log(r.updated ? `✅ ${slug} → ${opts.set}` : `⚠️ ${slug} not found, not updated`);
     return;
   }

@@ -89,13 +89,20 @@ async function main() {
     researchIngested = true;
   }
 
-  // 5. plan status: todo → written (only promotes; published/queued untouched)
-  await t.db.withConn((conn) =>
-    conn.query(
-      "UPDATE tengence_geo_article_plan SET plan_status = 'written' WHERE app_id = ? AND slug = ? AND plan_status = 'todo'",
-      [APP_ID, slug]
-    )
-  );
+  // 5. state: the article row is the truth (article-state). `written` = draft with no
+  //    wp_post_id, which is exactly what was just ingested; the call is idempotent and
+  //    replaces the old raw `plan_status='written'` write (status unification 2026-11-13).
+  try {
+    const st = await t.articleState.read({ appId: APP_ID, slug, lang });
+    if (st && st.state === 'todo') {
+      await t.articleState.setState({ appId: APP_ID, slug, lang, to: 'written' });
+      console.log(`  plan state → written (${lang})`);
+    } else if (st) {
+      console.log(`  plan state kept as ${st.state} (${lang}) — ingest never demotes`);
+    }
+  } catch (e) {
+    console.log(`  ⚠ state write skipped: ${e.code || e.message}`);
+  }
 
   // 6. archive the working files (skipped with --no-archive; the option was fixed on 2026-09-20,
   //    previously it never took effect)

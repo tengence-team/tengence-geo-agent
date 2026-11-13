@@ -217,7 +217,7 @@ async function promoteTranslations(slug, sourcePostId) {
       }
       // Unified publish core: clamp → update → verify → per-language plan write-back.
       const r = await t.publish.promoteToPublish(
-        { wp: t.wp, plan: t.plan },
+        { wp: t.wp, plan: t.plan, articleState: t.articleState },
         {
           postId: row.wp_post_id,
           slug,
@@ -385,7 +385,7 @@ async function promoteOne(item, { dryRun = false, publishDate = null } = {}) {
     // is pre-read and clamped to now by the core).
     const srcLang = item.lang || 'zh-hans';
     const promoted = await t.publish.promoteToPublish(
-      { wp: t.wp, plan: t.plan },
+      { wp: t.wp, plan: t.plan, articleState: t.articleState },
       {
         postId: item.wp_post_id,
         slug: item.slug,

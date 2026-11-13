@@ -1234,11 +1234,13 @@ const tools = [
   {
     name: 'plan_list',
     title: '内容计划列表',
-    description: 'Article plan table list (status/batch/category/node/lang filters). Each language is its own row ' +
-      '(zh-hans | en | zh-hant); pass lang to inspect one language only.',
+    description: 'Article plan table list (state/batch/lang filters). Every row carries the DERIVED ' +
+      'lifecycle `state` (todo|paused|written|queued|published) plus the raw `plan_status` mirror. ' +
+      'Each language is its own row (zh-hans | en | zh-hant); pass lang to inspect one language only.',
     inputSchema: z.object({
       site: siteField,
-      status: z.string().optional().describe('todo|written|queued|published etc.'),
+      state: z.string().optional().describe('derived state filter: todo|paused|written|queued|published'),
+      status: z.string().optional().describe('raw plan_status mirror filter (prefer `state`)'),
       batch: z.string().optional().describe('batch'),
       lang: z.string().optional().describe('zh-hans | en | zh-hant (default: all languages)'),
       limit: z.number().optional().describe('max rows (default 100)'),
@@ -1249,13 +1251,33 @@ const tools = [
         process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
         const e = langReject(args.lang);
         if (e) return fail(new Error(`plan_list: ${e}`));
+        const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
+        // One pass over article-state gives the derived state for every row; filtering
+        // on the plan_status mirror is what made callers see `published` for drafts.
+        const states = await t.articleState.list({ appId, limit: 5000 });
+        const byKey = new Map(states.map((r) => [`${r.slug}::${r.lang}`, r]));
         const rows = await t.plan.list({
           status: args.status || undefined,
           batch: args.batch || undefined,
           lang: args.lang ? langNorm(args.lang) : undefined,
-          limit: args.limit || 100,
+          limit: 5000,
         });
-        return ok({ ok: true, count: rows.length, rows });
+        const enriched = rows.map((r) => {
+          const key = `${r.slug}::${langNorm(r.lang || 'zh-hans')}`;
+          const st = byKey.get(key);
+          return {
+            ...r,
+            state: st ? st.state : null,
+            articlesStatus: st ? st.articleStatus : null,
+            featuredImage: st ? st.featuredImage : null,
+            stateDrifted: Boolean(st && st.state !== r.plan_status),
+          };
+        });
+        const filtered = args.state
+          ? enriched.filter((r) => r.state === String(args.state).toLowerCase())
+          : enriched;
+        const out = filtered.slice(0, args.limit || 100);
+        return ok({ ok: true, count: out.length, rows: out });
       } catch (e) {
         return fail(e);
       }
@@ -1336,10 +1358,18 @@ const tools = [
   {
     name: 'plan_mark_status',
     title: '标记计划状态',
-    description: 'Update a plan row status (todo/written/queued/published/archived)',
+    description:
+      'Set one article lifecycle state through the single status entry (article-state).\n' +
+      '  todo | paused   → legal only while no article row exists (pre-writing hold)\n' +
+      '  written         → article row, draft, no wp_post_id\n' +
+      '  queued          → article row, draft, wp_post_id set (draft pushed)\n' +
+      '  published       → article row, status=publish (+ wp_post_id)\n' +
+      'Illegal transitions are rejected by name (E_INVALID_TRANSITION / E_LANG_REQUIRED).',
     inputSchema: z.object({
       slug: z.string().describe('article slug'),
-      status: z.string().describe('target status'),
+      status: z.string().describe('target state: todo | paused | written | queued | published'),
+      lang: z.string().optional().describe('language row to write (zh-hans|en|zh-hant); default zh-hans — never slug-wide'),
+      wp_post_id: z.number().optional().describe('WP post id to mirror (required for queued/published)'),
       site: siteField,
     }),
     async run(args) {
@@ -1349,10 +1379,73 @@ const tools = [
       try {
         const S = withSite(args);
         process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
-        // repo.updateStatus expects the DB column name (plan_status); passing "status"
-        // matched no allowed field and silently made this tool a no-op.
-        const res = await t.plan.updateStatus(args.slug, { plan_status: args.status });
+        const lang = langNorm(args.lang || 'zh-hans');
+        const res = await t.articleState.setState({
+          appId: parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10),
+          slug: args.slug,
+          lang,
+          to: args.status,
+          wpPostId: args.wp_post_id === undefined ? null : args.wp_post_id,
+        });
         return ok({ ok: true, result: res });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+
+  {
+    name: 'article_state_read',
+    title: '读取文章状态',
+    description:
+      'THE single read entry for an article lifecycle state. Returns the DERIVED state ' +
+      '(todo|paused|written|queued|published) together with the article-row facts it came from ' +
+      '(articleStatus / wpPostId / featuredImage) and the raw plan_status mirror. ' +
+      'Use this instead of reading plan_status or articles.status directly.',
+    inputSchema: z.object({
+      slug: z.string().describe('article slug'),
+      lang: z.string().describe('zh-hans | en | zh-hant (required — a slug has one row per language)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const e = langReject(args.lang);
+        if (e) return fail(new Error(`article_state_read: ${e}`));
+        if (!args.slug) return fail(new Error('article_state_read requires slug'));
+        const state = await t.articleState.read({
+          appId: parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10),
+          slug: args.slug,
+          lang: langNorm(args.lang),
+        });
+        if (!state) return fail(new Error(`article_state_read: not found ${args.slug} (${args.lang})`));
+        return ok({ ok: true, state });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'article_state_audit',
+    title: '文章状态审计',
+    description:
+      'Cross-table status audit: drift (plan mirror disagrees with the article row), ' +
+      'fkMismatch (plan.article_id points at another language\'s article), dangling (plan claims ' +
+      'published/queued with no article row), missingCover. Read-only unless repair=true.',
+    inputSchema: z.object({
+      dryRun: z.boolean().optional().describe('default true; repair=true writes the drifted plan mirror + article links'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const report = await t.articleState.audit({
+          appId: parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10),
+          fix: args.repair === true || args.dryRun === false,
+        });
+        return ok({ ok: true, report });
       } catch (e) {
         return fail(e);
       }
@@ -3594,7 +3687,7 @@ const TOOL_GROUPS = [
   { group: 'Workspace & Site', match: /^(workspace_use|site_|db_|diagnose_site)/ },
   {
     group: 'Content authoring & gate',
-    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|check_article|check_translation|translation_glossary_get|wp_post_get)/,
+    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_state_read|article_state_audit|check_article|check_translation|translation_glossary_get|wp_post_get)/,
   },
   { group: 'Publishing (WordPress)', match: /^publish_/ },
   { group: 'Search inclusion & analytics', match: /^(search_|webmaster_)/ },

@@ -69,6 +69,17 @@ function fakeWp({ currentDate = null, statusAfterUpdate = 'publish' } = {}) {
   };
 }
 
+function fakeArticleState() {
+  const calls = [];
+  return {
+    calls,
+    async setState(args) {
+      calls.push(args);
+      return { ok: true };
+    },
+  };
+}
+
 function fakePlan() {
   const calls = [];
   return {
@@ -192,4 +203,52 @@ test('promoteToPublish: update throws → NOT ok, plan untouched', async () => {
   assert.equal(r.ok, false);
   assert.match(r.reason, /promote to publish failed/);
   assert.equal(plan.calls.length, 0);
+});
+
+// ---------------------------------------------------------------- articles write-back
+// Regression for the 2026-11-13 drift: promote used to write ONLY the plan table,
+// so promoted articles stayed `draft` while plan said `published` (54 rows).
+
+test('promoteToPublish: writes articles.status through articleState for THIS language', async () => {
+  const wp = fakeWp({ statusAfterUpdate: 'publish' });
+  const plan = fakePlan();
+  const articleState = fakeArticleState();
+  const r = await promoteToPublish(
+    { wp, plan, articleState },
+    { postId: 5044, slug: 'ai-marketing-roi-measurement', lang: 'zh-hans' }
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.articlesState, 'publish');
+  assert.equal(articleState.calls.length, 1);
+  assert.equal(articleState.calls[0].to, 'published');
+  assert.equal(articleState.calls[0].lang, 'zh-hans');
+  assert.equal(articleState.calls[0].wpPostId, 5044);
+});
+
+test('promoteToPublish: no articleState facade → publish still succeeds, drift is logged', async () => {
+  const wp = fakeWp({ statusAfterUpdate: 'publish' });
+  const plan = fakePlan();
+  const logs = [];
+  const r = await promoteToPublish(
+    { wp, plan },
+    { postId: 5044, slug: 'x', lang: 'zh-hans', log: (m) => logs.push(m) }
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.articlesState, undefined);
+  assert.ok(logs.some((m) => /drift risk/.test(m)));
+});
+
+test('promoteToPublish: article write-back failure never blocks the publish', async () => {
+  const wp = fakeWp({ statusAfterUpdate: 'publish' });
+  const plan = fakePlan();
+  const articleState = {
+    async setState() {
+      const e = new Error('E_LANG_REQUIRED');
+      e.code = 'E_LANG_REQUIRED';
+      throw e;
+    },
+  };
+  const r = await promoteToPublish({ wp, plan, articleState }, { postId: 1, slug: 'x', lang: 'en' });
+  assert.equal(r.ok, true);
+  assert.equal(r.articlesState, 'failed');
 });

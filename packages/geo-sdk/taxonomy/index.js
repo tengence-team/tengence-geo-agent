@@ -174,16 +174,30 @@ async function verifyLocal(planRows, appId, categories) {
   let checked = 0;
   // Since 2026-09-20: local md moved to data/ and is untracked; "ingested" = a body
   // row exists in the articles table
+  // State is judged on the ARTICLE row (2026-11-13 unification): plan_status is just
+  // a mirror, so filtering on it here reported stale warnings for rows whose article
+  // was long since ingested (and hid rows whose plan column had drifted).
   const rows = await t.db.withConn(async (conn) => {
-    const [r] = await conn.query('SELECT slug FROM tengence_geo_articles WHERE app_id = ? AND content_longtext IS NOT NULL', [appId]);
+    const [r] = await conn.query(
+      'SELECT slug, lang, content_longtext FROM tengence_geo_articles WHERE app_id = ?',
+      [appId]
+    );
     return r;
   });
-  const dbSlugs = new Set(rows.map((r) => r.slug));
+  const articlesBySlug = new Map();
+  for (const r of rows) {
+    const prev = articlesBySlug.get(r.slug);
+    const hasBody = Boolean(r.content_longtext);
+    articlesBySlug.set(r.slug, { hasBody: (prev && prev.hasBody) || hasBody });
+  }
   for (const p of planRows) {
-    if (!['written', 'queued', 'published'].includes(p.plan_status)) continue;
     if (!p.category) continue;
-    if (!dbSlugs.has(p.slug)) warnings.push(`${p.slug}: no body row in the articles table (only ingested counts as written/queued/published; may be a legacy article awaiting merge)`);
-    checked += 1;
+    if (p.node_type === 'hub') continue;
+    const art = articlesBySlug.get(p.slug);
+    if (art && !art.hasBody) {
+      warnings.push(`${p.slug}: article row exists but carries no body (only a body row counts as written/queued/published)`);
+    }
+    if (art) checked += 1;
   }
   return { files: checked, directories: Object.keys(categories).length, warnings };
 }

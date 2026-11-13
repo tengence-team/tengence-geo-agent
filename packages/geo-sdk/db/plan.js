@@ -260,18 +260,26 @@ async function updateStatus(conn, appId, slug, fields, opts = {}) {
  * @param {object} opts { count, skipSlugs, lang }
  */
 async function nextDue(conn, appId, { count = 1, skipSlugs = [], lang = 'zh-hans' } = {}) {
-  const lc = langClause('', lang);
+  // 2026-11-13 status unification: "queued" is DERIVED from the article row
+  // (draft + a pushed wp_post_id), never from the plan_status mirror. Filtering on
+  // plan_status here is what let a plan row claiming `published` skip the queue while
+  // its article was still a draft — and let `queued` rows with no article slip in.
+  const lc = langClause('p.', lang);
   let sql = `
-    SELECT * FROM ${TABLES.articlePlan}
-    WHERE app_id = ? AND node_type = 'spoke'
-      AND plan_status = 'queued' AND wp_post_id IS NOT NULL${lc.sql}
+    SELECT p.* FROM ${TABLES.articlePlan} p
+    LEFT JOIN ${TABLES.articles} a
+           ON a.app_id = p.app_id AND a.slug = p.slug AND a.lang = p.lang
+    WHERE p.app_id = ? AND p.node_type = 'spoke'
+      AND p.plan_status <> 'paused'
+      AND a.status = 'draft'
+      AND (COALESCE(a.wp_post_id, 0) > 0 OR COALESCE(p.wp_post_id, 0) > 0)${lc.sql}
   `;
   const params = [appId, ...lc.params];
   if (skipSlugs.length) {
     sql += ` AND slug NOT IN (${skipSlugs.map(() => '?').join(',')})`;
     params.push(...skipSlugs);
   }
-  sql += ' ORDER BY publish_order, id LIMIT ?';
+  sql += ' ORDER BY p.publish_order, p.id LIMIT ?';
   params.push(parseInt(count, 10));
   const [rows] = await conn.query(sql, params);
   return rows.map(normalizeRow);
