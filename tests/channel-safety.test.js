@@ -116,11 +116,13 @@ test('classifyMissingRow: an incomplete live list never declares deletions', () 
 test('NO_AUTO_RETRY coverage: `failed` is retryable, `deleted` is terminal', () => {
   // Guard against someone "fixing" this by adding 'failed' to the terminal set,
   // which would silently re-introduce the burn (just with a different label).
+  // 2026-11-13: the vocabulary moved to the single channel-state source; plan/channel
+  // now does `new Set(channelState.NO_AUTO_RETRY)`.
   const src = fs.readFileSync(
-    path.join(__dirname, '..', 'packages/geo-sdk/plan/channel.js'),
+    path.join(__dirname, '..', 'packages/geo-sdk/channel-state/states.js'),
     'utf8'
   );
-  const m = /const NO_AUTO_RETRY = new Set\(\[([^\]]+)\]\)/.exec(src);
+  const m = /const NO_AUTO_RETRY = \[([^\]]+)\]/.exec(src);
   assert.ok(m, 'NO_AUTO_RETRY declaration found');
   assert.ok(m[1].includes('deleted'), 'deleted stays terminal');
   assert.ok(m[1].includes('review_failed'));

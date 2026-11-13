@@ -20,6 +20,7 @@
  */
 const t = require('../index');
 const repo = require('../db/channel-plan');
+const channelState = require('../channel-state');
 const { withConn } = require('../db/connection');
 const { buildTitleIndex, lookupTitle } = require('./wechat-match');
 
@@ -72,7 +73,9 @@ async function importWechatIssues(issues) {
       if (!slugs.length) throw new Error(`importWechatIssues: issue ${issue.period} requires non-empty article_slugs`);
       const lang = issue.lang || 'zh-hans';
       for (const slug of slugs) {
-        const res = await repo.upsert(conn, appId, {
+        const res = await channelState.record({
+          appId,
+          conn,
           platform: 'wechat',
           slug,
           lang,
@@ -80,8 +83,10 @@ async function importWechatIssues(issues) {
           topic: issue.topic || null,
           weekday: issue.weekday || null,
           status: issue.status || 'todo',
-          draft_ids: Array.isArray(issue.draft_ids) ? issue.draft_ids : [],
+          draftIds: Array.isArray(issue.draft_ids) ? issue.draft_ids : [],
           notes: issue.notes || null,
+          reason: issue.reason || 'importWechatIssues',
+          force: true, // bulk import of historical issues: reconcile to what the caller asserts
         });
         rows += 1;
         if (res.action === 'insert') imported += 1;
@@ -112,14 +117,30 @@ async function get(id) {
   return result;
 }
 
-/** Transition a row's status (todo → draft → published / paused); optionally records draft ids. */
-async function markStatus(id, status, draftIds) {
+/**
+ * Transition a row's status; optionally records draft ids.
+ * Kept as a thin shim (public API, CLIs and old callers) — the rules live in
+ * channel-state (transition table + reason requirement), not here.
+ */
+async function markStatus(id, status, draftIds, opts = {}) {
   const appId = DEFAULT_APP_ID();
-  let result;
-  await withConn(async (conn) => {
-    result = await repo.markStatus(conn, appId, Number(id), status, draftIds);
+  const out = await channelState.setState({
+    appId,
+    id: Number(id),
+    to: status,
+    draftIds,
+    reason: opts.reason || null,
+    force: opts.force === true,
   });
-  return result;
+  // Legacy shape: callers (CLI / channel_plan_mark / older tests) expect
+  // { status, draftIds } back. Never echo the requested draftIds when the caller
+  // did not pass any — that row keeps whatever it already stored.
+  const row = await withConn((c) => repo.getById(c, appId, Number(id))).catch(() => null);
+  return {
+    ...out,
+    status: out.to,
+    draftIds: Array.isArray(draftIds) ? draftIds : (row && row.draft_ids) || [],
+  };
 }
 
 /**
@@ -147,7 +168,12 @@ async function clearPlatform(platform) {
  * zh-hans version is dispatched domestically).
  * @returns {Promise<Set<string>>}
  */
-const DEFAULT_DISPATCHED = new Set(['published', 'reviewing']);
+/**
+ * Status semantics (vocabulary, dispatched sets, terminal sets) now live in
+ * channel-state/states.js — this file only consumes them. Kept as Sets so the
+ * existing `.has()` call sites stay untouched.
+ */
+const DEFAULT_DISPATCHED = new Set(channelState.DEFAULT_DISPATCHED);
 
 // 自动派发（nextDue）时不自动重发的"终态"集合（2026-10-24）。
 // 目的：切断 review_failed 被 nextDue 无限重选、在 CSDN 等无"草稿→发布"两步的平台
@@ -155,14 +181,14 @@ const DEFAULT_DISPATCHED = new Set(['published', 'reviewing']);
 // publishToChannel({slugs}) 手动重发（手动走 filterUnpublished，不受本集合限制）。
 // 注意：'draft' 仅对 juejin 等非 dispatched 平台生效；wechat/devto 的 'draft' 已在各自
 // dispatched 集合内（published.has 已跳过），此处再加一层保险。
-const NO_AUTO_RETRY = new Set(['review_failed', 'deleted', 'paused', 'draft']);
+const NO_AUTO_RETRY = new Set(channelState.NO_AUTO_RETRY);
 
 /**
  * 队列状态（尚未确认到达平台）。syncStatuses 只对这两类行做"从未下发"判定：
  * 队列行 + 无 draft_id + 无 article_id ⇒ 平台列表里找不到只能说明"从未发出"，
  * 绝不能判 deleted（deleted ∈ NO_AUTO_RETRY = 永久出局，每失败一次烧掉一篇稿）。
  */
-const QUEUE_STATUSES = new Set(['todo', 'failed']);
+const QUEUE_STATUSES = new Set(channelState.QUEUE_STATUSES);
 const NEVER_SENT_REASON =
   '从未成功下发到平台（无 draft_id / article_id），平台列表缺失属"未发出"而非"被删除"；保留可重试状态';
 
@@ -207,10 +233,9 @@ function classifyMissingRow({ status, draftId, articleId, listLooksComplete }) {
  * juejin/csdn keep the default on purpose: there a `draft` is only an intermediate
  * step on the way to a live article, so it must stay eligible for a retry.
  */
-const DISPATCHED_BY_PLATFORM = {
-  wechat: new Set(['published', 'reviewing', 'draft']),
-  devto: new Set(['published', 'reviewing', 'draft']),
-};
+const DISPATCHED_BY_PLATFORM = Object.fromEntries(
+  Object.entries(channelState.DISPATCHED_BY_PLATFORM).map(([k, v]) => [k, new Set(v)])
+);
 const dispatchedStatuses = (platform) => DISPATCHED_BY_PLATFORM[platform] || DEFAULT_DISPATCHED;
 
 async function publishedSlugs(platform) {
@@ -314,19 +339,21 @@ async function recordPublish(rec) {
   const notes = rec.notes || (errorMessage ? `error: ${errorMessage.slice(0, 200)}` : null);
 
   await withConn(async (conn) => {
-    await repo.upsert(conn, appId, {
+    await channelState.record({
+      appId,
+      conn,
       platform: rec.platform,
       slug: rec.slug,
       lang,
       topic: rec.title || rec.slug,
       status,
-      draft_ids: rec.draftId ? [rec.draftId] : [],
+      draftIds: rec.draftId ? [rec.draftId] : [],
       notes,
-      error_code: errorCode,
-      error_message: errorMessage,
-      error_stage: errorStage,
-      error_detail: errorDetail,
-      failed_at: failedAt,
+      errorCode,
+      errorMessage,
+      errorStage,
+      errorDetail,
+      failedAt,
     });
   });
   return { ok: true, platform: rec.platform, slug: rec.slug, lang, status };
@@ -358,7 +385,9 @@ async function recordWechatIssue(rec) {
     const rows = await repo.list(conn, appId, { platform: 'wechat' });
     const period = nextWechatPeriod(rows);
     for (const slug of slugs) {
-      const res = await repo.upsert(conn, appId, {
+      const res = await channelState.record({
+        appId,
+        conn,
         platform: 'wechat',
         slug,
         lang,
@@ -367,8 +396,10 @@ async function recordWechatIssue(rec) {
         status: rec.status || 'draft',
         // 2026-11-13: append (never blindly overwrite) so a re-run of the same
         // issue keeps the media_id already stored on the row.
-        append_draft_ids: rec.mediaId ? [rec.mediaId] : undefined,
+        appendDraftIds: rec.mediaId ? [rec.mediaId] : undefined,
         notes: rec.notes || null,
+        reason: rec.notes || 'recordWechatIssue',
+        force: true, // explicit reconciliation of an issue the caller knows about
       });
       out.rows.push({ id: res.id, action: res.action, slug });
     }
@@ -430,15 +461,19 @@ async function recordWechatIssueCreated(rec) {
     }
     if (!period) period = nextWechatPeriod(existing);
     for (const slug of slugs) {
-      const res = await repo.upsert(conn, appId, {
+      const res = await channelState.record({
+        appId,
+        conn,
         platform: 'wechat',
         slug,
         lang,
         period,
         topic: rec.topic || null,
         status: 'draft',
-        append_draft_ids: mediaId ? [mediaId] : undefined,
+        appendDraftIds: mediaId ? [mediaId] : undefined,
         notes: rec.notes || null,
+        reason: 'recordWechatIssueCreated',
+        force: true, // creation-time write; the row is being stamped with its media id
       });
       out.rows.push({ id: res.id, slug });
     }
@@ -497,12 +532,17 @@ async function recordWechatPublished(rec) {
       targets = Array.from(new Set(targets));
     }
     for (const slug of targets) {
-      const res = await repo.upsert(conn, appId, {
+      const res = await channelState.record({
+        appId,
+        conn,
         platform: 'wechat',
         slug,
         lang,
         status,
-        append_draft_ids: mediaId ? [mediaId] : undefined,
+        appendDraftIds: mediaId ? [mediaId] : undefined,
+        articleId,
+        reason: 'wechat mass/title reconcile',
+        force: true, // the platform already holds this message; record it as-is
       });
       if (articleId) await repo.setArticleId(conn, appId, res.id, articleId);
       out.rows.push({ id: res.id, slug });
@@ -537,14 +577,19 @@ async function reconcileFromPlatform(platform, { map } = {}) {
   if (Array.isArray(map) && map.length) {
     await withConn(async (conn) => {
       for (const m of map) {
-        const r = await repo.upsert(conn, appId, {
+        const r = await channelState.record({
+          appId,
+          conn,
           platform,
           slug: m.slug,
           lang: m.lang || lang,
           topic: m.title || m.slug,
           status: 'published',
-          draft_ids: m.draftId ? [m.draftId] : [],
+          draftIds: m.draftId ? [m.draftId] : [],
           notes: m.notes || null,
+          articleId: m.articleId,
+          reason: 'reconcileFromPlatform(map)',
+          force: true, // seeding from the platform's own truth
         });
         // Record the platform article id when the caller knows it (e.g. backfilling
         // an article published outside the scheduler). Keep as string — Juejin ids
@@ -592,24 +637,32 @@ async function reconcileFromPlatform(platform, { map } = {}) {
       let rowId;
       if (slug) {
         matched += 1;
-        const r = await repo.upsert(conn, appId, {
+        const r = await channelState.record({
+          appId,
+          conn,
           platform,
           slug,
           lang,
           topic: title || slug,
           status: 'published',
           notes: null,
+          reason: 'reconcileFromPlatform(live)',
+          force: true, // the platform list is the truth; this is a seed, not a workflow move
         });
         rowId = r.id;
       } else {
         unmatched += 1;
-        const r = await repo.upsert(conn, appId, {
+        const r = await channelState.record({
+          appId,
+          conn,
           platform,
           slug: String(articleId),
           lang,
           topic: title || String(articleId),
           status: 'published',
           notes: 'unmatched title — synthetic slug',
+          reason: 'reconcileFromPlatform(live, unmatched)',
+          force: true,
         });
         rowId = r.id;
       }
@@ -862,7 +915,24 @@ async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3, 
               : null,
         });
         if (!dryRun) {
-          if (idChanged) await repo.markStatus(conn, appId, row.id, newStatus);
+          if (idChanged) {
+            // Live reconciliation is evidence-driven (the platform list is the truth),
+            // so it may legitimately cross states that the workflow table forbids —
+            // it still goes through the single entry, with the evidence as the reason.
+            await channelState.setState({
+              appId,
+              id: row.id,
+              to: newStatus,
+              reason:
+                newStatus === 'review_failed'
+                  ? reviewFailedReason(ai)
+                  : neverSent && newStatus === 'failed'
+                    ? NEVER_SENT_REASON
+                    : `对账：平台实况 → ${newStatus}`,
+              force: true,
+              conn,
+            });
+          }
           if (idRecorded) await repo.setArticleId(conn, appId, row.id, articleId);
           if (newStatus === 'review_failed' && row.status !== 'review_failed') {
             await repo.appendNotes(conn, appId, row.id, reviewFailedReason(ai));
@@ -969,7 +1039,9 @@ async function nextDue(platform, { count = 1, register = true } = {}) {
           task = { id: null };
         } else {
           // 未记录 → 先登记 todo（这就是"发布计划"的登记动作）
-          const res = await repo.upsert(conn, appId, {
+          const res = await channelState.record({
+            appId,
+            conn,
             platform,
             slug: r.slug,
             lang: r.lang,

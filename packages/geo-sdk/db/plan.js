@@ -158,9 +158,61 @@ async function getByArticleId(conn, appId, articleId, lang) {
  * @param {object} [opts] { lang } — defaults to the record's own lang, else 'zh-hans'
  * @returns {Promise<{created:boolean, id:number}>}
  */
+/**
+ * publish_order is an INTEGER column that must hold ONE number per ARTICLE
+ * (all of a slug's language rows share it) and that number must be unique across
+ * articles — that is what makes "按历史发布顺序" a hard guarantee instead of a
+ * convention. S9 (2026-11-13):
+ *   - a non-integer (e.g. the literal "written") is refused;
+ *   - an order already owned by ANOTHER slug is refused (no silent re-sequencing);
+ *   - when a non-primary language row is written, the value is normalised to the
+ *     zh-hans row's (the primary language owns the number).
+ * The database enforces the same rule with uq_sqlite_plan_order (schema v11).
+ */
+async function assertOrderUsable(conn, appId, slug, order, lang) {
+  if (order === undefined) return;
+  if (order === null) return;
+  const n = Number(order);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(
+      `publish_order must be a non-negative integer (got ${JSON.stringify(order)} for ${slug}/${lang}) — ` +
+        'a text value in an integer column silently breaks history ordering'
+    );
+  }
+  if (n === 0) return; // "not assigned yet" — plan sync assigns the tail number later
+  const [rows] = await conn.query(
+    `SELECT slug FROM ${TABLES.articlePlan}
+      WHERE app_id = ? AND publish_order = ? AND lang = 'zh-hans' AND slug <> ? LIMIT 1`,
+    [appId, n, slug]
+  );
+  if (rows && rows.length) {
+    throw new Error(
+      `publish_order ${n} is already taken by "${rows[0].slug}" — pick the next free number instead of sharing it`
+    );
+  }
+}
+
+/** After a zh-hans row carries an order, every other language row of that slug follows. */
+async function syncOrderAcrossLangs(conn, appId, slug) {
+  const [rows] = await conn.query(
+    `SELECT publish_order FROM ${TABLES.articlePlan}
+      WHERE app_id = ? AND slug = ? AND lang = 'zh-hans' LIMIT 1`,
+    [appId, slug]
+  );
+  if (!rows || !rows.length) return;
+  const order = rows[0].publish_order;
+  if (order === undefined || order === null) return;
+  await conn.query(
+    `UPDATE ${TABLES.articlePlan} SET publish_order = ?
+      WHERE app_id = ? AND slug = ? AND lang <> 'zh-hans' AND publish_order <> ?`,
+    [order, appId, slug, order]
+  );
+}
+
 async function upsert(conn, appId, record, opts = {}) {
   const lang = normalizeLang((opts && opts.lang) || record.lang) || 'zh-hans';
   const existing = await getBySlug(conn, appId, record.slug, lang);
+  await assertOrderUsable(conn, appId, record.slug, record.publish_order, lang);
   if (existing) {
     const set = [];
     const values = [];
@@ -186,6 +238,7 @@ async function upsert(conn, appId, record, opts = {}) {
         values
       );
     }
+    if (record.publish_order !== undefined) await syncOrderAcrossLangs(conn, appId, record.slug);
     return { created: false, id: existing.id };
   }
 
@@ -213,6 +266,7 @@ async function upsert(conn, appId, record, opts = {}) {
       record.notes || null,
     ]
   );
+  if (record.publish_order !== undefined) await syncOrderAcrossLangs(conn, appId, record.slug);
   return { created: true, id: undefined };
 }
 

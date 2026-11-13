@@ -77,12 +77,14 @@ async function main() {
   if (cmd === 'mark') {
     const id = Number(positionals[1]);
     const status = positionals[2];
+    const reasonFlag = (args.reason && String(args.reason)) || null;
+    const forceFlag = args.force === true || args.force === 'true';
     if (!id || !status) {
-      console.error('Usage: channel-plan.js mark <id> <todo|draft|published|paused>');
+      console.error('Usage: channel-plan.js mark <id> <todo|draft|reviewing|published|failed|review_failed|paused|deleted> [--reason=...] [--force]');
       process.exit(1);
     }
-    const res = await ch.markStatus(id, status);
-    console.log(`✅ #${res.id} → ${res.status}`);
+    const res = await ch.markStatus(id, status, undefined, { reason: reasonFlag, force: forceFlag });
+    console.log(`✅ #${res.id}: ${res.from} → ${res.to}${res.changed ? '' : ' (unchanged)'}`);
     return;
   }
 

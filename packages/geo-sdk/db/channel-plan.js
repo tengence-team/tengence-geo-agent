@@ -20,17 +20,15 @@
  */
 
 const { CHANNEL_PLAN } = require('./sqlite-schema');
+const { ALL: STATUSES, canTransition, normalize } = require('../channel-state/states');
 
-// Statuses: todo → draft → published (paused for manual holds).
-// Reconciliation with the live platform can also surface:
-//   reviewing     — published call succeeded but the platform still has it in review
-//                   (e.g. Juejin audit_status=1: not yet publicly visible)
-//   review_failed — platform rejected the article (e.g. Juejin audit_status=3)
-//   deleted       — the article no longer exists on the platform at all
-// `published` and `reviewing` are both treated as "already dispatched" by the dedup
-// logic (nextDue / filterUnpublished); `review_failed` and `deleted` remain eligible
-// for a (re)publish attempt.
-const STATUSES = ['todo', 'failed', 'draft', 'published', 'paused', 'reviewing', 'review_failed', 'deleted'];
+// Status vocabulary + legal moves live in channel-state/states.js (single source).
+// This file is the SQL layer: it validates the value, but it does NOT decide policy.
+//   todo → draft → published        the happy path
+//   reviewing / review_failed       live reconcile (platform still auditing / rejected)
+//   deleted / paused                terminal holds, revived only with a reason
+// Channel-state is the only legal caller of markStatus / status writes. A guard test
+// (tests/status-single-entry.test.js) enforces that.
 
 /** Normalize a language tag: 'zh-hans' | 'en' | 'zh-hant' (defensive trim/lowercase). */
 function normalizeLang(l) {
@@ -149,7 +147,19 @@ function resolveDraftIds(existing, row) {
  */
 async function upsert(conn, appId, row) {
   const lang = normalizeLang(row.lang);
+  if (row.status !== undefined && !STATUSES.includes(normalize(row.status))) {
+    const { invalidState } = require('../channel-state/errors');
+    throw invalidState(row.status, STATUSES);
+  }
   const existing = await getByKey(conn, appId, row.platform, row.slug, lang);
+  // 2026-11-13 (S8): an EXISTING row's status may only move through channelState.setState,
+  // which enforces the transition table. Upsert keeps its old ability to CREATE a row
+  // directly in any legal status (creation is not a transition), and may update every
+  // other column — but a differing `status` here is a bypass and fails loudly.
+  if (existing && row.status !== undefined && normalize(row.status) !== normalize(existing.status)) {
+    const { statusBypass } = require('../channel-state/errors');
+    throw statusBypass(`db/channel-plan.upsert(${row.platform}/${row.slug}/${lang})`);
+  }
   // 2026-11-13 — draft_ids 是"平台侧凭证"（微信 media_id / 掘金 draft_id），
   // 绝不能因为调用方没传就被写成 []。历史事故：一次无关的 upsert（改状态、
   // 重排期号）把 75/75 条 wechat draft 行的 media_id 抹空，导致"第N期"永远

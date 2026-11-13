@@ -59,6 +59,7 @@ lazy('paths', () => require('./paths'));
 lazy('db', () => require('./db'));
 lazy('plan', () => require('./plan'));
 lazy('articleState', () => require('./article-state'));
+lazy('channelState', () => require('./channel-state'));
 lazy('wp', () => require('./wp'));
 lazy('content', () => require('./content'));
 lazy('images', () => require('./images'));

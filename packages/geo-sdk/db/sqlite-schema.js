@@ -87,7 +87,11 @@ const MCP_TASKS = 'tengence_geo_mcp_tasks';
 // "publishToChannel returned not-ok". Pure ADDITIVE (5 nullable TEXT columns); the
 // existing DBs get them via ensureColumnType (idempotent ALTER) and fresh DBs via the
 // DDL above.
-const SCHEMA_VERSION = 10;
+// v11 (2026-11-13): publish_order gets a partial UNIQUE index (one article = one
+// position in the history order) and the dead `article_images.status` column is gone.
+// The index is created by a one-off script for existing DBs (the table already has
+// data that must be normalised first); fresh DBs get it from the DDL above.
+const SCHEMA_VERSION = 11;
 
 /**
  * channel_plan v7 DDL template (workspace-local publishing TASK table).
@@ -431,7 +435,6 @@ CREATE TABLE IF NOT EXISTS ${TABLES.articleImages} (
   ai_description TEXT,
   ai_tags TEXT,
   ai_suggestions TEXT,
-  status TEXT DEFAULT 'pending',
   download_attempt INTEGER DEFAULT 0,
   config_keywords TEXT,
   prompt TEXT,
@@ -444,7 +447,6 @@ CREATE TABLE IF NOT EXISTS ${TABLES.articleImages} (
 );
 CREATE INDEX IF NOT EXISTS idx_sqlite_aimg_article ON ${TABLES.articleImages} (app_id, article_id);
 CREATE INDEX IF NOT EXISTS idx_sqlite_aimg_type ON ${TABLES.articleImages} (app_id, image_type);
-CREATE INDEX IF NOT EXISTS idx_sqlite_aimg_status ON ${TABLES.articleImages} (app_id, status);
 CREATE INDEX IF NOT EXISTS idx_sqlite_aimg_position ON ${TABLES.articleImages} (app_id, article_id, position_order);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sqlite_aimg_link ON ${TABLES.articleImages} (app_id, article_id, image_id, \`position\`);
 
@@ -537,6 +539,13 @@ CREATE INDEX IF NOT EXISTS idx_sqlite_plan_queued ON ${TABLES.articlePlan} (app_
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_category ON ${TABLES.articlePlan} (app_id, category);
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_slug ON ${TABLES.articlePlan} (slug);
 CREATE INDEX IF NOT EXISTS idx_sqlite_plan_batch ON ${TABLES.articlePlan} (app_id, publish_batch);
+-- publish_order is the history order every channel queue derives from, so the
+-- database itself refuses to hold two articles at the same position (S9 2026-11-13).
+-- Scoped to zh-hans because all three language rows of one article share the number
+-- and zh-hans is the owner (453/453 articles carry it).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_sqlite_plan_order
+  ON ${TABLES.articlePlan} (app_id, publish_order)
+  WHERE lang = 'zh-hans' AND publish_order > 0;
 
 -- ========== 17. channel publishing tasks (workspace-local, not in MySQL) ==========
 ${channelPlanDDL(CHANNEL_PLAN)}

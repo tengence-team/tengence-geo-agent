@@ -2258,22 +2258,110 @@ const tools = [
     name: 'channel_plan_mark',
     title: '标记平台发布状态',
     description:
-      'Update a channel_plan row status (todo | failed | draft | published | paused | reviewing | review_failed) and optionally record its draft ids (media ids). ' +
-      'Call after channel_publish to persist the created draft (e.g. wechat media_id) and keep the calendar in sync.',
+      'Move a channel_plan row to another status through the single status entry (channel-state). ' +
+      'Legal moves only: todo→draft|reviewing|failed|paused|deleted, draft→published|reviewing|failed|paused|deleted, ' +
+      'reviewing→published|review_failed|failed|paused|deleted, failed/review_failed→todo|paused|deleted, paused→todo|deleted, ' +
+      'deleted→todo. `published` is terminal. deleted / review_failed / deleted→todo require `reason`.',
     inputSchema: z.object({
       id: z.number().describe('channel_plan row id (see channel_plan_next rows)'),
-      status: z.enum(['todo', 'failed', 'draft', 'published', 'paused', 'reviewing', 'review_failed']).describe('new row status'),
+      status: z
+        .enum(['todo', 'draft', 'reviewing', 'published', 'failed', 'review_failed', 'paused', 'deleted'])
+        .describe('target status'),
       draftIds: z
         .array(z.string())
         .optional()
         .describe('draft/media ids to record (e.g. wechat media_id); omit to keep existing'),
+      reason: z
+        .string()
+        .optional()
+        .describe('why the row moves; REQUIRED for deleted / review_failed / reviving deleted→todo'),
+      site: siteField,
     }),
     async run(args) {
       try {
+        const S = withSite(args);
         const ch = t.plan.channel;
-        const updated = await ch.markStatus(args.id, args.status, args.draftIds);
+        const updated = await ch.markStatus(args.id, args.status, args.draftIds, {
+          reason: args.reason || null,
+        });
         const row = await ch.get(args.id);
         return ok({ ok: true, updated, row });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'channel_state_audit',
+    title: '渠道状态审计',
+    description:
+      'Consistency report for tengence_geo_channel_plan: invalidStatus (a value outside the vocabulary), ' +
+      'draftWithoutMedia (a wechat draft row with no media_id), publishedWithoutMedia, ' +
+      'queueWithMedia (a todo/failed row still carrying a platform id), draftWithoutPeriod. ' +
+      'Read-only; fix=true only normalises an unknown status to `failed` with a note (nothing else is guessed).',
+    inputSchema: z.object({
+      platform: z.string().optional().describe('limit the audit to one platform (default: all)'),
+      fix: z.boolean().optional().describe('true = write the safe subset of fixes (default false)'),
+      dryRun: z.boolean().optional().describe('inverse convenience flag: dryRun=false behaves like fix=true'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const fix = args.fix === true || args.dryRun === false;
+        const report = await t.channelState.audit({
+          appId: parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10),
+          platform: args.platform || null,
+          fix,
+          dryRun: !fix,
+        });
+        return ok({ ok: true, report });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'plan_order_audit',
+    title: '发布顺序审计',
+    description:
+      'Audit tengence_geo_article_plan.publish_order: nonNumeric (a text value in an integer column), ' +
+      'zeroOrder (never assigned), crossLangMismatch (a slug\'s language rows disagree), ' +
+      'crossSlugDuplicate (two articles share a number). Read-only — use plan_order_repair to fix.',
+    inputSchema: z.object({ site: siteField }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
+        const report = await t.db.withConn((conn) => t.plan.order.audit({ appId, conn }));
+        return ok({ ok: true, report });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'plan_order_repair',
+    title: '发布顺序修复',
+    description:
+      'Normalise publish_order: text/0 values get a fresh tail number (in row-id order, so the history ' +
+      'sequence is preserved), every language row follows its zh-hans row, and residual collisions are broken ' +
+      'by moving the later article to the tail. Dry-run by default; pass apply=true to write.',
+    inputSchema: z.object({
+      apply: z.boolean().optional().describe('true = write the changes (default false = dry run)'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const appId = parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10);
+        const report = await t.db.withConn((conn) =>
+          t.plan.order.repair({ appId, apply: args.apply === true, conn })
+        );
+        return ok({ ok: true, report });
       } catch (e) {
         return fail(e);
       }

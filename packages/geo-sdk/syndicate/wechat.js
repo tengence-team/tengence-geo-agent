@@ -1064,7 +1064,16 @@ async function syncProgressFromWechat({ siteKey, dryRun = false, fetchers } = {}
           continue;
         }
         if (!dryRun) {
-          await channelRepo.markStatus(conn, Number(process.env.APP_ID || 1), row.id, 'published', row.draft_ids);
+          // 状态统一走 channel-state（唯一入口）。对账以平台实况为准，故 force。
+          await require('../channel-state').setState({
+            appId: Number(process.env.APP_ID || 1),
+            id: row.id,
+            to: 'published',
+            draftIds: row.draft_ids,
+            reason: '对账：发表于公众号主页（freepublish）',
+            force: true,
+            conn,
+          });
           if (pubMatch.matches[0]) {
             await channelRepo.setArticleId(conn, Number(process.env.APP_ID || 1), row.id, pubMatch.matches[0]);
           }
@@ -1087,7 +1096,14 @@ async function syncProgressFromWechat({ siteKey, dryRun = false, fetchers } = {}
       }
       // d) no evidence anywhere → terminal, never re-send
       if (!dryRun) {
-        await channelRepo.markStatus(conn, Number(process.env.APP_ID || 1), row.id, 'deleted');
+        await require('../channel-state').setState({
+          appId: Number(process.env.APP_ID || 1),
+          id: row.id,
+          to: 'deleted',
+          reason: '对账：草稿箱与发表记录均无此篇（draft_ids 为空），判 deleted 终态；如确认从未发出，人工改回 todo 才会重发',
+          force: true,
+          conn,
+        });
         await channelRepo.appendNotes(
           conn,
           Number(process.env.APP_ID || 1),
