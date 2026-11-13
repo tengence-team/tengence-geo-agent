@@ -892,7 +892,16 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
       pushResult = await publishRewrittenToWechat({ articles: activeArticles.filter((a) => !a.__gateBlocked), siteKey });
     } catch (e) {
       failed += 1;
-      appendLog(site.siteDir, { action: 'push-error', platform, ok: false, detail: { error: e.message } });
+      // 2026-11-13 — carry slugs + stage: the 14 historical push-error entries had
+      // no slugs at all, so "which article failed to reach the draft box" was
+      // unrecoverable from the log.
+      appendLog(site.siteDir, {
+        action: 'push-error',
+        platform,
+        slugs: activeArticles.filter((a) => !a.__gateBlocked).map((a) => a.slug),
+        ok: false,
+        detail: { error: e.message, stage: 'create_draft' },
+      });
     }
   }
 

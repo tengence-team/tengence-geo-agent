@@ -3066,10 +3066,10 @@ const tools = [
     name: 'wechat_sync_progress',
     title: '公众号同步进度',
     description:
-      'Reconcile the channel_plan calendar with the real WeChat backend and auto-fix the DB: draft rows whose media_id is ' +
-      'missing from the draft box and not found in the publish list are rolled back to todo (draft_ids cleared); draft rows ' +
-      'whose titles appear in the publish list are upgraded to published. Published rows are never downgraded. Returns the ' +
-      'reconciliation report. dryRun=true previews without writing.',
+      '读微信后台真实状态并对账 channel_plan（只查 draft 行）：media_id 仍在草稿箱 → 保持 draft（缺 id 则回填）；' +
+      '标题命中发表记录 → 升级 published + article_id；草稿箱与发表记录都没有 → 判 deleted（终态，永不自动重发，' +
+      '需人工改回 todo 才会重发）；ambiguous 只报告不写。published 行永不降级，抓取失败则整平台零写入。' +
+      'dryRun=true 只出报告不写库。返回 kept / backfilled / upgraded / deleted / notable 五类明细。',
     inputSchema: z.object({
       site: siteField,
       dryRun: z.boolean().optional().describe('preview only — compute and report, do not write to the DB'),
@@ -3147,12 +3147,31 @@ const tools = [
         if (args.confirm !== 'YES') {
           return fail(new Error('wechat_mass_send pushes to followers — pass confirm="YES" to execute (or dryRun=true to preview)'));
         }
+        // capture titles first — a mass send consumes the draft message
+        let draftTitles = [];
+        try {
+          const drafts = await t.syndicate.wechat.listDrafts();
+          const hit = drafts.find((d) => d.media_id === args.media_id);
+          draftTitles = (hit && hit.titles) || [];
+        } catch (_) {
+          draftTitles = [];
+        }
         const result = await t.syndicate.wechat.massSend(args.media_id, {
           tagId: args.tag_id,
           toUsers: args.to_users,
           clientMsgId: args.client_msg_id,
         });
-        return ok({ ok: true, ...result });
+        // mass-send = 已推给粉丝 → the issue is published, not a draft (2026-11-13)
+        let statusUpdated = null;
+        try {
+          statusUpdated = await t.plan.channel.recordWechatPublished({
+            mediaId: args.media_id,
+            titles: draftTitles,
+          });
+        } catch (e) {
+          statusUpdated = { ok: false, error: e.message };
+        }
+        return ok({ ok: true, ...result, statusUpdated });
       } catch (e) {
         return fail(e);
       }
@@ -3222,8 +3241,42 @@ const tools = [
     async run(args) {
       try {
         const S = withSite(args);
-        const result = await t.syndicate.wechat.publishDraftByMediaId(args.media_id, { dryRun: !!args.dryRun });
-        return ok({ ok: true, ...result });
+        const wechat = t.syndicate.wechat;
+        // Titles MUST be captured before the publish: freepublish consumes the draft,
+        // so afterwards the media_id can no longer be resolved to articles (2026-11-13).
+        let draftTitles = [];
+        try {
+          const drafts = await wechat.listDrafts();
+          const hit = drafts.find((d) => d.media_id === args.media_id);
+          draftTitles = (hit && hit.titles) || [];
+        } catch (_) {
+          draftTitles = [];
+        }
+        let result;
+        try {
+          result = await wechat.publishDraftByMediaId(args.media_id, { dryRun: !!args.dryRun });
+        } catch (pubErr) {
+          if (!args.dryRun) {
+            try {
+              await t.plan.channel.recordWechatPublished({ mediaId: args.media_id, titles: draftTitles, status: 'failed' });
+            } catch (_) { /* best effort — never mask the real publish error */ }
+          }
+          throw pubErr;
+        }
+        // write back channel_plan: the row must stop claiming "draft" once it is live
+        let statusUpdated = null;
+        if (!args.dryRun) {
+          try {
+            statusUpdated = await t.plan.channel.recordWechatPublished({
+              mediaId: result.mediaId || args.media_id,
+              articleId: result.articleId || null,
+              titles: draftTitles,
+            });
+          } catch (e) {
+            statusUpdated = { ok: false, error: e.message };
+          }
+        }
+        return ok({ ok: true, ...result, statusUpdated });
       } catch (e) {
         return fail(e);
       }
