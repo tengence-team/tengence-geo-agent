@@ -120,6 +120,26 @@ async function getByKey(conn, appId, platform, slug, lang) {
 }
 
 /**
+ * Resolve the draft_ids value for an upsert (2026-11-13).
+ * See the note inside upsert(): an omitted draft_ids must NEVER clear the stored
+ * platform ids — that is how 75/75 wechat rows lost their media_id.
+ * @param {object|null} existing current row (may be null)
+ * @param {object} row incoming upsert payload
+ * @returns {string[]} ids to persist
+ */
+function resolveDraftIds(existing, row) {
+  const prev = existing && Array.isArray(existing.draft_ids) ? existing.draft_ids : [];
+  const clean = (list) =>
+    Array.from(new Set((list || []).map((x) => (x == null ? '' : String(x))).filter(Boolean)));
+  if (Array.isArray(row && row.append_draft_ids)) {
+    const merged = clean([...prev, ...row.append_draft_ids]);
+    return merged;
+  }
+  if (Array.isArray(row && row.draft_ids)) return clean(row.draft_ids);
+  return prev;
+}
+
+/**
  * Upsert a task row keyed by (app_id, platform, slug, lang): UPDATE the existing
  * row, else INSERT. Every write path (wechat issues, single-article recordPublish,
  * imports, reconciliation) goes through here so the unique key is the DB backstop
@@ -130,7 +150,15 @@ async function getByKey(conn, appId, platform, slug, lang) {
 async function upsert(conn, appId, row) {
   const lang = normalizeLang(row.lang);
   const existing = await getByKey(conn, appId, row.platform, row.slug, lang);
-  const draftJson = JSON.stringify(Array.isArray(row.draft_ids) ? row.draft_ids : []);
+  // 2026-11-13 — draft_ids 是"平台侧凭证"（微信 media_id / 掘金 draft_id），
+  // 绝不能因为调用方没传就被写成 []。历史事故：一次无关的 upsert（改状态、
+  // 重排期号）把 75/75 条 wechat draft 行的 media_id 抹空，导致"第N期"永远
+  // 映射不回草稿消息，发布后也无从回写。现在：
+  //   - draft_ids === undefined → 保留旧值
+  //   - append_draft_ids       → 追加去重（发布后补 media_id / article_id）
+  //   - draft_ids 显式数组      → 覆盖（调用方明确要求）
+  const draftIds = resolveDraftIds(existing, row);
+  const draftJson = JSON.stringify(draftIds);
   if (existing) {
     await conn.query(
       `UPDATE ${CHANNEL_PLAN}
@@ -250,6 +278,29 @@ async function appendNotes(conn, appId, id, note) {
   return { id: Number(id), appended: true, note };
 }
 
+/**
+ * Append platform draft ids to an existing row (dedup, keep prior ids).
+ * Used after a draft/message is created so "which message is this issue" is
+ * never lost even if a later upsert rewrites other columns.
+ * @returns {Promise<{id:number, draftIds:string[]}>}
+ */
+async function appendDraftIds(conn, appId, id, ids) {
+  const existing = await getById(conn, appId, id);
+  if (!existing) return { id: Number(id), draftIds: [] };
+  const merged = Array.from(
+    new Set(
+      [...(existing.draft_ids || []), ...(ids || [])]
+        .map((x) => (x == null ? '' : String(x)))
+        .filter(Boolean)
+    )
+  );
+  await conn.query(
+    `UPDATE ${CHANNEL_PLAN} SET draft_ids = ?, updated_at = NOW() WHERE app_id = ? AND id = ?`,
+    [JSON.stringify(merged), appId, id]
+  );
+  return { id: Number(id), draftIds: merged };
+}
+
 module.exports = {
   STATUSES,
   normalizeLang,
@@ -259,6 +310,8 @@ module.exports = {
   upsert,
   markStatus,
   setArticleId,
+  appendDraftIds,
   removeAll,
   appendNotes,
+  resolveDraftIds,
 };

@@ -21,6 +21,7 @@
 const t = require('../index');
 const repo = require('../db/channel-plan');
 const { withConn } = require('../db/connection');
+const { buildTitleIndex, lookupTitle } = require('./wechat-match');
 
 /** Default tenant: process-level APP_ID env var (default 1). */
 const DEFAULT_APP_ID = () => Number(process.env.APP_ID || 1);
@@ -355,12 +356,7 @@ async function recordWechatIssue(rec) {
   const out = { platform: 'wechat', rows: [], article_slugs: slugs };
   await withConn(async (conn) => {
     const rows = await repo.list(conn, appId, { platform: 'wechat' });
-    let maxIssue = 0;
-    for (const r of rows) {
-      const m = /第\s*(\d+)\s*期/.exec(String(r.period || ''));
-      if (m) maxIssue = Math.max(maxIssue, Number(m[1]));
-    }
-    const period = `第${maxIssue + 1}期`;
+    const period = nextWechatPeriod(rows);
     for (const slug of slugs) {
       const res = await repo.upsert(conn, appId, {
         platform: 'wechat',
@@ -369,12 +365,148 @@ async function recordWechatIssue(rec) {
         period,
         topic: rec.topic || null,
         status: rec.status || 'draft',
-        draft_ids: rec.mediaId ? [rec.mediaId] : [],
+        // 2026-11-13: append (never blindly overwrite) so a re-run of the same
+        // issue keeps the media_id already stored on the row.
+        append_draft_ids: rec.mediaId ? [rec.mediaId] : undefined,
         notes: rec.notes || null,
       });
       out.rows.push({ id: res.id, action: res.action, slug });
     }
     out.period = period;
+  });
+  return out;
+}
+
+/**
+ * Next issue number for a WeChat message: 第(maxExisting+1)期.
+ * Shared by recordWechatIssue / recordWechatIssueCreated so the numbering rule
+ * lives in exactly one place.
+ * @param {Array<{period?:string}>} rows existing wechat rows
+ * @returns {string} e.g. "第36期"
+ */
+function nextWechatPeriod(rows) {
+  let maxIssue = 0;
+  for (const r of rows || []) {
+    const m = /第\s*(\d+)\s*期/.exec(String((r && r.period) || ''));
+    if (m) maxIssue = Math.max(maxIssue, Number(m[1]));
+  }
+  return `第${maxIssue + 1}期`;
+}
+
+/**
+ * Persist a WeChat draft-message creation IMMEDIATELY (2026-11-13).
+ *
+ * Why this exists separately from recordWechatIssue: the old flow persisted rows
+ * only AFTER the whole publish attempt returned, so any later failure (log write,
+ * token error, gate rejection) left "a draft message exists on the platform but
+ * no row locally" — the exact window in which the next retry creates a SECOND
+ * duplicate message. Writing the media_id the moment draft/add succeeds closes it.
+ *
+ * Idempotent: if every slug already carries this media_id (re-run of the same
+ * issue), the existing period is reused instead of minting a new 第N期.
+ *
+ * @param {{slugs:string[], mediaId:string, lang?:string, topic?:string, notes?:string}} rec
+ * @returns {Promise<{platform:string, period:string, reused:boolean, rows:Array<{id:number, slug:string}>}>}
+ */
+async function recordWechatIssueCreated(rec) {
+  const slugs = Array.isArray(rec && rec.slugs) ? rec.slugs.filter(Boolean) : [];
+  if (!slugs.length) throw new Error('recordWechatIssueCreated requires a non-empty slugs array');
+  const mediaId = rec.mediaId ? String(rec.mediaId) : null;
+  const appId = DEFAULT_APP_ID();
+  const lang = rec.lang || 'zh-hans';
+  const out = { platform: 'wechat', rows: [], article_slugs: slugs, reused: false, mediaId };
+  await withConn(async (conn) => {
+    const existing = await repo.list(conn, appId, { platform: 'wechat' });
+    const bySlug = new Map(existing.map((r) => [r.slug, r]));
+    let period = null;
+    if (mediaId) {
+      const holder = slugs
+        .map((s) => bySlug.get(s))
+        .find((r) => r && Array.isArray(r.draft_ids) && r.draft_ids.includes(mediaId) && r.period);
+      if (holder) {
+        period = holder.period;
+        out.reused = true;
+      }
+    }
+    if (!period) period = nextWechatPeriod(existing);
+    for (const slug of slugs) {
+      const res = await repo.upsert(conn, appId, {
+        platform: 'wechat',
+        slug,
+        lang,
+        period,
+        topic: rec.topic || null,
+        status: 'draft',
+        append_draft_ids: mediaId ? [mediaId] : undefined,
+        notes: rec.notes || null,
+      });
+      out.rows.push({ id: res.id, slug });
+    }
+    out.period = period;
+  });
+  return out;
+}
+
+/**
+ * Mark the WeChat issue behind `mediaId` as PUBLISHED (2026-11-13).
+ *
+ * Trigger: a human/tool called wechat_draft_publish (freepublish/submit) or
+ * wechat_mass_send. Before this fix nothing wrote the row, so "已发布到公众号"
+ * stayed `draft` forever locally.
+ *
+ * Slug resolution: explicit `slugs` wins; otherwise `titles` (captured from
+ * draft/batchget BEFORE the publish, because freepublish consumes the draft) are
+ * matched against the wechat rows' article titles via the shared normalize+unique
+ * matcher. An ambiguous or missing title is reported, never guessed.
+ *
+ * @param {{mediaId:string, articleId?:string, slugs?:string[], titles?:string[],
+ *          lang?:string, status?:string}} rec
+ * @returns {Promise<{ok:boolean, mediaId:string|null, articleId:string|null, rows:Array<{id:number,slug:string}>, unresolved:Array<{title:string, reason:string}>}>}
+ */
+async function recordWechatPublished(rec) {
+  const mediaId = rec && rec.mediaId ? String(rec.mediaId) : null;
+  const articleId = rec && rec.articleId != null ? String(rec.articleId) : null;
+  const status = (rec && rec.status) || 'published';
+  const lang = (rec && rec.lang) || 'zh-hans';
+  const appId = DEFAULT_APP_ID();
+  const out = { ok: true, mediaId, articleId, status, rows: [], unresolved: [] };
+
+  await withConn(async (conn) => {
+    let targets = Array.isArray(rec && rec.slugs) ? rec.slugs.filter(Boolean) : [];
+    if (!targets.length) {
+      const titles = Array.isArray(rec && rec.titles) ? rec.titles : [];
+      const rows = await repo.list(conn, appId, { platform: 'wechat' });
+      const entries = [];
+      for (const row of rows) {
+        if (!['draft', 'published'].includes(row.status)) continue;
+        let title = null;
+        try {
+          const detail = await t.db.articles.getDetail(conn, appId, row.slug, row.lang || lang);
+          title = detail && detail.title;
+        } catch (_) {
+          title = null;
+        }
+        if (title) entries.push({ titles: [title], payload: row.slug });
+      }
+      const index = buildTitleIndex(entries);
+      for (const title of titles) {
+        const m = lookupTitle(index, title);
+        if (m.hit && m.unique) targets.push(m.matches[0]);
+        else out.unresolved.push({ title, reason: m.hit ? 'ambiguous (matched several rows)' : 'no local row title matched' });
+      }
+      targets = Array.from(new Set(targets));
+    }
+    for (const slug of targets) {
+      const res = await repo.upsert(conn, appId, {
+        platform: 'wechat',
+        slug,
+        lang,
+        status,
+        append_draft_ids: mediaId ? [mediaId] : undefined,
+      });
+      if (articleId) await repo.setArticleId(conn, appId, res.id, articleId);
+      out.rows.push({ id: res.id, slug });
+    }
   });
   return out;
 }
@@ -526,8 +658,34 @@ async function reconcileFromJuejin({ map } = {}) {
  *           attempts:number, byStatus:object, changes:Array<object>, dryRun:boolean}>}
  */
 const AUDIT_STALE_HOURS = 24;
-async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3 } = {}) {
+async function syncStatuses(platform = 'juejin', { dryRun = false, retries = 3, siteKey, fetchers } = {}) {
   if (!platform) throw new Error('syncStatuses requires a platform key');
+
+  // wechat has no review pipeline but DOES need a read-only truth pass:
+  // draft box + freepublish list decide draft / published / deleted (2026-11-13).
+  // Delegated to syndicate/wechat.syncProgressFromWechat so the matching rules
+  // (media_id first, normalized unique title second) live in one place.
+  if (platform === 'wechat') {
+    const r = await t.syndicate.wechat.syncProgressFromWechat({ dryRun, siteKey, fetchers });
+    const rep = r.report || {};
+    return {
+      ok: true,
+      platform: 'wechat',
+      source: 'draft/batchget + freepublish/batchget',
+      dryRun: !!dryRun,
+      observedAt: r.observedAt,
+      liveCount: (rep.drafts || 0) + (rep.published || 0),
+      counts: {
+        kept: (rep.kept || []).length,
+        backfilled: (rep.backfilled || []).length,
+        upgraded: (rep.upgraded || []).length,
+        deleted: (rep.deleted || []).length,
+        notable: (rep.notable || []).length,
+      },
+      report: rep,
+    };
+  }
+
   const appId = DEFAULT_APP_ID();
   const norm = (s) => (s || '').trim().toLowerCase();
 
@@ -833,6 +991,9 @@ module.exports = {
   // (parseWechatPlanText / importWechatPlan removed 2026-10-07 — no document parsing)
   importWechatIssues,
   recordWechatIssue,
+  recordWechatIssueCreated,
+  recordWechatPublished,
+  nextWechatPeriod,
   clearPlatform,
   publishedSlugs,
   filterUnpublished,
