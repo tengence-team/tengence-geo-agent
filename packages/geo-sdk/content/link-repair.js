@@ -290,17 +290,37 @@ async function repairMapping(opts = {}) {
   });
 
   const changed = [];
+  const cleared = [];
   const unresolved = [];
   for (const r of rows) {
     let real = null;
-    try {
-      real = await t.wp.plugin.findPostByLanguage(r.slug, normLang(r.lang), { siteKey });
-    } catch (e) {
-      unresolved.push({ slug: r.slug, lang: r.lang, dbWpPostId: Number(r.wp_post_id), error: e.message });
+    let lookupError = null;
+    // The plugin endpoint occasionally times out; a timeout is NOT "no post exists".
+    // Only a definitive `null` answer may clear a mapping, so retry the failures.
+    for (let attempt = 0; attempt < 3 && !real; attempt++) {
+      try {
+        real = await t.wp.plugin.findPostByLanguage(r.slug, normLang(r.lang), { siteKey });
+        lookupError = null;
+        break;
+      } catch (e) {
+        lookupError = e;
+        await new Promise((res) => setTimeout(res, 300 * (attempt + 1)));
+      }
+    }
+    if (!real && lookupError) {
+      unresolved.push({ slug: r.slug, lang: r.lang, dbWpPostId: Number(r.wp_post_id), error: lookupError.message });
       continue;
     }
     if (!real || !real.id) {
-      unresolved.push({ slug: r.slug, lang: r.lang, dbWpPostId: Number(r.wp_post_id), error: 'not found on WP' });
+      // Definitive: this language has no WordPress post at all, so the id on this row
+      // belongs to another language's post (the pollution case). Clearing it stops the
+      // row from borrowing somebody else's body/status; it does not change the row status.
+      cleared.push({ slug: r.slug, lang: r.lang, from: Number(r.wp_post_id), reason: 'no WP post for this language' });
+      if (!dryRun) {
+        await t.db.withConn(async (conn) => {
+          await conn.query('UPDATE tengence_geo_articles SET wp_post_id = 0 WHERE id = ?', [r.id]);
+        });
+      }
       continue;
     }
     const realId = Number(real.id);
@@ -329,7 +349,7 @@ async function repairMapping(opts = {}) {
     });
   }
 
-  return { ok: true, dryRun, checked: rows.length, changed, unresolved, mismatchedDuplicates };
+  return { ok: true, dryRun, checked: rows.length, changed, cleared, unresolved, mismatchedDuplicates };
 }
 
 /**

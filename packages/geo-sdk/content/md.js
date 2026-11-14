@@ -778,6 +778,9 @@ function normalizeArticleUrlForCompare(u) {
  */
 const TEN_INTERNAL_URL_RE = /(?:https?:)?\/\/(?:www\.)?tengence\.com\/(?:(zh-hans|zh-hant|en)\/)?([^\s)\]"'<>]*)/gi;
 
+/** 相对站内文章链接：group1 = 前置分隔符，group2 = 语言段，group3 = slug */
+const REL_ARTICLE_RE = /(^|[^A-Za-z0-9:.\/_-])\/(?:(zh-hans|zh-hant|en)\/)?blog\/article\/([a-z0-9][a-z0-9-]*)(?:\/?)(?![a-z0-9-])/gi;
+
 /** 资产 / 后台路径不是"页面内链"，语言段规则不适用 */
 const NON_PAGE_PATH_RE = /^(?:wp-(?:content|includes|json|admin)|assets|static|uploads|media|images|favicon|robots|sitemap)/i;
 
@@ -832,6 +835,24 @@ function internalLinkLanguageIssues(text, lang) {
       soft.push({ href: m[0], path: '/' + pathOnly, expected, found: '(none)' });
     }
   }
+  // Relative article links (`](/blog/article/x/)`, `href="/en/blog/article/x/"`) carry the
+  // same defect as absolute ones: no prefix means "fall through to the default language".
+  // The leading delimiter keeps this from double-counting absolute URLs (there the
+  // character before the slash is a domain character, which this pattern rejects).
+  const rel = new RegExp(REL_ARTICLE_RE.source, 'gi');
+  while ((m = rel.exec(clean)) !== null) {
+    const delim = m[1] || '';
+    const found = String(m[2] || '').toLowerCase();
+    const slug = String(m[3] || '').toLowerCase();
+    if (found === expected) continue;
+    hard.push({
+      kind: found ? 'article-wrong-lang' : 'article-missing-lang',
+      href: (delim + '/').replace(/^[\s("'=]/,'') + (found ? found + '/' : '') + 'blog/article/' + slug + '/',
+      slug,
+      expected,
+      found: found || '(none)',
+    });
+  }
   return { hard, soft };
 }
 
@@ -855,10 +876,13 @@ function articlePrefixIssues(text, lang) {
  */
 function rewriteInternalArticleLinks(text, lang) {
   const prefix = langToPrefix(lang);
-  return String(text || '').replace(
+  let out = String(text || '').replace(
     /((?:https?:)?\/\/(?:www\.)?tengence\.com\/)(?:(?:zh-hans|zh-hant|en)\/)?blog\/article\/([a-z0-9][a-z0-9-]*)(?:(\/)?)(?![a-z0-9-])/gi,
     (m0, host, slug) => `${host}${prefix}/blog/article/${slug}/`
   );
+  // relative form: keep the delimiter, normalise the language segment
+  out = out.replace(REL_ARTICLE_RE, (m0, delim, _lang, slug) => `${delim}/${prefix}/blog/article/${slug}/`);
+  return out;
 }
 
 /**

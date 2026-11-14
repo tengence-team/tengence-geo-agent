@@ -66,3 +66,22 @@ test('articlePrefixIssues (T10) is the same rule, article links only', () => {
   assert.equal(issues.length, 1); // the /en/pricing page link is not a T10 concern
   assert.equal(issues[0].slug, 'x');
 });
+
+test('relative article links are judged and rewritten too (site-root href, no domain)', () => {
+  const body = ['[a](/blog/article/bare-rel/)', '[b](/en/blog/article/wrong-rel/)', '[c](/zh-hans/blog/article/ok-rel/)'].join('\n');
+  const r = md.internalLinkLanguageIssues(body, 'zh-hans');
+  assert.equal(r.hard.length, 2);
+  assert.deepEqual(r.hard.map((h) => h.kind).sort(), ['article-missing-lang', 'article-wrong-lang']);
+  const once = md.rewriteInternalArticleLinks(body, 'zh-hans');
+  assert.equal(md.internalLinkLanguageIssues(once, 'zh-hans').hard.length, 0);
+  assert.match(once, /\/zh-hans\/blog\/article\/bare-rel\//);
+  assert.equal(once.includes('//'), false, 'no doubled slash');
+  assert.equal(md.rewriteInternalArticleLinks(once, 'zh-hans'), once);
+});
+
+test('relative rewrite never touches an absolute URL twice', () => {
+  const body = '[a](https://www.tengence.com/blog/article/abs/)';
+  const once = md.rewriteInternalArticleLinks(body, 'en');
+  assert.equal(once, '[a](https://www.tengence.com/en/blog/article/abs/)');
+  assert.equal(md.internalLinkLanguageIssues(once, 'en').hard.length, 0);
+});
