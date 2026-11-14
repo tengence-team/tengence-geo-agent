@@ -39,6 +39,8 @@ const {
   // 2026-10-06: internal-link prefix + CTA layout rules (same predicates as the
   // translation gate T10/T11 — SSOT lives in content/md.js)
   internalLinkLanguageIssues,
+  malformedLinkSyntax,
+  bodyLanguageIssue,
   ctaPipeIssues,
 } = require('../content/md');
 const { checkTagSemantics } = require('./tag-semantics');
@@ -479,6 +481,8 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // so the writing gate and the publish gate can never drift apart.
   const linkLang = internalLinkLanguageIssues(md, LANG);
   const linkIssues = linkLang.hard;
+  const badLinks = malformedLinkSyntax(md);
+  const bodyLang = bodyLanguageIssue(md, LANG);
   const ctaIssues = ctaPipeIssues(md);
   // target existence (WP entity check): every own-language-prefixed article link's
   // target (slug+lang) must have an articles row with wp_post_id > 0. Draft targets
@@ -734,6 +738,14 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
       true,
     ],
     ['internal-link targets exist in WP (hard)', missingTargets.length ? missingTargets.join(', ') : 'ok', missingTargets.length === 0],
+    // 2026-11-15 malformed markdown links: `了解[通智搜索]( https://…）` renders the raw
+    // English URL as the link text and may carry a 404 anchor. ALWAYS hard — a reader
+    // sees the defect on the live page, so an already-published row must not demote it.
+    ['markdown links well-formed (hard)', badLinks.length ? badLinks.length + ' malformed: ' + badLinks.slice(0, 3).map((x) => x.kind + ' ' + x.snippet).join(' | ') : 'ok', badLinks.length === 0, false, true],
+    // 2026-11-15 body language must match the declared language: a zh-hans post carrying
+    // the English body makes every same-language internal link land on English content
+    // (voice-search-optimization-2026 incident). ALWAYS hard, same reasoning as above.
+    ['body language matches declared language (hard)', bodyLang.ok ? 'ok (' + bodyLang.han + ' Han / ' + bodyLang.en + ' latin / ' + bodyLang.tr + ' hant)' : bodyLang.reason, bodyLang.ok, false, true],
     ['related-reading duplicate internal links (hard)', relatedDups.length ? relatedDups.join(', ') : 'ok', relatedDups.length === 0],
     ['CTA block single link per line (hard)', ctaIssues.length ? ctaIssues.length + ' violations' : 'ok', ctaIssues.length === 0],
   ];

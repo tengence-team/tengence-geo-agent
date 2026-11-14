@@ -691,7 +691,7 @@ const tools = [
     annotations: { readOnlyHint: false },
     structured: true,
     description:
-      'Two maintenance fixes that belong to the internal-link rules, both defaulting to READ-ONLY (dryRun=true). ' +
+      'Three maintenance fixes that belong to the internal-link rules, all defaulting to READ-ONLY (dryRun=true). ' +
       'mode="mapping": repair the polluted articles.wp_post_id mapping — each row is resolved through the plugin multilingual endpoint ' +
       '(slug + lang) and rewritten only when the id genuinely differs (the column is copied across language rows by the legacy translation flow). ' +
       'mode="dead": replace dead internal article targets (pre-existing 404s) with live same-language articles given by `replace` ' +
@@ -699,7 +699,7 @@ const tools = [
       'Both modes rewrite the DB body and the live WP content of the resolved post.',
     inputSchema: z.object({
       site: siteField,
-      mode: z.enum(['mapping', 'dead']).describe('mapping = fix articles.wp_post_id; dead = replace dead internal article targets'),
+      mode: z.enum(['mapping', 'dead', 'malformed']).describe('mapping = fix articles.wp_post_id; dead = replace dead internal article targets; malformed = repair broken Markdown link syntax (raw-URL link text / Chinese close bracket / truncated product URL)'),
       apply: z.boolean().optional().describe('false (default) = dry run (report only); true = write'),
       replace: z.record(z.string(), z.string()).optional().describe('mode=dead: { "<dead-slug>": "<live-slug>" }'),
       slugs: z.array(z.object({ slug: z.string(), lang: z.string().optional() })).optional().describe('limit the operation to these rows'),
@@ -719,6 +719,12 @@ const tools = [
           const r = await t.linkAudit.repairMapping({
             appId, site: S.siteKey, dryRun,
             slug: args.slugs && args.slugs.length === 1 ? args.slugs[0].slug : undefined,
+          });
+          return okStructured(r);
+        }
+        if (args.mode === 'malformed') {
+          const r = await t.linkAudit.repairMalformed({
+            appId, site: S.siteKey, dryRun, slugs: args.slugs || null,
           });
           return okStructured(r);
         }

@@ -259,6 +259,107 @@ async function repairLinks(opts = {}) {
 }
 
 /**
+ * Repair the malformed-Markdown-link family (2026-11-15).
+ *
+ * Real incident: `了解[通智搜索]( https://www.tengence.com/tengence-search）。` ships as
+ * `<a href="…tengence-search）。">https://…tengence-search）。</a>` — the reader sees a raw
+ * English URL where a Chinese label belongs, and the anchor is a 404. Three shapes:
+ *   · Chinese "）" where ")" was meant;
+ *   · whitespace after "](";
+ *   · a truncated product URL (`/tengence`, a 404) or a nested half-escaped link.
+ * Every row is rewritten with md.fixMalformedLinks and re-checked with
+ * md.malformedLinkSyntax, so a write never leaves a half-fixed body behind.
+ *
+ * @param {{appId?:number, site?:string, dryRun?:boolean, slugs?:Array<object|string>,
+ *   includeWp?:boolean}} [opts]
+ */
+async function repairMalformed(opts = {}) {
+  const t = require('../index');
+  const appId = parseInt(opts.appId || process.env.APP_ID || '1', 10);
+  const dryRun = opts.dryRun !== false;
+  const siteKey = opts.site || null;
+  let wanted = null;
+  if (Array.isArray(opts.slugs) && opts.slugs.length) {
+    wanted = opts.slugs.map((s) => (typeof s === 'string' ? { slug: s, lang: null } : { slug: String(s.slug), lang: s.lang ? normLang(s.lang) : null }));
+  }
+
+  const rows = await t.db.withConn(async (conn) => {
+    const [list] = await conn.query(
+      'SELECT id, slug, lang, wp_post_id, content_longtext FROM tengence_geo_articles WHERE app_id = ?',
+      [appId]
+    );
+    return list || [];
+  });
+
+  const results = [];
+  for (const row of rows) {
+    if (wanted && !wanted.some((w) => w.slug === row.slug && (!w.lang || w.lang === row.lang))) continue;
+    const issues = md.malformedLinkSyntax(row.content_longtext || '');
+    if (!issues.length) continue;
+
+    const newBody = md.fixMalformedLinks(row.content_longtext || '', row.lang);
+    const remaining = md.malformedLinkSyntax(newBody);
+    const entry = {
+      slug: row.slug, lang: row.lang, wp_post_id: row.wp_post_id || null,
+      found: issues.map((x) => x.kind), changed: newBody !== row.content_longtext,
+    };
+    if (remaining.length) {
+      entry.ok = false;
+      entry.remaining = remaining;
+      results.push(entry);
+      continue;
+    }
+    if (dryRun) { entry.ok = true; entry.dryRun = true; results.push(entry); continue; }
+
+    if (newBody !== row.content_longtext) {
+      await t.db.withConn(async (conn) => {
+        await conn.query('UPDATE tengence_geo_articles SET content_longtext = ? WHERE id = ?', [newBody, row.id]);
+      });
+    }
+
+    if (opts.includeWp !== false) {
+      let wpPostId = null;
+      try {
+        const real = await t.wp.plugin.findPostByLanguage(row.slug, row.lang, { siteKey });
+        if (real && real.id) wpPostId = Number(real.id);
+      } catch { wpPostId = null; }
+      if (!wpPostId && Number(row.wp_post_id) > 0) wpPostId = Number(row.wp_post_id);
+      if (wpPostId) {
+        try {
+          const post = await t.wp.api(`/posts/${wpPostId}?_fields=id,status,content`, { siteKey });
+          const rawHtml = (post.content && (post.content.raw || post.content.rendered)) || '';
+          const newHtml = md.fixMalformedLinks(rawHtml, row.lang);
+          entry.wpPostId = wpPostId;
+          entry.wpStatus = post.status;
+          if (md.malformedLinkSyntax(md.htmlToMarkdown ? md.htmlToMarkdown(newHtml) : newHtml).length) {
+            entry.ok = false;
+            entry.wp = 'not updated: WP HTML still malformed';
+          } else if (newHtml !== rawHtml) {
+            await t.wp.api(`/posts/${wpPostId}`, { method: 'POST', siteKey, body: { content: newHtml } });
+            entry.wp = 'content updated';
+          } else {
+            entry.wp = 'already correct';
+          }
+        } catch (e) {
+          entry.ok = false;
+          entry.wp = 'error: ' + e.message;
+        }
+      }
+    }
+    if (entry.ok === undefined) entry.ok = true;
+    results.push(entry);
+  }
+
+  return {
+    ok: results.every((r) => r.ok !== false),
+    dryRun,
+    scanned: rows.length,
+    targetCount: results.length,
+    results,
+  };
+}
+
+/**
  * Repair the `articles.wp_post_id` mapping itself.
  *
  * Known pitfall: one slug's three language rows can carry the SAME wp_post_id (or the
@@ -462,4 +563,4 @@ async function repairDeadTargets(opts = {}) {
   return { ok: results.every((r) => r.ok !== false), dryRun, affected: results.length, results };
 }
 
-module.exports = { auditLinks, repairLinks, repairMapping, repairDeadTargets, normLang };
+module.exports = { auditLinks, repairLinks, repairMapping, repairDeadTargets, repairMalformed, normLang };

@@ -874,6 +874,101 @@ function articlePrefixIssues(text, lang) {
  * @param {string} text Markdown 或 HTML 文本
  * @param {string} lang 文章语言
  */
+/**
+ * Malformed Markdown link syntax that renders a bare URL as the link text.
+ * Two shapes shipped in real articles:
+ *   `了解[通智搜索]( https://…）`  → space after "(", Chinese "）" instead of ")"
+ *   `[https://…)，说明](https://…\)…)` → nested/broken link, renders as escaped garbage
+ * A body that hits this shows readers a raw English URL, and the anchor may point at a
+ * 404. Detected here (SSOT) so the writing/publish gate can refuse it.
+ * @param {string} text
+ * @returns {Array<{kind:string, snippet:string}>}
+ */
+function malformedLinkSyntax(text) {
+  const clean = stripFencedCode(text);
+  const out = [];
+  let m;
+  const space = /\]\(\s+(?=(?:https?:\/\/|\/|www\.))/g;
+  while ((m = space.exec(clean)) !== null) {
+    out.push({ kind: 'space-after-paren', snippet: clean.slice(m.index, m.index + 60) });
+  }
+  const cnClose = /\]\(((?:https?:\/\/|\/)[^)\s]*)[）]/g;
+  while ((m = cnClose.exec(clean)) !== null) {
+    out.push({ kind: 'chinese-close', snippet: m[0].slice(0, 60) });
+  }
+  const nested = /\[[^\]]*(?:https?:\/\/[^\]]*)[）)]，[^\]]*\]\(/g;
+  while ((m = nested.exec(clean)) !== null) {
+    out.push({ kind: 'nested', snippet: m[0].slice(0, 60) });
+  }
+  return out;
+}
+
+/**
+ * Body language vs. declared language.
+ * A zh-hans row whose WP body is the English copy (or a zh-hant row still in simplified)
+ * makes every same-language internal link point readers at the wrong-language page —
+ * the link prefix is correct, the target content is not. Caught here as one SSOT rule
+ * shared by the writing gate and the publish gate.
+ * @param {string} text markdown body
+ * @param {string} lang  zh-hans | zh-hant | en
+ * @returns {{ok:boolean, lang:string, han:number, en:number, tr:number, reason?:string}}
+ */
+function bodyLanguageIssue(text, lang) {
+  const raw = String(text || '');
+  // code fences carry API examples / shell lines: they are language-neutral noise
+  const plain = stripFencedCode(raw).replace(/https?:\/\/\S+/g, ' ').replace(/<[^>]+>/g, ' ');
+  const han = (plain.match(/[\u4e00-\u9fff]/g) || []).length;
+  const en = (plain.match(/[A-Za-z]/g) || []).length;
+  const TR_CHARS = '們與這個學實現據麼還裡對於將為說時間會體發點條種變開關進導產業務資訊網絡';
+  const tr = [...TR_CHARS].reduce((n, ch) => n + plain.split(ch).length - 1, 0);
+  const res = { ok: true, lang, han, en, tr };
+  if (lang === 'en') {
+    if (han > 200 && han > en * 0.5) return { ...res, ok: false, reason: 'body is predominantly Chinese (' + han + ' Han vs ' + en + ' latin)' };
+  } else if (lang === 'zh-hans') {
+    if (en > 500 && en > han * 1.5) return { ...res, ok: false, reason: 'body is predominantly English (' + en + ' latin vs ' + han + ' Han)' };
+    if (han > 200 && tr > han * 0.15) return { ...res, ok: false, reason: 'body looks traditional Chinese (' + tr + ' hant markers / ' + han + ' Han)' };
+  } else if (lang === 'zh-hant') {
+    if (han > 100 && tr < han * 0.02) return { ...res, ok: false, reason: 'body looks simplified Chinese (' + tr + ' hant markers / ' + han + ' Han)' };
+    if (en > 500 && en > han * 1.5) return { ...res, ok: false, reason: 'body is predominantly English (' + en + ' latin vs ' + han + ' Han)' };
+  }
+  return res;
+}
+
+/**
+ * Repair the malformed-link family detected by malformedLinkSyntax.
+ * Rules (in order):
+ *   1. dead product anchor (`/tengence` is a 404)      → drop the link, keep the label text
+ *   2. nested garbage `([url)，说明](url\)%EF…)`         → collapse to `(url)`
+ *   3. Chinese "）" where ")" was meant                  → `](url)`
+ *   4. whitespace right after "]("                        → "]("
+ *   5. product pages carrying no language segment         → add this article's prefix
+ *      (product pages must NOT take a trailing slash: `<lang>/tengence-search/` answers 403)
+ * @param {string} text
+ * @param {string} lang zh-hans | zh-hant | en
+ * @returns {string}
+ */
+function fixMalformedLinks(text, lang) {
+  const prefix = langToPrefix(lang);
+  let out = String(text || '');
+  // 1. dead truncated product URL — no live page exists, so unlink and keep the words
+  out = out.replace(/\[([^\]]*)\]\(https?:\/\/(?:www\.)?tengence\.com\/tengence(?![\w-])）?\)?/g, '$1');
+  // 2. nested garbage produced by a half-escaped link inside link text
+  out = out.replace(/\(\[(https?:\/\/[^\]，]+)，[^\]]*\]\(.*?\)(?=\s|$)/g, '($1)');
+  // 3. whitespace immediately after "](" — must run BEFORE the bracket fix below,
+  //    otherwise "]( https://…）" never matches the link shape at all
+  out = out.replace(/\]\(\s+(?=(?:https?:\/\/|\/|www\.))/g, '](');
+  // 4. Chinese closing bracket where the markdown link should close
+  out = out.replace(/\]\(((?:https?:\/\/|\/)[^)\s]*)）(?=[。，、；：\n]|$)/g, ']($1)');
+  // 4b. a repair may leave a doubled "))" right after a bare URL
+  out = out.replace(/(\(https?:\/\/[^)\s]+\))\)+/g, '$1');
+  // 5. product page language segment (never a trailing slash — that shape answers 403)
+  out = out.replace(
+    /https?:\/\/(?:www\.)?tengence\.com\/(tengence-search|tengence-geo)(?![\w/-])/g,
+    (m0, p) => `https://www.tengence.com/${prefix}/${p}`
+  );
+  return out;
+}
+
 function rewriteInternalArticleLinks(text, lang) {
   const prefix = langToPrefix(lang);
   let out = String(text || '').replace(
@@ -1546,6 +1641,9 @@ module.exports = {
   extractUrls,
   normalizeArticleUrlForCompare,
   articlePrefixIssues,
+  malformedLinkSyntax,
+  bodyLanguageIssue,
+  fixMalformedLinks,
   // 2026-11-14 internal-link language SSOT: one rule for authoring gate, publish gate,
   // translation T10 and the historical repair tooling.
   internalLinkLanguageIssues,
