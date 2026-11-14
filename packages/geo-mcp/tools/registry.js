@@ -1239,7 +1239,18 @@ const tools = [
         // do not touch status are unaffected. The DB row is the authority for
         // slug+lang (B7 cascade resolves the research brief); when only a wp_post_id
         // is given, the slug is read back from WP.
-        if (wpBody.status === 'publish') {
+        // Only a real transition INTO publish must pass the gate. A body/meta write on a
+        // post that is ALREADY published does not flip anything — and gating it made
+        // legitimate repairs (correcting a wrong-language body) impossible to ship, which
+        // is how 11 English-bodied zh-hans posts stayed broken.
+        let preStatus = null;
+        if (postId) {
+          try {
+            const pre = await t.wp.posts.get(postId, '?_fields=id,status', { siteKey });
+            preStatus = (pre && pre.status) || null;
+          } catch { preStatus = null; }
+        }
+        if (wpBody.status === 'publish' && preStatus !== 'publish') {
           let slug = dbRow ? dbRow.slug : null;
           let lang = args.lang || (dbRow && dbRow.lang) || null;
           if (!slug && postId) {
