@@ -170,13 +170,17 @@ Rules:
 5. Off-site links (citations) use HTML `<a>` with
    `target="_blank" rel="noopener noreferrer"`.
 6. **Every on-site article link carries this article's own language prefix**
-   (2026-10-06, gate-enforced): zh-hans → `/zh-hans/blog/article/<slug>/`, en →
-   `/en/blog/article/<slug>/`, zh-hant → `/zh-hant/blog/article/<slug>/`. Bare links
-   (`/blog/article/<slug>/`) and links carrying another language's prefix are
-   violations — internal links must stay inside the same language, never hop
-   between languages. The publish chain normalizes the prefix automatically on the
-   WP write exit (`buildPostHtml`), and the gates (`check_article` rows + the
-   translation gate T10) verify the md source.
+   (2026-10-06, gate-enforced; **always hard since 2026-11-14, re-publish included**):
+   zh-hans → `/zh-hans/blog/article/<slug>/`, en → `/en/blog/article/<slug>/`,
+   zh-hant → `/zh-hant/blog/article/<slug>/`. Bare links (`/blog/article/<slug>/`,
+   which silently fall through to the site default language) and links carrying
+   another language's prefix are violations — internal links must stay inside the
+   same language, never hop between languages. The rule lives in ONE place
+   (`geo-sdk content/md.js::internalLinkLanguageIssues`): `check_article` (authoring,
+   ingest preview and every publish path) and the translation gate T10 read it, and
+   `article_links_audit` (MCP) lists/repairs historical bodies with the same function.
+   The publish chain still normalizes the prefix on the WP write exit (`buildPostHtml`),
+   but normalization is a safety net, never a substitute for a clean md source.
 7. **Related Reading only carries own-site article URLs** (2026-11-04, hard-gated):
    every item must be `tengence.com/<lang>/blog/article/<slug>/`. External links and
    site-top-level links (e.g. `perplexity.ai/`, `docs.anthropic.com/`,

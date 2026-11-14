@@ -773,23 +773,92 @@ function normalizeArticleUrlForCompare(u) {
 }
 
 /**
+ * 站内绝对链接（语言段可缺省）：group1 = 语言段，group2 = 域名之后的路径。
+ * 用于"内链语言必须与文章语言一致"的 SSOT 判定（文章内链 + 其它站内页面）。
+ */
+const TEN_INTERNAL_URL_RE = /(?:https?:)?\/\/(?:www\.)?tengence\.com\/(?:(zh-hans|zh-hant|en)\/)?([^\s)\]"'<>]*)/gi;
+
+/** 资产 / 后台路径不是"页面内链"，语言段规则不适用 */
+const NON_PAGE_PATH_RE = /^(?:wp-(?:content|includes|json|admin)|assets|static|uploads|media|images|favicon|robots|sitemap)/i;
+
+/** 剥离围栏代码与行内代码：示例 URL 不是真实内链，不进语言判定 */
+function stripFencedCode(text) {
+  return String(text || '').replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]*`/g, '');
+}
+
+/**
+ * 站内内链语言的 SSOT 判定（写稿门禁 / 发布门禁 / 译文 T10 / 历史修复共用）。
+ *
+ * 规则：一条站内链接的语言段必须等于文章自身语言。
+ *  - 文章链接 `tengence.com/<lang>/blog/article/<slug>/`：
+ *      缺语言段（裸链，落到默认语言）或写成别的语言 → hard（article-missing-lang /
+ *      article-wrong-lang）。这正是"简体文章链到英文页"的线上缺陷。
+ *  - 其它站内页面 `tengence.com/<lang>/…`：语言段与文章语言不一致 → hard
+ *      （page-wrong-lang）；缺语言段 → soft（页面可能语言无关，只提示不拦）。
+ *  - 资产 / 后台路径不判定；代码块内的示例 URL 不判定。
+ *
+ * @param {string} text Markdown 或 HTML 正文
+ * @param {string} lang 文章语言（zh-hans | zh-hant | en）
+ * @returns {{hard: Array<object>, soft: Array<object>}}
+ */
+function internalLinkLanguageIssues(text, lang) {
+  const expected = langToPrefix(lang);
+  const clean = stripFencedCode(text);
+  const hard = [];
+  const soft = [];
+  let m;
+  const re = new RegExp(TEN_INTERNAL_URL_RE.source, 'gi');
+  while ((m = re.exec(clean)) !== null) {
+    const found = String(m[1] || '').toLowerCase();
+    const rest = String(m[2] || '');
+    const pathOnly = rest.split(/[?#]/)[0];
+    const art = pathOnly.match(/^blog\/article\/([a-z0-9][a-z0-9-]*)\/?$/i);
+    if (art) {
+      if (found !== expected) {
+        hard.push({
+          kind: found ? 'article-wrong-lang' : 'article-missing-lang',
+          href: m[0].replace(/[.,;]$/, ''),
+          slug: art[1].toLowerCase(),
+          expected,
+          found: found || '(none)',
+        });
+      }
+      continue;
+    }
+    if (!pathOnly || NON_PAGE_PATH_RE.test(pathOnly)) continue;
+    if (found && found !== expected) {
+      hard.push({ kind: 'page-wrong-lang', href: m[0], path: '/' + pathOnly, expected, found });
+    } else if (!found) {
+      soft.push({ href: m[0], path: '/' + pathOnly, expected, found: '(none)' });
+    }
+  }
+  return { hard, soft };
+}
+
+/**
  * 站内文章链接的语言前缀问题清单。
  * 返回 [{href, slug, expected, found}]；found 缺失（裸链）或非本文语言前缀时列入。
  * @param {string} text Markdown 或 HTML 文本
  * @param {string} lang 文章语言
  */
 function articlePrefixIssues(text, lang) {
-  const expected = langToPrefix(lang);
-  const out = [];
-  let m;
-  const re = new RegExp(TEN_ARTICLE_URL_RE.source, 'gi');
-  while ((m = re.exec(String(text || ''))) !== null) {
-    const found = (m[1] || '').replace(/\/$/, '');
-    if (found !== expected) {
-      out.push({ href: m[0], slug: m[2], expected, found: found || '(none)' });
-    }
-  }
-  return out;
+  return internalLinkLanguageIssues(text, lang)
+    .hard.filter((x) => x.kind === 'article-missing-lang' || x.kind === 'article-wrong-lang')
+    .map((x) => ({ href: x.href, slug: x.slug, expected: x.expected, found: x.found }));
+}
+
+/**
+ * 把正文里的站内文章链接改写成文章自身语言前缀（Markdown 与 HTML 通用）。
+ * 历史修复脚本与写 WP 前的归一化共用同一套规则；幂等。
+ * @param {string} text Markdown 或 HTML 文本
+ * @param {string} lang 文章语言
+ */
+function rewriteInternalArticleLinks(text, lang) {
+  const prefix = langToPrefix(lang);
+  return String(text || '').replace(
+    /((?:https?:)?\/\/(?:www\.)?tengence\.com\/)(?:(?:zh-hans|zh-hant|en)\/)?blog\/article\/([a-z0-9][a-z0-9-]*)(?:(\/)?)(?![a-z0-9-])/gi,
+    (m0, host, slug) => `${host}${prefix}/blog/article/${slug}/`
+  );
 }
 
 /**
@@ -1453,6 +1522,10 @@ module.exports = {
   extractUrls,
   normalizeArticleUrlForCompare,
   articlePrefixIssues,
+  // 2026-11-14 internal-link language SSOT: one rule for authoring gate, publish gate,
+  // translation T10 and the historical repair tooling.
+  internalLinkLanguageIssues,
+  rewriteInternalArticleLinks,
   ctaPipeIssues,
   // 2026-10-27 CSDN zero-link policy: strip ALL hyperlinks, keep images
   stripAllLinks,

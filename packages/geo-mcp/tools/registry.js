@@ -626,6 +626,65 @@ const tools = [
       }
     },
   },
+  {
+    // 2026-11-14: the maintenance side of the internal-link language rule. The
+    // judgement itself is the SSOT used by check_article (writing + publish) and
+    // translation T10 — this tool only lists, and (with apply=true) rewrites.
+    name: 'article_links_audit',
+    title: '内链语言审计与修复',
+    annotations: { readOnlyHint: false },
+    structured: true,
+    description:
+      'Audit EVERY article body (drafts + published, all languages) for on-site links whose language prefix does not match the body language ' +
+      '(a zh-hans article linking to /en/blog/article/… or to a bare /blog/article/… that falls through to the default language). ' +
+      'Uses the same rule (geo-sdk content/md internalLinkLanguageIssues) as the check_article gate and translation T10, so the audit can never disagree with the gate. ' +
+      'Default apply=false = READ-ONLY list (slug / lang / offending links / affected counts). With apply=true it rewrites articles.content_longtext and, for published rows, the live WP post content, then re-verifies. ' +
+      'Pass slugs to limit the blast radius to an explicit list.',
+    inputSchema: z.object({
+      site: siteField,
+      apply: z.boolean().optional().describe('false (default) = read-only audit; true = rewrite DB md + live WP content for the rows in scope'),
+      slugs: z.array(z.object({ slug: z.string(), lang: z.string().optional() })).optional().describe('limit the operation to these rows (slug + optional lang)'),
+      langs: z.array(z.string()).optional().describe('limit the audit to these languages (zh-hans|zh-hant|en)'),
+      include_wp: z.boolean().optional().describe('also read the LIVE WP content of published rows (slower; the reader-facing surface can drift from the DB body)'),
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const appId = parseInt(process.env.APP_ID || '1', 10);
+        if (args.langs && args.langs.length) {
+          for (const l of args.langs) {
+            const e = langReject(l);
+            if (e) return fail(new Error(e));
+          }
+        }
+        if (args.apply) {
+          const r = await t.linkAudit.repairLinks({
+            appId,
+            site: S.siteKey,
+            slugs: args.slugs || null,
+            langs: args.langs && args.langs.length ? args.langs.map(langNorm) : undefined,
+            dryRun: false,
+          });
+          return okStructured(r);
+        }
+        const r = await t.linkAudit.auditLinks({
+          appId,
+          langs: args.langs && args.langs.length ? args.langs.map(langNorm) : undefined,
+          slug: args.slugs && args.slugs.length === 1 ? args.slugs[0].slug : undefined,
+          includeWp: !!args.include_wp,
+          site: S.siteKey,
+        });
+        // Single-slug audit: only the requested lang(s) are relevant.
+        if (args.slugs && args.slugs.length) {
+          r.affected = r.affected.filter((a) => args.slugs.some((w) => w.slug === a.slug && (!w.lang || langNorm(w.lang) === a.lang)));
+        }
+        return okStructured({ ok: true, apply: false, ...r });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
 
   // ---------- translation (multilingual v1) ----------
   {
@@ -3843,7 +3902,7 @@ const TOOL_GROUPS = [
   { group: 'Workspace & Site', match: /^(workspace_use|site_|db_|diagnose_site)/ },
   {
     group: 'Content authoring & gate',
-    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_state_read|article_state_audit|check_article|check_translation|translation_glossary_get|wp_post_get)/,
+    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_links_audit|article_state_read|article_state_audit|check_article|check_translation|translation_glossary_get|wp_post_get)/,
   },
   { group: 'Publishing (WordPress)', match: /^publish_/ },
   { group: 'Search inclusion & analytics', match: /^(search_|webmaster_)/ },

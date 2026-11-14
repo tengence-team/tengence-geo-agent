@@ -38,7 +38,7 @@ const {
   isFaqHeading,
   // 2026-10-06: internal-link prefix + CTA layout rules (same predicates as the
   // translation gate T10/T11 — SSOT lives in content/md.js)
-  articlePrefixIssues,
+  internalLinkLanguageIssues,
   ctaPipeIssues,
 } = require('../content/md');
 const { checkTagSemantics } = require('./tag-semantics');
@@ -467,12 +467,18 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   const wcOk = cn >= typeInfo.range[0] && cn <= typeInfo.range[1];
   const wcLabel = 'Chinese char count (' + typeInfo.label + ' ' + typeInfo.range[0] + '–' + typeInfo.range[1] + ')';
 
-  // ===== internal-link language prefix + CTA layout (2026-10-06) =====
-  // New publishing requirements: on-site article links must carry the article's own
-  // language prefix (same-language internal linking, no cross-language hops) and the
-  // CTA block must list each link on its own line. Enforced on the authoring md;
-  // the same rules are checked for translations by the T10/T11 translation gate.
-  const linkIssues = articlePrefixIssues(md, LANG);
+  // ===== internal-link language prefix + CTA layout (2026-10-06, hardened 2026-11-14) =====
+  // SSOT rule (content/md.js internalLinkLanguageIssues): every on-site link must carry
+  // the ARTICLE'S OWN language prefix —
+  //   · article links (…/blog/article/<slug>) with no prefix (bare URL falls through to
+  //     the default language) or with another language's prefix → hard violation
+  //     (a zh-hans article must never link to /en/blog/article/… or to a bare /blog/…);
+  //   · other on-site pages carrying another language prefix → hard violation;
+  //   · other on-site pages without any language prefix → advisory (may be language-agnostic).
+  // The same function drives the translation gate (T10) and the historical repair CLI,
+  // so the writing gate and the publish gate can never drift apart.
+  const linkLang = internalLinkLanguageIssues(md, LANG);
+  const linkIssues = linkLang.hard;
   const ctaIssues = ctaPipeIssues(md);
   // target existence (WP entity check): every own-language-prefixed article link's
   // target (slug+lang) must have an articles row with wp_post_id > 0. Draft targets
@@ -709,7 +715,24 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     ['related-reading links own-site article only (hard)', relBad.length ? relBad.join(', ') : 'ok', relBad.length === 0, false, true],
     // 2026-10-06 new publishing requirements (hard for first-time publishes; advisory
     // once the article is already on WP, like every other editorial row below)
-    ['internal links carry own-language prefix (hard)', linkIssues.length ? linkIssues.length + ' violations' : 'ok', linkIssues.length === 0],
+    // 2026-11-14 internal-link language is ALWAYS hard (5th element): a live page whose
+    // zh-hans body sends readers to /en/blog/article/… is a reader-facing defect, not a
+    // legacy-format artifact, so an already-published row must not demote it either.
+    [
+      'internal links carry own-language prefix (hard)',
+      linkIssues.length
+        ? linkIssues.length + ' violations: ' + linkIssues.slice(0, 3).map((x) => (x.slug ? '/' + x.slug : x.path) + '→' + x.found).join(', ') + (linkIssues.length > 3 ? ' …' : '')
+        : 'ok',
+      linkIssues.length === 0,
+      false,
+      true,
+    ],
+    [
+      'internal page links without language prefix (advisory)',
+      linkLang.soft.length ? linkLang.soft.length + ' bare: ' + linkLang.soft.slice(0, 3).map((x) => x.path).join(', ') : 'ok',
+      true,
+      true,
+    ],
     ['internal-link targets exist in WP (hard)', missingTargets.length ? missingTargets.join(', ') : 'ok', missingTargets.length === 0],
     ['related-reading duplicate internal links (hard)', relatedDups.length ? relatedDups.join(', ') : 'ok', relatedDups.length === 0],
     ['CTA block single link per line (hard)', ctaIssues.length ? ctaIssues.length + ' violations' : 'ok', ctaIssues.length === 0],
@@ -847,6 +870,13 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
       mismatches: sem.mismatches,
       categoryConflict: sem.categoryConflict,
       reason: sem.reason,
+    },
+    // internal-link language verdict (consumed by the repair CLI / MCP tooling):
+    // hard = must be rewritten before publishing, soft = advisory bare page links
+    linkLang: {
+      expected: (require('../content/md').langToPrefix(LANG)),
+      hard: linkIssues.map((x) => ({ kind: x.kind, slug: x.slug || null, path: x.path || null, href: x.href, found: x.found })),
+      softCount: linkLang.soft.length,
     },
     // unknown --type notice (CLI rendering; byte-identical to pre-sink-down)
     unknownType: typeArg && !typeExplicit ? typeArg : null,

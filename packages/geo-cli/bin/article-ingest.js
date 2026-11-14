@@ -130,7 +130,11 @@ async function main() {
   // publish-gate gaps for authoring reference)
   const planInfo = await t.plan.get(slug);
   const gateDir = (planInfo && planInfo.category) || 'industry-insights';
-  const gate = await t.check.checkArticle({ slug, dir: gateDir });
+  // 2026-11-14: the preview must judge the SAME thing the publish gate will judge —
+  // passing `lang` keeps the internal-link language rule (and every language-specific
+  // row) aligned with the row being written. Omitting it silently graded an en/zh-hant
+  // body against the site default (zh-hans) and reported the wrong verdict.
+  const gate = await t.check.checkArticle({ slug, dir: gateDir, lang });
   console.log('\n🔍 Gate preview (non-blocking at ingest; must all pass before publishing):');
   for (const [k, v, ok, soft] of gate.rows) {
     console.log((ok ? '✅' : (soft ? '⚠️' : '❌')) + ' ' + k + ': ' + v);
