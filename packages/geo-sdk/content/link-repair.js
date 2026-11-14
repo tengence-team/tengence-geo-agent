@@ -258,4 +258,188 @@ async function repairLinks(opts = {}) {
   };
 }
 
-module.exports = { auditLinks, repairLinks, normLang };
+/**
+ * Repair the `articles.wp_post_id` mapping itself.
+ *
+ * Known pitfall: one slug's three language rows can carry the SAME wp_post_id (or the
+ * id of another language's post), because the translation flow once copied the value.
+ * Every write path resolves the real post by slug+language, but the column stays dirty
+ * and misleads everything that trusts it (state audits, re-publishes, dashboards).
+ * This resolves each row through the plugin multilingual endpoint and rewrites only the
+ * rows whose value genuinely differs.
+ *
+ * @param {{appId?:number, site?:string, slug?:string, dryRun?:boolean}} [opts]
+ * @returns {Promise<{ok:boolean, dryRun:boolean, checked:number, changed:Array<object>,
+ *   unresolved:Array<object>, mismatchedDuplicates:number}>}
+ */
+async function repairMapping(opts = {}) {
+  const t = require('../index');
+  const appId = parseInt(opts.appId || process.env.APP_ID || '1', 10);
+  const dryRun = opts.dryRun !== false;
+  const siteKey = opts.site || null;
+
+  const rows = await t.db.withConn(async (conn) => {
+    const where = ['app_id = ?', 'wp_post_id > 0'];
+    const params = [appId];
+    if (opts.slug) { where.push('slug = ?'); params.push(String(opts.slug)); }
+    const [list] = await conn.query(
+      `SELECT id, slug, lang, wp_post_id FROM tengence_geo_articles WHERE ${where.join(' AND ')}`,
+      params
+    );
+    return list || [];
+  });
+
+  const changed = [];
+  const unresolved = [];
+  for (const r of rows) {
+    let real = null;
+    try {
+      real = await t.wp.plugin.findPostByLanguage(r.slug, normLang(r.lang), { siteKey });
+    } catch (e) {
+      unresolved.push({ slug: r.slug, lang: r.lang, dbWpPostId: Number(r.wp_post_id), error: e.message });
+      continue;
+    }
+    if (!real || !real.id) {
+      unresolved.push({ slug: r.slug, lang: r.lang, dbWpPostId: Number(r.wp_post_id), error: 'not found on WP' });
+      continue;
+    }
+    const realId = Number(real.id);
+    if (realId === Number(r.wp_post_id)) continue;
+    changed.push({
+      slug: r.slug, lang: r.lang, from: Number(r.wp_post_id), to: realId,
+      fromStatus: real.status || null,
+    });
+    if (!dryRun) {
+      await t.db.withConn(async (conn) => {
+        await conn.query('UPDATE tengence_geo_articles SET wp_post_id = ? WHERE id = ?', [realId, r.id]);
+      });
+    }
+  }
+
+  // Re-read the mapping to report residual duplicate ids (should be zero after the fix).
+  let mismatchedDuplicates = 0;
+  if (!dryRun) {
+    mismatchedDuplicates = await t.db.withConn(async (conn) => {
+      const [dups] = await conn.query(
+        `SELECT wp_post_id, COUNT(*) c FROM tengence_geo_articles
+          WHERE app_id = ? AND wp_post_id > 0 GROUP BY wp_post_id HAVING c > 1`,
+        [appId]
+      );
+      return (dups || []).length;
+    });
+  }
+
+  return { ok: true, dryRun, checked: rows.length, changed, unresolved, mismatchedDuplicates };
+}
+
+/**
+ * Replace dead internal article targets (pre-existing 404s) with live same-language
+ * articles, both in the DB body and in the live WP content.
+ *
+ * The prefix rule is applied afterwards (rewriteInternalArticleLinks), so the replacement
+ * always lands as the body's own language. Each replacement target is resolved by
+ * slug+language before anything is written: a replacement that is not live in that
+ * language is refused, never silently written as a new 404.
+ *
+ * @param {{appId?:number, site?:string, replace:Record<string,string>,
+ *           slugs?:Array<{slug:string,lang?:string}>|string[], dryRun?:boolean}} opts
+ *   replace: { '<dead-slug>': '<live-slug>' }
+ */
+async function repairDeadTargets(opts = {}) {
+  const t = require('../index');
+  const appId = parseInt(opts.appId || process.env.APP_ID || '1', 10);
+  const dryRun = opts.dryRun !== false;
+  const siteKey = opts.site || null;
+  const replace = opts.replace && typeof opts.replace === 'object' ? opts.replace : {};
+  if (!Object.keys(replace).length) throw new Error('repairDeadTargets requires opts.replace');
+
+  let wanted = null;
+  if (Array.isArray(opts.slugs) && opts.slugs.length) {
+    wanted = opts.slugs.map((s) => (typeof s === 'string' ? { slug: s, lang: null } : { slug: String(s.slug), lang: s.lang ? normLang(s.lang) : null }));
+  }
+
+  const rows = await t.db.withConn(async (conn) => {
+    const [list] = await conn.query(
+      `SELECT id, slug, lang, wp_post_id, content_longtext FROM tengence_geo_articles WHERE app_id = ?`,
+      [appId]
+    );
+    return list || [];
+  });
+
+  const results = [];
+  for (const r of rows) {
+    const lang = normLang(r.lang);
+    if (wanted && !wanted.some((w) => w.slug === r.slug && (!w.lang || w.lang === lang))) continue;
+    const body = String(r.content_longtext || '');
+    const hits = Object.keys(replace).filter((dead) =>
+      new RegExp(`blog/article/${dead}(/|[?#"'\\)]|$)`, 'i').test(body)
+    );
+    if (!hits.length) continue;
+
+    // Verify every replacement is live in THIS language before touching the body.
+    const plan = [];
+    const refused = [];
+    for (const dead of hits) {
+      const live = replace[dead];
+      let post = null;
+      try {
+        post = await t.wp.plugin.findPostByLanguage(live, lang, { siteKey });
+      } catch { post = null; }
+      if (post && post.id) plan.push({ dead, live, wpPostId: Number(post.id) });
+      else refused.push({ dead, live, reason: `not live in ${lang}` });
+    }
+    if (!plan.length) { results.push({ slug: r.slug, lang, refused, changed: false }); continue; }
+
+    let newBody = body;
+    for (const p of plan) {
+      newBody = newBody.replace(new RegExp(`blog/article/${p.dead}(?=/|[?#"'\\)]|$)`, 'gi'), `blog/article/${p.live}`);
+    }
+    newBody = md.rewriteInternalArticleLinks(newBody, lang);
+    const verify = md.internalLinkLanguageIssues(newBody, lang);
+    const entry = { slug: r.slug, lang, plan, refused, changed: newBody !== body, after: verify.hard.length };
+    if (verify.hard.length) {
+      entry.ok = false;
+      results.push(entry);
+      continue;
+    }
+    if (!dryRun && newBody !== body) {
+      await t.db.withConn(async (conn) => {
+        await conn.query('UPDATE tengence_geo_articles SET content_longtext = ? WHERE id = ?', [newBody, r.id]);
+      });
+      // live WP body: resolve the real post, then rewrite the same dead targets there
+      let wpPostId = null;
+      try {
+        const real = await t.wp.plugin.findPostByLanguage(r.slug, lang, { siteKey });
+        if (real && real.id) wpPostId = Number(real.id);
+      } catch { wpPostId = null; }
+      if (!wpPostId && Number(r.wp_post_id) > 0) wpPostId = Number(r.wp_post_id);
+      if (wpPostId) {
+        try {
+          const post = await t.wp.api(`/posts/${wpPostId}?_fields=id,status,content`, { siteKey });
+          const rawHtml = (post.content && (post.content.raw || post.content.rendered)) || '';
+          let newHtml = rawHtml;
+          for (const p of plan) {
+            newHtml = newHtml.replace(new RegExp(`blog/article/${p.dead}(?=/|[?#"'\\)]|$)`, 'gi'), `blog/article/${p.live}`);
+          }
+          newHtml = md.rewriteInternalArticleLinks(newHtml, lang);
+          if (newHtml !== rawHtml) {
+            await t.wp.api(`/posts/${wpPostId}`, { method: 'POST', siteKey, body: { content: newHtml } });
+            entry.wp = 'content updated';
+          } else {
+            entry.wp = 'already correct';
+          }
+          entry.wpPostId = wpPostId;
+          entry.wpStatus = post.status;
+        } catch (e) {
+          entry.wp = 'error: ' + e.message;
+        }
+      }
+    }
+    if (dryRun) entry.dryRun = true;
+    results.push(entry);
+  }
+
+  return { ok: results.every((r) => r.ok !== false), dryRun, affected: results.length, results };
+}
+
+module.exports = { auditLinks, repairLinks, repairMapping, repairDeadTargets, normLang };

@@ -685,6 +685,55 @@ const tools = [
       }
     },
   },
+  {
+    name: 'article_links_fix',
+    title: '内链修复（映射 / 死链）',
+    annotations: { readOnlyHint: false },
+    structured: true,
+    description:
+      'Two maintenance fixes that belong to the internal-link rules, both defaulting to READ-ONLY (dryRun=true). ' +
+      'mode="mapping": repair the polluted articles.wp_post_id mapping — each row is resolved through the plugin multilingual endpoint ' +
+      '(slug + lang) and rewritten only when the id genuinely differs (the column is copied across language rows by the legacy translation flow). ' +
+      'mode="dead": replace dead internal article targets (pre-existing 404s) with live same-language articles given by `replace` ' +
+      '({ "<dead-slug>": "<live-slug>" }); the replacement is resolved by slug+lang first and refused if it is not live, so a fix can never create a new 404. ' +
+      'Both modes rewrite the DB body and the live WP content of the resolved post.',
+    inputSchema: z.object({
+      site: siteField,
+      mode: z.enum(['mapping', 'dead']).describe('mapping = fix articles.wp_post_id; dead = replace dead internal article targets'),
+      apply: z.boolean().optional().describe('false (default) = dry run (report only); true = write'),
+      replace: z.record(z.string(), z.string()).optional().describe('mode=dead: { "<dead-slug>": "<live-slug>" }'),
+      slugs: z.array(z.object({ slug: z.string(), lang: z.string().optional() })).optional().describe('limit the operation to these rows'),
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const appId = parseInt(process.env.APP_ID || '1', 10);
+        if (args.slugs && args.slugs.length) {
+          for (const w of args.slugs) {
+            if (w.lang) { const e = langReject(w.lang); if (e) return fail(new Error(e)); }
+          }
+        }
+        const dryRun = args.apply !== true;
+        if (args.mode === 'mapping') {
+          const r = await t.linkAudit.repairMapping({
+            appId, site: S.siteKey, dryRun,
+            slug: args.slugs && args.slugs.length === 1 ? args.slugs[0].slug : undefined,
+          });
+          return okStructured(r);
+        }
+        if (!args.replace || !Object.keys(args.replace).length) {
+          return fail(new Error('mode=dead requires replace ({ "<dead-slug>": "<live-slug>" })'));
+        }
+        const r = await t.linkAudit.repairDeadTargets({
+          appId, site: S.siteKey, dryRun, replace: args.replace, slugs: args.slugs || null,
+        });
+        return okStructured(r);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
 
   // ---------- translation (multilingual v1) ----------
   {
@@ -865,6 +914,7 @@ const tools = [
       slug: z.string().optional().describe('target slug'),
       lang: z.string().optional().describe('article language for slug lookup (zh-hans|en|zh-hant; default the site default)'),
       post_id: z.number().optional().describe('target WP post id (either slug or post_id)'),
+      status: z.enum(['draft', 'publish']).optional().describe('target WP status; default publish. Pass draft to sync a body into an unpublished draft without publishing it'),
     }).passthrough(),
     async run(args) {
       if (args.lang) {
@@ -911,6 +961,7 @@ const tools = [
       if (slug) cliArgs.push('--slug', slug);
       if (lang) cliArgs.push('--lang', lang);
       if (postId) cliArgs.push('--post-id', String(postId));
+      if (args.status) cliArgs.push('--status', args.status);
       const r = runCli('publish-update-article', cliArgs);
       return ok({
         ok: r.code === 0,
@@ -3902,7 +3953,7 @@ const TOOL_GROUPS = [
   { group: 'Workspace & Site', match: /^(workspace_use|site_|db_|diagnose_site)/ },
   {
     group: 'Content authoring & gate',
-    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_links_audit|article_state_read|article_state_audit|check_article|check_translation|translation_glossary_get|wp_post_get)/,
+    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_links_audit|article_links_fix|article_state_read|article_state_audit|check_article|check_translation|translation_glossary_get|wp_post_get)/,
   },
   { group: 'Publishing (WordPress)', match: /^publish_/ },
   { group: 'Search inclusion & analytics', match: /^(search_|webmaster_)/ },
