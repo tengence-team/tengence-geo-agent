@@ -947,6 +947,30 @@ function bodyLanguageIssue(text, lang) {
  * @param {string} lang zh-hans | zh-hant | en
  * @returns {string}
  */
+/**
+ * Same defect, seen in the RENDERED HTML: the publish pipeline turns the broken markdown
+ * into `<a href="https://…/tengence-search）。">https://…/tengence-search）。</a>` — the
+ * Chinese bracket ends up inside the href, so a markdown-level rewrite can no longer heal
+ * it. Detects anchors whose href or text carries that leftover.
+ * @param {string} html
+ * @returns {Array<{kind:string, snippet:string}>}
+ */
+function malformedHtmlLinks(html) {
+  const out = [];
+  const re = /<a\b[^>]*href=["']([^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(String(html || ''))) !== null) {
+    const href = m[1] || '';
+    const text = (m[2] || '').replace(/<[^>]+>/g, '').trim();
+    if (/）。*$/.test(href) || /[）)]\u3002$/.test(href)) {
+      out.push({ kind: 'href-chinese-close', snippet: m[0].slice(0, 80) });
+    } else if (/^https?:\/\/\S+$/.test(text) && /）。/.test(text)) {
+      out.push({ kind: 'raw-url-text', snippet: m[0].slice(0, 80) });
+    }
+  }
+  return out;
+}
+
 function fixMalformedLinks(text, lang) {
   const prefix = langToPrefix(lang);
   let out = String(text || '');
@@ -1644,6 +1668,7 @@ module.exports = {
   malformedLinkSyntax,
   bodyLanguageIssue,
   fixMalformedLinks,
+  malformedHtmlLinks,
   // 2026-11-14 internal-link language SSOT: one rule for authoring gate, publish gate,
   // translation T10 and the historical repair tooling.
   internalLinkLanguageIssues,

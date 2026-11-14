@@ -129,7 +129,7 @@ function getRelativeUrl(fullUrl) {
  *      runtime source of truth.
  * When neither is found, warn explicitly instead of silently sending a body missing blocks.
  */
-async function loadGeoConfig(mdFile, slug) {
+async function loadGeoConfig(mdFile, slug, lang) {
   const metaPath = mdFile.replace(/\.md$/, '.meta.json');
   if (fs.existsSync(metaPath)) {
     try {
@@ -147,7 +147,7 @@ async function loadGeoConfig(mdFile, slug) {
   if (slug) {
     try {
       const geo = await t.db.withConn(async (conn) => {
-        const articleId = await t.db.articles.findIdBySlug(conn, slug, appId, options.lang);
+        const articleId = await t.db.articles.findIdBySlug(conn, slug, appId, lang);
         if (!articleId) return null;
         const config = await t.db.config.getFull(conn, articleId, appId);
         return config && config.geo ? config.geo : null;
@@ -445,7 +445,11 @@ async function main() {
   console.log(`  Raw chars: ${rawContent.length}`);
 
   // Front Matter (YAML): seo + featured_image come from here; the body uses the stripped content
-  const { data: frontMatter, content: markdownContent } = parseFrontMatter(rawContent);
+  // `markdownContent` must stay reassignable: step 4 swaps the remote image URLs for
+  // the uploaded WP paths (split/join). A `const` there throws "Assignment to constant
+  // variable" and silently aborts the update for every body that carries an image.
+  const { data: frontMatter } = parseFrontMatter(rawContent);
+  let { content: markdownContent } = parseFrontMatter(rawContent);
   console.log(`  Body chars: ${markdownContent.length}`);
   if (frontMatter && frontMatter.seo && Object.keys(frontMatter.seo).length) {
     console.log(`  ✓ front-matter seo read (${Object.keys(frontMatter.seo).length} fields)`);
@@ -524,7 +528,7 @@ async function main() {
   console.log('\n[Step 5] Convert Markdown to HTML (including GEO block materialization)');
   line();
 
-  const loadedGeo = await loadGeoConfig(mdFile, slug);
+  const loadedGeo = await loadGeoConfig(mdFile, slug, options.lang);
   // seo: front matter wins, meta.json as compatibility fallback (retired after migration)
   const fmSeo = (frontMatter && frontMatter.seo && typeof frontMatter.seo === 'object')
     ? frontMatter.seo

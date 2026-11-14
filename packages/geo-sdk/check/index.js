@@ -40,6 +40,7 @@ const {
   // translation gate T10/T11 — SSOT lives in content/md.js)
   internalLinkLanguageIssues,
   malformedLinkSyntax,
+  malformedHtmlLinks,
   bodyLanguageIssue,
   ctaPipeIssues,
 } = require('../content/md');
@@ -481,7 +482,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // so the writing gate and the publish gate can never drift apart.
   const linkLang = internalLinkLanguageIssues(md, LANG);
   const linkIssues = linkLang.hard;
-  const badLinks = malformedLinkSyntax(md);
+  const badLinks = malformedLinkSyntax(md).concat(malformedHtmlLinks(md));
   const bodyLang = bodyLanguageIssue(md, LANG);
   const ctaIssues = ctaPipeIssues(md);
   // target existence (WP entity check): every own-language-prefixed article link's

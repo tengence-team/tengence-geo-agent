@@ -294,14 +294,27 @@ async function repairMalformed(opts = {}) {
   const results = [];
   for (const row of rows) {
     if (wanted && !wanted.some((w) => w.slug === row.slug && (!w.lang || w.lang === row.lang))) continue;
-    const issues = md.malformedLinkSyntax(row.content_longtext || '');
-    if (!issues.length) continue;
+    const dbIssues = md.malformedLinkSyntax(row.content_longtext || '');
+    // the WP body can still be broken after the DB was fixed (the live HTML kept the
+    // literal "）。" inside the href), so a row is in scope when EITHER side is broken
+    let wpPre = null;
+    if (opts.includeWp !== false && row.wp_post_id > 0) {
+      try {
+        const real = await t.wp.plugin.findPostByLanguage(row.slug, row.lang, { siteKey });
+        const id = (real && real.id) ? Number(real.id) : Number(row.wp_post_id);
+        const post = await t.wp.api(`/posts/${id}?_fields=id,status,content`, { siteKey });
+        wpPre = { id, status: post.status, html: (post.content && (post.content.raw || post.content.rendered)) || '' };
+      } catch { wpPre = null; }
+    }
+    const wpIssues = wpPre ? md.malformedLinkSyntax(wpPre.html).concat(md.malformedHtmlLinks(wpPre.html)) : [];
+    if (!dbIssues.length && !wpIssues.length) continue;
 
     const newBody = md.fixMalformedLinks(row.content_longtext || '', row.lang);
     const remaining = md.malformedLinkSyntax(newBody);
     const entry = {
       slug: row.slug, lang: row.lang, wp_post_id: row.wp_post_id || null,
-      found: issues.map((x) => x.kind), changed: newBody !== row.content_longtext,
+      found: [...dbIssues.map((x) => 'db:' + x.kind), ...wpIssues.map((x) => 'wp:' + x.kind)],
+      changed: newBody !== row.content_longtext,
     };
     if (remaining.length) {
       entry.ok = false;
@@ -324,6 +337,21 @@ async function repairMalformed(opts = {}) {
         if (real && real.id) wpPostId = Number(real.id);
       } catch { wpPostId = null; }
       if (!wpPostId && Number(row.wp_post_id) > 0) wpPostId = Number(row.wp_post_id);
+      if (wpPostId && wpPre && wpPre.id === wpPostId) {
+        // the live HTML was generated from the broken markdown, so a string rewrite
+        // cannot heal it (the "）。" sits inside the href). Re-render the fixed DB body,
+        // exactly like the publish pipeline does, and only for rows still broken.
+        const rendered = md.markdownToHtml(newBody);
+        if (!md.malformedLinkSyntax(rendered).length && !md.malformedHtmlLinks(rendered).length) {
+          await t.wp.api(`/posts/${wpPostId}`, { method: 'POST', siteKey, body: { content: rendered } });
+          entry.wp = 're-rendered from DB body';
+          entry.wpPostId = wpPostId;
+          entry.wpStatus = wpPre.status;
+          entry.ok = true;
+          results.push(entry);
+          continue;
+        }
+      }
       if (wpPostId) {
         try {
           const post = await t.wp.api(`/posts/${wpPostId}?_fields=id,status,content`, { siteKey });
