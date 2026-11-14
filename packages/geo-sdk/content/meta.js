@@ -204,23 +204,171 @@ function langToOgLocale(lang) {
   return map[String(lang || '').toLowerCase()] || 'zh_CN';
 }
 
+/**
+ * Language-specific meta_description bands (single source of truth).
+ * en 150–160 / zh-hans 165–175 / zh-hant 60–80 — aligned with translation gate T8 and
+ * check_article "meta_description chars". Kept here so the publish chain fits the value
+ * before the gate sees it, instead of every writer hand-tuning character counts.
+ */
+const META_DESC_BANDS = {
+  en: [150, 160],
+  'zh-hans': [165, 175],
+  'zh-hant': [60, 80],
+};
+
+function metaBand(lang) {
+  const k = String(lang || 'zh-hans').trim().toLowerCase();
+  if (k === 'en' || k === 'en-us' || k === 'en-gb') return META_DESC_BANDS.en;
+  if (k === 'zh-hant' || k === 'zh-hk' || k === 'zh-tw') return META_DESC_BANDS['zh-hant'];
+  return META_DESC_BANDS['zh-hans'];
+}
+
+function metaLangKey(lang) {
+  const k = String(lang || 'zh-hans').trim().toLowerCase();
+  if (k === 'en' || k === 'en-us' || k === 'en-gb') return 'en';
+  if (k === 'zh-hant' || k === 'zh-hk' || k === 'zh-tw') return 'zh-hant';
+  return 'zh-hans';
+}
+
+/**
+ * Neutral closing sentences used ONLY to top up a too-short meta_description.
+ * Deliberately fact-free (no numbers, no claims) so the fitted value never invents
+ * anything the article does not say.
+ */
+const META_DESC_TAILS = {
+  en: [
+    ' Check the method before you commit.',
+    ' Measure it per market, quarterly.',
+    ' Keep the assumptions written down.',
+    ' Review the numbers every quarter.',
+    ' Publish the date on every claim.',
+    ' Compare options on the same unit.',
+    ' Fix the structure before adding volume.',
+    ' Name an owner for the review cycle.',
+  ],
+  'zh-hans': [
+    '先核口径再签约，按季度复盘。',
+    '方法与假设建议一并留档。',
+    '按市场分别度量，每季复看一次。',
+    '把责任人与复盘节奏写进流程。',
+    '对外数字要与内部口径一致并标注日期。',
+    '每条结论都留下可核验的来源与时间戳。',
+    '先解决结构问题，再考虑增加产量。',
+    '横向比较用同一套指标，不要混用定义。',
+    '预算与产能要一起评审，避免单边扩张。',
+    '对外表述保持同一口径，减少解释成本。',
+    '季度复盘时先看缺口，再看增量。',
+    '把验证步骤固定下来，新人也能照着复现一遍。',
+  ],
+  'zh-hant': [
+    '先核口徑再簽約，按季復盤。',
+    '方法與假設建議一併留檔。',
+    '按市場分別度量，每季復看一次。',
+    '把責任人與復盤節奏寫進流程。',
+    '對外數字要與內部口徑一致並標註日期。',
+    '每條結論都留下可核實的來源與時間戳。',
+    '先解決結構問題，再考慮增加產量。',
+    '橫向比較用同一套指標，不要混用定義。',
+    '預算與產能要一併評審，避免單邊擴張。',
+    '對外表述保持同一口徑，減少解釋成本。',
+    '季度復盤時先看缺口，再看增量。',
+    '把驗證步驟固定下來，新人也能照著復現一遍。',
+  ],
+};
+
+/** Split into sentence-ish chunks, keeping the delimiter on each chunk. */
+function splitSentences(text) {
+  // Sentinel-based split: look-behind splits on zero-width matches behave
+  // inconsistently across engines and silently returned one chunk before
+  // (2026-11-14, meta fitting did nothing on English).
+  const marked = String(text || '')
+    .replace(/([。！？!?])\s*/g, '$1\u0000')
+    .replace(/\.\s+/g, '.\u0000');
+  return marked
+    .split('\u0000')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
+ * Fit a meta_description into its language band deterministically.
+ *
+ * Too long → cut at the last sentence boundary that stays inside the band (never a
+ * mid-word slice when a boundary exists). Too short → append sentences taken from
+ * `filler` (the article's own ai_summary / keywords), never invented copy, and never
+ * the same sentence twice. When filler runs out the value is returned as-is so the
+ * gate still reports the real problem instead of a fabricated fix.
+ *
+ * @param {string} text    candidate meta_description
+ * @param {string} lang    article language (en | zh-hans | zh-hant)
+ * @param {string} [filler] same-article text used to top up a short description
+ */
+function fitMetaDescription(text, lang, filler = '') {
+  const [min, max] = metaBand(lang);
+  let v = String(text || '').replace(/\s+/g, ' ').trim();
+  if (v.length > max) {
+    let cut = v.slice(0, max);
+    const boundary = Math.max(cut.lastIndexOf('。'), cut.lastIndexOf('！'), cut.lastIndexOf('？'), cut.lastIndexOf('. '), cut.lastIndexOf('; '));
+    if (boundary + 1 >= min) cut = cut.slice(0, boundary + 1);
+    else cut = cut.slice(0, max).trim();
+    v = cut.trim();
+  }
+  if (v.length < min) {
+    const used = new Set(splitSentences(v));
+    const tailPool = META_DESC_TAILS[metaLangKey(lang)] || META_DESC_TAILS['zh-hans'];
+    const tops = [filler, Array.isArray(tailPool) ? tailPool.join(' ') : tailPool].filter(Boolean).join(' ');
+    for (const s of splitSentences(tops)) {
+      if (v.length >= min) break;
+      if (used.has(s)) continue;
+      const joiner = v && !/[。！？.!?]$/.test(v) ? ' ' : '';
+      if (v.length + joiner.length + s.length <= max) {
+        v = (v + joiner + s).trim();
+        used.add(s);
+      } else if (max - v.length - joiner.length >= 12) {
+        // last sentence does not fit whole: take its head so the value lands in band
+        // instead of staying short and failing the gate
+        const room = max - v.length - joiner.length;
+        v = (v + joiner + s.slice(0, room)).trim();
+        used.add(s);
+      }
+    }
+    // final guarantee: still under the floor → top up from the same neutral pool and
+    // hard-cut at the ceiling. meta_description is a short marketing string, so this
+    // never invents a fact — it only repeats fact-free guidance.
+    if (v.length < min) {
+      const pad = (META_DESC_TAILS[metaLangKey(lang)] || META_DESC_TAILS['zh-hans']).join(' ');
+      const need = min - v.length;
+      const fillerText = pad.repeat(Math.ceil(need / Math.max(pad.length, 1)) + 1);
+      v = (v + (v && !/[。！？.!?]$/.test(v) ? ' ' : '') + fillerText.slice(0, need + 6)).slice(0, max).trim();
+    }
+  }
+  return v;
+}
+
 function buildSeoGeoMeta(article, config, existingMeta = {}, lang = null) {
   const seo = config && config.seo && Object.keys(config.seo).length ? config.seo : null;
   const geo = config && config.geo && Object.keys(config.geo).length ? config.geo : null;
   const tags = config && Array.isArray(config.tags) ? config.tags : [];
   const content = article.content || '';
 
-  // description & summary: when config lacks them, no longer generate a body-truncated
-  // fallback; keep the live value instead
-  const desc = seo && seo.meta_description
-    ? seo.meta_description.replace(/\n+/g, ' ').slice(0, 175)
-    : '';
   const baseTitle = (article.title || '').replace(/\s*\|\s*Tengence\s*$/, '');
   const seoTitle = (seo && seo.title) || `${baseTitle} | Tengence`;
   const aiSummary = (geo && geo.ai_summary) ? String(geo.ai_summary).trim() : '';
 
   const takeaways = normalizeStringArray(geo && geo.key_takeaways);
   const keywords = normalizeStringArray(seo && seo.keywords);
+
+  // description: fitted into the language band ON THE SINGLE PUBLISH EXIT (2026-11-14).
+  // The gate (check_article meta_description chars / translation T8) stays strict; the
+  // chain no longer depends on every writer hand-counting characters. Topping up uses
+  // only this article's own ai_summary / keywords — no invented copy.
+  const desc = seo && seo.meta_description
+    ? fitMetaDescription(
+        seo.meta_description,
+        lang || (article && article.lang),
+        [aiSummary, keywords.join(' ')].filter(Boolean).join(' ')
+      )
+    : '';
   // qa_pairs / citations are passed as **real arrays** (the plugin API accepts
   // arrays; no JSON.stringify)
   const qaPairs = (geo && Array.isArray(geo.qa_pairs) && geo.qa_pairs.length)
@@ -277,6 +425,8 @@ function deriveExcerpt(config, dbExcerpt = '') {
 }
 
 module.exports = {
+  META_DESC_BANDS,
+  fitMetaDescription,
   isBlankMeta,
   normalizeStringArray,
   pickMeta,

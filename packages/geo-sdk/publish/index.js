@@ -918,18 +918,15 @@ async function publishArticle(connection, articleId, options = {}) {
   }
 
   if (existing && !force) {
-    // Publishing an article that already exists on WP must update it in place —
-    // the rewrite → re-publish loop (2026-11-04) relies on a status=publish request
-    // actually writing the (rewritten) body and flipping the post live. Silently
-    // returning the existing post made a "publish" request succeed without writing
-    // anything (observed on skeleton 643: "Succeeded: 1" while WP stayed draft).
-    if (status === 'publish') {
-      s.logger(`  ℹ️ Article already exists (WP ID: ${existing.id}, Status: ${existing.status}) — updating in place (status=publish)`);
-    } else {
-      s.logger(`  ⚠️ Article already exists (WP ID: ${existing.id}, Status: ${existing.status})`);
-      s.logger(`  Use --force to force an update`);
-      return existing;
-    }
+    // An existing post is ALWAYS updated in place, for every status (2026-11-14).
+    // Draft publishes used to early-return the existing post ("Use --force"), so a
+    // draft publish wrote nothing: tags, category and meta never reached WP, and the
+    // G19 taxonomy gate then failed on every later attempt because the post carried
+    // stale tags. Updating in place makes "publish → gate re-check" converge instead
+    // of looping. --force is now only a hint; behaviour is identical.
+    s.logger(
+      `  ℹ️ Article already exists (WP ID: ${existing.id}, Status: ${existing.status}) — updating in place (${status})`
+    );
   }
 
   // 7. publish or update
@@ -989,7 +986,11 @@ async function publishArticle(connection, articleId, options = {}) {
   }
 
   let result;
-  if (existing && (force || status === 'publish')) {
+  // Any existing post is updated in place, at every status (2026-11-14): a draft publish
+  // must write tags, category and meta onto the mapped post instead of creating a second
+  // post for the same slug (the create path produced duplicate drafts and orphaned the
+  // original wp_post_id).
+  if (existing) {
     s.logger(`  Updating article ID: ${existing.id}...`);
     result = await wpAPI(`/posts/${existing.id}`, 'POST', postData);
   } else {

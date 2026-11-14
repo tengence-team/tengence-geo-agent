@@ -71,7 +71,7 @@ async function saveArticleToDatabase(articleId, filePath, options = {}) {
     // (conn, articleId, APP_ID), so no row was ever found; here we read the seo/geo
     // columns directly by id (getDetail signature stays (conn, appId, slug))
     const [detailRows] = await connection.query(
-      'SELECT seo, geo FROM tengence_geo_articles WHERE id = ? AND app_id = ?',
+      'SELECT seo, geo, lang FROM tengence_geo_articles WHERE id = ? AND app_id = ?',
       [articleId, APP_ID]
     );
     if (!detailRows.length) throw new Error(`Article ID ${articleId} not found (app_id ${APP_ID})`);
@@ -83,6 +83,21 @@ async function saveArticleToDatabase(articleId, filePath, options = {}) {
     // focus_keyword is not persisted to the seo column (2026-09-20: the primary keyword
     // follows the article plan table; used for plan-internal decisions only)
     if (seo && 'focus_keyword' in seo) delete seo.focus_keyword;
+
+    // meta_description length: fitted HERE, on the single ingest path (2026-11-14).
+    // Every writer (en / zh-hans / zh-hant) used to hand-count characters against a
+    // different band and the gate rejected 150 / 158 / 163 / 168 …; the band now
+    // lives in content/meta.js and ingest normalises the value into it before it
+    // reaches the DB (so the gate and the WP meta both read the same string).
+    if (seo && seo.meta_description) {
+      const fmGeo = (fm && fm.geo && typeof fm.geo === 'object') ? fm.geo : {};
+      const kw = Array.isArray(seo.keywords) ? seo.keywords.join(' ') : (seo.keywords || '');
+      seo.meta_description = t.content.meta.fitMetaDescription(
+        String(seo.meta_description),
+        detail.lang || 'zh-hans',
+        [fmGeo.ai_summary, kw].filter(Boolean).join(' ')
+      );
+    }
 
     const prevGeo = dbValue.parseJsonValue(detail.geo, {});
     const synced = syncGeoFromMarkdown(content, prevGeo); // the three GEO blocks follow the body

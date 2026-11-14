@@ -181,7 +181,36 @@ async function main() {
         // to en/zh-hant would hard-fail their Chinese-char row (English bodies count 0
         // Chinese chars), so the type is left undeclared for translations.
         const planType = isTranslation ? null : ((planRow && planRow.node_type) || null);
-        const gateReport = await t.check.checkArticle({ slug, dir: gateDir, type: planType, lang: lang || undefined });
+        let gateReport = await t.check.checkArticle({ slug, dir: gateDir, type: planType, lang: lang || undefined });
+
+        // G19 auto-recovery (2026-11-14): "plan tags present in WP" fires when the
+        // existing WP post carries stale taxonomy — typically a thinner earlier
+        // draft of the same slug. The tag set is written by the publish itself, so
+        // the recoverable move is: drop the stale wp_post_id for THIS language only
+        // (the post is still found by slug+lang and updated in place), then re-run
+        // the gate once. Every other hard row (G17 substance, citations, banned
+        // sources, tables, numbers) stays a hard stop.
+        const g19Only =
+          gateReport.rows.some((r) => /plan tags present in WP/i.test(String(r[0])) && !r[2]) &&
+          !gateReport.rows.some(
+            (r) =>
+              !r[2] &&
+              !/plan tags present in WP|plan category present in WP/i.test(String(r[0]))
+          );
+        if (!gateReport.ok && g19Only && process.env.GEO_GATE_AUTORECOVER !== '0' && lang) {
+          console.log(`  ↻ G19 stale taxonomy (${slug}, ${lang}): cleared wp_post_id, retrying the gate once`);
+          try {
+            await connection.query(
+              'UPDATE tengence_geo_articles SET wp_post_id = NULL WHERE id = ? AND app_id = ?',
+              [articleId, getState().CONFIG.app_id]
+            );
+            gateReport = await t.check.checkArticle({ slug, dir: gateDir, type: planType, lang: lang || undefined });
+          } catch (e) {
+            console.log(`  ⚠️ G19 auto-recovery failed: ${e.code || e.message}`);
+          }
+          if (gateReport.ok) console.log('  ✓ Gate passed after G19 auto-recovery');
+        }
+
         if (!gateReport.ok) {
           console.log(`\n⛔ Gate failed, skipping ID ${articleId} (${slug}${isTranslation ? ', lang=' + lang : ''})`);
           for (const [k, v, ok, soft] of gateReport.rows) {
