@@ -64,6 +64,8 @@ lazy('wp', () => require('./wp'));
 lazy('content', () => require('./content'));
 // 2026-11-14 internal-link language audit/repair (shares the SSOT rule with check_article)
 lazy('linkAudit', () => require('./content/link-repair'));
+// 2026-11-15 research-brief citation ledger backfill (B2 row of check_article)
+lazy('researchBrief', () => require('./content/research-brief'));
 lazy('images', () => require('./images'));
 lazy('search', () => require('./search'));
 lazy('webmaster', () => require('./webmaster'));
