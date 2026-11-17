@@ -1701,6 +1701,14 @@ const tools = [
     inputSchema: z.object({
       dry_run: z.boolean().optional().describe('default true = report only; pass false to write'),
       allow_downgrade: z.boolean().optional().describe('default false; true applies published→queued when WP says draft'),
+      repair_pointers: z
+        .boolean()
+        .optional()
+        .describe(
+          'default false. When a row points at ANOTHER language\'s post, rewrite plan.wp_post_id / ' +
+            'articles.wp_post_id to the row\'s own post, or 0 when that language has no post. Reported as ' +
+            'lang_mismatch either way; opt in only when you mean it — this decides which post a publish flips.'
+        ),
       site: siteField,
     }),
     async run(args) {
@@ -1721,6 +1729,7 @@ const tools = [
           wpPosts: posts,
           dryRun: args.dry_run !== false,
           allowDowngrade: args.allow_downgrade === true,
+          repairPointers: args.repair_pointers === true,
         });
         return ok({ ok: true, wp_posts: posts.length, report });
       } catch (e) {

@@ -186,9 +186,9 @@ const WP_STATUS_STATE = {
  * right is the default assumption, but silently un-publishing rows is not.
  *
  * @param {{appId:number, wpPosts:Array<{id:number,slug:string,status:string,link?:string,date?:string}>,
- *          dryRun?:boolean, allowDowngrade?:boolean, conn?:object}} args
+ *          dryRun?:boolean, allowDowngrade?:boolean, repairPointers?:boolean, conn?:object}} args
  */
-async function reconcileWithWp({ appId, wpPosts = [], dryRun = true, allowDowngrade = false, conn: injected } = {}) {
+async function reconcileWithWp({ appId, wpPosts = [], dryRun = true, allowDowngrade = false, repairPointers = false, conn: injected } = {}) {
   if (!Array.isArray(wpPosts) || !wpPosts.length) {
     throw new Error('reconcileWithWp requires a non-empty wpPosts list (refusing to reconcile on empty WP data)');
   }
@@ -210,15 +210,53 @@ async function reconcileWithWp({ appId, wpPosts = [], dryRun = true, allowDowngr
       plan_wp_post_fixed: 0,
       plan_published_at_fixed: 0,
       downgrades_skipped: [],
+      lang_mismatch: [],
+      pointers_fixed: 0,
       unmatched: [],
     };
 
     for (const r of rows) {
-      if (!r.article_id) continue; // plan-only rows: state is todo/paused by definition
-      report.checked += 1;
       const lang = normalizeLang(r.lang);
       const awp = Number(r.article_wp_post_id) || 0;
       const pwp = Number(r.plan_wp_post_id) || 0;
+
+      // Cross-language pointer: the row holds the post id of ANOTHER language's post.
+      // Truthful value is this row's OWN post; when the language has no post at all,
+      // the pointer is simply unknown and 0 is the honest value. Left alone by default
+      // because it decides WHICH post a later publish flips — repair_pointers opts in.
+      const pointed = awp ? byId.get(awp) : pwp ? byId.get(pwp) : null;
+      const pointedLang = pointed ? langFromLink(pointed.link) : null;
+      if (pointed && pointedLang && pointedLang !== lang) {
+        const own = bySlugLang.get(`${r.slug}|${lang}`) || null;
+        const target = own ? Number(own.id) : 0;
+        const rec = {
+          slug: r.slug,
+          lang,
+          wpPostId: Number(pointed.id),
+          wpLang: pointedLang,
+          wpStatus: pointed.status,
+          articleWp: awp || null,
+          planWp: pwp || null,
+          ownPostId: target || null,
+        };
+        if (repairPointers) {
+          if (pwp !== target && r.plan_wp_post_id !== undefined) {
+            if (!dryRun) await repo.updatePlanFields(c, appId, r.slug, lang, { wp_post_id: target });
+            rec.plan_repaired = { from: pwp, to: target };
+          }
+          if (r.article_id && awp !== target) {
+            if (!dryRun) await repo.updateArticle(c, appId, Number(r.article_id), { wpPostId: target });
+            rec.article_repaired = { from: awp, to: target };
+          }
+          report.pointers_fixed = report.pointers_fixed || 0;
+          report.pointers_fixed += 1;
+        }
+        (report.lang_mismatch = report.lang_mismatch || []).push(rec);
+        continue;
+      }
+
+      if (!r.article_id) continue; // plan-only rows: state is todo/paused by definition
+      report.checked += 1;
       let wp = awp ? byId.get(awp) : pwp ? byId.get(pwp) : null;
       let viaFallback = false;
       if (!wp) {
@@ -231,22 +269,6 @@ async function reconcileWithWp({ appId, wpPosts = [], dryRun = true, allowDowngr
       }
       if (wp.slug !== r.slug) {
         report.unmatched.push({ slug: r.slug, lang, wpSlug: wp.slug, wpPostId: Number(wp.id), reason: 'slug-mismatch' });
-        continue;
-      }
-      // The post id must belong to THIS row's language: a zh-hans row pointing at an
-      // /en/ or /zh-hant/ permalink is a stale pointer (report only — rewriting it could
-      // silently change what a later publish picks up).
-      const wpLang = langFromLink(wp.link);
-      if (wpLang && wpLang !== lang) {
-        (report.lang_mismatch = report.lang_mismatch || []).push({
-          slug: r.slug,
-          lang,
-          wpPostId: Number(wp.id),
-          wpLang,
-          wpStatus: wp.status,
-          articleWp: awp || null,
-          planWp: pwp || null,
-        });
         continue;
       }
       const expected = WP_STATUS_STATE[String(wp.status || '').toLowerCase()];
