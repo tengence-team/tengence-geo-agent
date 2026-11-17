@@ -741,6 +741,48 @@ const tools = [
     },
   },
 
+  {
+    name: 'article_research_sync',
+    title: '研究 brief 引用补齐（B2 ledger）',
+    annotations: { readOnlyHint: false },
+    structured: true,
+    description:
+      'The B2 ledger row of check_article requires every body citation URL to appear in the research brief. ' +
+      'Legacy briefs frequently omit the URLs the body actually cites, which made an already-published article ' +
+      'un-saveable and would gate any rewrite. This tool audits the gap and (apply=true) appends the missing ' +
+      'citations — title + URL, taken from the body itself — into a dedicated section of articles.research_md, ' +
+      'then reads back and re-checks. It never loosens the gate and never invents a source: the URL must already ' +
+      'be cited in the body. Defaults to READ-ONLY (apply=false).',
+    inputSchema: z.object({
+      site: siteField,
+      apply: z.boolean().optional().describe('false (default) = audit only; true = write the missing citations into research_md'),
+      slug: z.string().optional().describe('limit to one slug'),
+      lang: z.string().optional().describe('limit to one language'),
+      status: z.string().optional().describe('limit to one status (draft|publish)'),
+      slugs: z.array(z.object({ slug: z.string(), lang: z.string().optional() })).optional().describe('limit to these rows'),
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const appId = parseInt(process.env.APP_ID || '1', 10);
+        if (args.lang) { const e = langReject(args.lang); if (e) return fail(new Error(e)); }
+        if (args.slugs && args.slugs.length) {
+          for (const w of args.slugs) {
+            if (w.lang) { const e = langReject(w.lang); if (e) return fail(new Error(e)); }
+          }
+        }
+        const dryRun = args.apply !== true;
+        const r = await t.researchBrief.backfillBriefCitations({
+          appId, dryRun, siteDir: S.siteDir, slug: args.slug, lang: args.lang, status: args.status, slugs: args.slugs || null,
+        });
+        return okStructured(r);
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+
   // ---------- translation (multilingual v1) ----------
   {
     name: 'translation_glossary_get',
@@ -1636,6 +1678,109 @@ const tools = [
           dryRun: !repair,
         });
         return ok({ ok: true, report });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+
+  // ---------- state: WordPress truth ----------
+  {
+    name: 'state_reconcile_wp',
+    title: '按 WordPress 真值对账',
+    description:
+      'Bring the DB back in line with the LIVE WordPress post statuses.\n' +
+      'article_state_audit only compares the plan mirror against the article row, so a state that is ' +
+      'wrong in BOTH columns is invisible to it; only WordPress can settle that. This tool reads every ' +
+      'post (publish/future/private/draft/pending), matches each plan row against the post of ITS OWN ' +
+      'language (article.wp_post_id first, plan.wp_post_id second, slug|lang last), then rewrites ' +
+      'articles.status, articles.published_at (= the real WP post date, never the moment we ran), ' +
+      'plan.wp_post_id, plan.published_at and the plan_status mirror through article-state.\n' +
+      'Upgrades are applied; a downgrade (DB says published, WordPress says draft) is only REPORTED ' +
+      'unless allow_downgrade=true. dry_run defaults to TRUE.',
+    inputSchema: z.object({
+      dry_run: z.boolean().optional().describe('default true = report only; pass false to write'),
+      allow_downgrade: z.boolean().optional().describe('default false; true applies published→queued when WP says draft'),
+      site: siteField,
+    }),
+    async run(args) {
+      try {
+        const S = withSite(args);
+        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
+        const siteKey = S.siteKey || S.key;
+        const posts = [];
+        for (const status of ['publish', 'future', 'draft', 'pending', 'private']) {
+          const batch = await t.wp.posts.list({ status, _fields: 'id,slug,status,link,date' }, { siteKey });
+          if (Array.isArray(batch)) posts.push(...batch);
+        }
+        if (!posts.length) {
+          return fail(new Error('state_reconcile_wp: WordPress returned 0 posts — refusing to reconcile on empty platform data'));
+        }
+        const report = await t.articleState.reconcileWithWp({
+          appId: parseInt(process.env.APP_ID || S.env.APP_ID || '1', 10),
+          wpPosts: posts,
+          dryRun: args.dry_run !== false,
+          allowDowngrade: args.allow_downgrade === true,
+        });
+        return ok({ ok: true, wp_posts: posts.length, report });
+      } catch (e) {
+        return fail(e);
+      }
+    },
+  },
+  {
+    name: 'wp_post_trash',
+    title: '移入回收站 WP 文章',
+    description:
+      'Trash (status=trash) a WordPress post — the reversible way to clear a duplicate draft. ' +
+      'Refuses to touch a post that is currently `publish` (that would take a live article down); ' +
+      'pass dry_run=true to preview, force_other_status=true only for a deliberate exception.',
+    inputSchema: z.object({
+      wp_post_id: z.number().describe('WordPress post ID to trash'),
+      dry_run: z.boolean().optional().describe('default true = read the status and report, write nothing'),
+      force_other_status: z.boolean().optional().describe('allow trashing a post whose current status is not draft/pending/future/private'),
+      site: siteField,
+    }),
+    async run(args) {
+      if (!args.wp_post_id) return fail(new Error('wp_post_trash requires wp_post_id'));
+      try {
+        const S = withSite(args);
+        const siteKey = S.siteKey || S.key;
+        const before = await t.wp.posts.get(Number(args.wp_post_id), '?_fields=id,slug,status,date,link', { siteKey });
+        if (!before || !before.id) return fail(new Error(`wp_post_trash: post ${args.wp_post_id} not found`));
+        const st = String(before.status || '').toLowerCase();
+        const safe = ['draft', 'pending', 'future', 'private'].includes(st);
+        if (!safe && args.force_other_status !== true) {
+          return fail(new Error(`wp_post_trash: post ${before.id} (${before.slug}) is "${st}" — refusing to trash it (force_other_status=true to override)`));
+        }
+        if (args.dry_run !== false) {
+          return ok({ ok: true, dry_run: true, post_id: before.id, slug: before.slug, status: st, would: 'trash' });
+        }
+        let via = 'status';
+        try {
+          await t.wp.posts.update(Number(args.wp_post_id), { status: 'trash' }, { siteKey });
+        } catch (e) {
+          // The multilingual plugin narrows the writable status enum to
+          // publish/future/draft/pending/private, so status=trash is a 400 here.
+          // The REST trash endpoint (DELETE, force=false) is the real way.
+          if (!/rest_invalid_param|not_in_enum|无效参数/i.test(e.message || '')) throw e;
+          await t.wp.posts.remove(Number(args.wp_post_id), { siteKey });
+          via = 'delete';
+        }
+        let after = null;
+        try {
+          after = await t.wp.posts.get(Number(args.wp_post_id), '?_fields=id,slug,status,link', { siteKey });
+        } catch (e) {
+          after = null; // trashed posts are not readable through the posts endpoint
+        }
+        return ok({
+          ok: true,
+          post_id: before.id,
+          slug: before.slug,
+          from: st,
+          to: (after && after.status) || 'trash',
+          via,
+        });
       } catch (e) {
         return fail(e);
       }
@@ -3970,7 +4115,7 @@ const TOOL_GROUPS = [
   { group: 'Workspace & Site', match: /^(workspace_use|site_|db_|diagnose_site)/ },
   {
     group: 'Content authoring & gate',
-    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_links_audit|article_links_fix|article_state_read|article_state_audit|check_article|check_translation|translation_glossary_get|wp_post_get)/,
+    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_links_audit|article_links_fix|article_research_sync|article_state_read|article_state_audit|state_reconcile_wp|check_article|check_translation|translation_glossary_get|wp_post_get|wp_post_trash)/,
   },
   { group: 'Publishing (WordPress)', match: /^publish_/ },
   { group: 'Search inclusion & analytics', match: /^(search_|webmaster_)/ },

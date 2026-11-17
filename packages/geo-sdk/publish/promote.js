@@ -88,9 +88,10 @@ async function verifyPublished(wp, postId, { siteKey } = {}) {
  * Write the plan table back for ONE language row — only ever called after the
  * publish has been confirmed against the real WP status.
  */
-async function confirmPlanPublished(plan, { slug, lang, wpPostId, link, log = () => {} }) {
+async function confirmPlanPublished(plan, { slug, lang, wpPostId, link, log = () => {}, appId = null } = {}) {
   try {
-    await plan.markPublished(slug, { wpPostId, publishedUrl: link }, { lang });
+    const tenant = Number(appId || process.env.APP_ID || 1);
+    await plan.markPublished(slug, { wpPostId, publishedUrl: link }, { lang, appId: tenant });
     log(`    ✓ Plan updated: ${slug} (${lang}) → published`);
     return true;
   } catch (e) {
@@ -120,6 +121,10 @@ async function confirmPlanPublished(plan, { slug, lang, wpPostId, link, log = ()
 async function promoteToPublish(deps, opts) {
   const { wp, plan, articleState } = deps;
   const { postId, slug, lang, siteKey, domain, log = () => {} } = opts;
+  // Tenant id. article-state keys every row by (appId, slug, lang); omitting it made
+  // repo.selectOne look for app_id=NULL, find nothing and reject the write with
+  // E_INVALID_TRANSITION — the "harmless noise" that actually meant "never written".
+  const appId = Number(opts.appId || process.env.APP_ID || 1);
 
   // 1. clamp: explicit slot first; otherwise pre-read the post's own date —
   //    updating status only would leave a future date in place and WP would
@@ -163,20 +168,31 @@ async function promoteToPublish(deps, opts) {
 
   // 4. confirmed → per-language plan write-back
   const link = live.link || `https://www.${domain || 'tengence.com'}/blog/article/${slug}/`;
-  await confirmPlanPublished(plan, { slug, lang, wpPostId: postId, link, log });
+  await confirmPlanPublished(plan, { slug, lang, wpPostId: postId, link, log, appId });
 
   // 4.1 articles.status — the OTHER half of the 2026-11-13 drift: promote used to
   //     write the plan table only, so promoted articles stayed `draft` forever.
-  //     Routed through article-state, which requires lang and mirrors wp_post_id.
+  //     Routed through article-state, which requires lang + appId and mirrors wp_post_id.
   let articlesState;
   if (articleState && typeof articleState.setState === 'function') {
     try {
-      await articleState.setState({ slug, lang, to: 'published', wpPostId: postId, publishedUrl: link });
+      await articleState.setState({ appId, slug, lang, to: 'published', wpPostId: postId, publishedUrl: link });
       articlesState = 'publish';
       log(`    ✓ Article row updated: ${slug} (${lang}) → publish`);
     } catch (e) {
       articlesState = 'failed';
       log(`    ⚠️ Article write-back failed for ${lang}: ${e.code || e.message}`);
+    }
+    // 4.2 plan_status is a MIRROR (status unification 2026-11-13): markPublished writes
+    //     the article row only, so without this the mirror stays stale until some
+    //     maintenance pass happens to run. Re-derive it right here, every publish.
+    if (typeof articleState.syncPlanMirror === 'function') {
+      try {
+        const m = await articleState.syncPlanMirror({ appId, slug, lang });
+        if (m && m.updated) log(`    ✓ plan mirror synced: ${slug} (${lang}) ${m.from} → ${m.state}`);
+      } catch (e) {
+        log(`    ⚠️ plan mirror sync failed for ${lang}: ${e.code || e.message}`);
+      }
     }
   } else {
     log(`    ⚠️ No articleState facade injected — articles.status left untouched (drift risk)`);

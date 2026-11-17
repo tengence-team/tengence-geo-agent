@@ -140,6 +140,164 @@ async function syncPlanMirror({ appId, slug, lang, conn: injected } = {}) {
   return injected ? run(injected) : conn.withConn(run);
 }
 
+/** WP permalink → link-space language (the only reliable per-language signal). */
+function langFromLink(link) {
+  if (!link) return null;
+  const s = String(link);
+  if (s.includes('/zh-hans/')) return 'zh-hans';
+  if (s.includes('/zh-hant/')) return 'zh-hant';
+  return 'en';
+}
+
+/** WP date ("2026-10-08T09:29:16" / RFC3339) → DB stamp "YYYY-MM-DD HH:MM:SS" (site local). */
+function wpStamp(date) {
+  return String(date || '').replace('T', ' ').slice(0, 19);
+}
+
+function sameStamp(a, b) {
+  return wpStamp(a) === wpStamp(b);
+}
+
+/** WP post status → the single article state it implies. */
+const WP_STATUS_STATE = {
+  publish: STATE.PUBLISHED,
+  future: STATE.PUBLISHED,
+  private: STATE.PUBLISHED,
+  draft: STATE.QUEUED,
+  pending: STATE.QUEUED,
+};
+
+/**
+ * WordPress-truth reconciliation — the answer to "both tables agree with each other
+ * but both disagree with WordPress". article_state.audit() only compares the plan
+ * mirror against the article row, so a state that is wrong in BOTH columns is
+ * invisible to it; only the platform can settle that. This pass therefore takes the
+ * live WP post set as input and, for every plan row that has an article row, matches
+ * the post of ITS OWN language (article.wp_post_id first, plan.wp_post_id second,
+ * slug|lang index last) and then:
+ *
+ *   1. articles.status  ← the derived state of the real WP status (via setState)
+ *   2. articles.published_at ← the real WP post date (never the execution moment)
+ *   3. plan.wp_post_id / plan.published_at ← mirror columns, per language
+ *   4. plan_status ← re-derived through syncPlanMirror
+ *
+ * Upgrades are automatic; a DOWNGRADE (DB says published, WordPress says draft) is
+ * only reported, never applied, unless allowDowngrade is explicitly passed — WP being
+ * right is the default assumption, but silently un-publishing rows is not.
+ *
+ * @param {{appId:number, wpPosts:Array<{id:number,slug:string,status:string,link?:string,date?:string}>,
+ *          dryRun?:boolean, allowDowngrade?:boolean, conn?:object}} args
+ */
+async function reconcileWithWp({ appId, wpPosts = [], dryRun = true, allowDowngrade = false, conn: injected } = {}) {
+  if (!Array.isArray(wpPosts) || !wpPosts.length) {
+    throw new Error('reconcileWithWp requires a non-empty wpPosts list (refusing to reconcile on empty WP data)');
+  }
+  const run = async (c) => {
+    const rows = await repo.selectList(c, appId, { limit: 5000 });
+    const byId = new Map(wpPosts.map((p) => [Number(p.id), p]));
+    const bySlugLang = new Map();
+    for (const p of wpPosts) {
+      const l = langFromLink(p.link);
+      if (l && p.slug) bySlugLang.set(`${p.slug}|${l}`, p);
+    }
+    const report = {
+      dryRun,
+      total_rows: rows.length,
+      checked: 0,
+      matched: 0,
+      state_fixed: [],
+      published_at_fixed: 0,
+      plan_wp_post_fixed: 0,
+      plan_published_at_fixed: 0,
+      downgrades_skipped: [],
+      unmatched: [],
+    };
+
+    for (const r of rows) {
+      if (!r.article_id) continue; // plan-only rows: state is todo/paused by definition
+      report.checked += 1;
+      const lang = normalizeLang(r.lang);
+      const awp = Number(r.article_wp_post_id) || 0;
+      const pwp = Number(r.plan_wp_post_id) || 0;
+      let wp = awp ? byId.get(awp) : pwp ? byId.get(pwp) : null;
+      let viaFallback = false;
+      if (!wp) {
+        wp = bySlugLang.get(`${r.slug}|${lang}`) || null;
+        viaFallback = true;
+      }
+      if (!wp) {
+        report.unmatched.push({ slug: r.slug, lang, articleWp: awp || null, planWp: pwp || null, reason: 'no-wp-post' });
+        continue;
+      }
+      if (wp.slug !== r.slug) {
+        report.unmatched.push({ slug: r.slug, lang, wpSlug: wp.slug, wpPostId: Number(wp.id), reason: 'slug-mismatch' });
+        continue;
+      }
+      // The post id must belong to THIS row's language: a zh-hans row pointing at an
+      // /en/ or /zh-hant/ permalink is a stale pointer (report only — rewriting it could
+      // silently change what a later publish picks up).
+      const wpLang = langFromLink(wp.link);
+      if (wpLang && wpLang !== lang) {
+        (report.lang_mismatch = report.lang_mismatch || []).push({
+          slug: r.slug,
+          lang,
+          wpPostId: Number(wp.id),
+          wpLang,
+          wpStatus: wp.status,
+          articleWp: awp || null,
+          planWp: pwp || null,
+        });
+        continue;
+      }
+      const expected = WP_STATUS_STATE[String(wp.status || '').toLowerCase()];
+      if (!expected) {
+        report.unmatched.push({ slug: r.slug, lang, wpStatus: wp.status, reason: 'unknown-wp-status' });
+        continue;
+      }
+      report.matched += 1;
+      const current = deriveState({
+        planStatus: r.plan_status,
+        article: { id: Number(r.article_id), status: r.article_status, wp_post_id: r.article_wp_post_id },
+      });
+      const at = expected === STATE.PUBLISHED ? wpStamp(wp.date) : null;
+      const wpPostId = Number(wp.id);
+
+      const isDowngrade = current === STATE.PUBLISHED && expected !== STATE.PUBLISHED;
+      if (current !== expected) {
+        if (isDowngrade && !allowDowngrade) {
+          report.downgrades_skipped.push({ slug: r.slug, lang, from: current, to: expected, wpStatus: wp.status });
+          continue; // leave the row (and its mirror) untouched
+        }
+        if (!dryRun) {
+          await setState({ appId, slug: r.slug, lang, to: expected, wpPostId, at, allowDowngrade: true, conn: c });
+        }
+        report.state_fixed.push({ slug: r.slug, lang, from: current, to: expected, wpStatus: wp.status, viaFallback });
+      } else if (expected === STATE.PUBLISHED && !sameStamp(r.article_published_at, at)) {
+        // published_at must be the real WP publish moment, never the moment we ran.
+        if (!dryRun) {
+          await setState({ appId, slug: r.slug, lang, to: STATE.PUBLISHED, wpPostId, at, allowDowngrade: true, conn: c });
+        }
+        report.published_at_fixed += 1;
+      }
+
+      // Mirror columns on the plan row (per language — never slug-wide).
+      if (pwp !== wpPostId) {
+        if (!dryRun) await repo.updatePlanFields(c, appId, r.slug, lang, { wp_post_id: wpPostId });
+        report.plan_wp_post_fixed += 1;
+      }
+      const planStamp = String(r.plan_published_at || '');
+      if (expected === STATE.PUBLISHED && (!sameStamp(planStamp, at) || planStamp.includes('T'))) {
+        // one-off: legacy rows carried "YYYY-MM-DDTHH:MM:SS"; normalize to the DB format
+        if (!dryRun) await repo.updatePlanFields(c, appId, r.slug, lang, { published_at: at });
+        report.plan_published_at_fixed += 1;
+      }
+      if (!dryRun) await syncPlanMirror({ appId, slug: r.slug, lang, conn: c });
+    }
+    return report;
+  };
+  return injected ? run(injected) : conn.withConn(run);
+}
+
 /**
  * The single status write entry.
  * @param {{appId:number, slug:string, lang:string, to:string, wpPostId?:number,
@@ -263,6 +421,9 @@ module.exports = {
   setFeaturedImage,
   audit,
   syncPlanMirror,
+  reconcileWithWp,
+  langFromLink,
+  wpStamp,
   derive: deriveState,
   validateTransition,
   defaultProbe,

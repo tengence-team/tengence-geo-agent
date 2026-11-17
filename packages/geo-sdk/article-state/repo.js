@@ -68,7 +68,7 @@ async function selectList(conn, appId, filters = {}) {
     `SELECT p.id AS plan_id, p.slug, p.lang, p.title AS title, p.node_type, p.hub_cluster, p.matrix_code,
             p.publish_batch, p.publish_order, p.category, p.tags, p.focus_keyword,
             p.notes, p.article_id AS plan_article_id, p.wp_post_id AS plan_wp_post_id,
-            p.plan_status,
+            p.plan_status, p.published_at AS plan_published_at,
             a.id AS article_id, a.status AS article_status,
             a.wp_post_id AS article_wp_post_id, a.featured_image,
             a.published_at AS article_published_at
@@ -116,6 +116,30 @@ async function updatePlanStatus(conn, appId, slug, lang, planStatus) {
         SET plan_status = ?, updated_at = NOW()
       WHERE app_id = ? AND slug = ? AND lang = ?`,
     [planStatus, appId, slug, lang]
+  );
+  return { affectedRows: res ? res.affectedRows : 0 };
+}
+
+/**
+ * Mirror-column write on a plan row (wp_post_id / published_at / published_url …).
+ * plan_status is deliberately NOT in the allowed list — it is a mirror of the article
+ * row and may only move through updatePlanStatus (i.e. through article-state).
+ */
+async function updatePlanFields(conn, appId, slug, lang, fields = {}) {
+  const allowed = ['wp_post_id', 'published_url', 'published_at', 'queued_at', 'notes'];
+  const set = [];
+  const values = [];
+  for (const f of allowed) {
+    if (fields[f] === undefined || fields[f] === null) continue;
+    set.push(`\`${f}\` = ?`);
+    values.push(fields[f]);
+  }
+  if (!set.length) return { affectedRows: 0 };
+  const [res] = await conn.query(
+    `UPDATE ${TABLES.articlePlan}
+        SET ${set.join(', ')}, updated_at = NOW()
+      WHERE app_id = ? AND slug = ? AND lang = ?`,
+    [...values, appId, slug, lang]
   );
   return { affectedRows: res ? res.affectedRows : 0 };
 }
@@ -228,6 +252,7 @@ module.exports = {
   selectList,
   updateArticle,
   updatePlanStatus,
+  updatePlanFields,
   updateFeaturedImage,
   repairArticleLink,
   clearPlanArticleLink,

@@ -38,11 +38,14 @@ async function findBySlug(slug, options = {}) {
  * Paginate and fetch all articles (incl. drafts/trash: status=any; for plan-table
  * reconciliation)
  * @param {object} [params] extra query params (e.g. _fields overrides)
+ * @param {{siteKey?:string}} [options] siteKey — REQUIRED for MCP tool calls: without it
+ *   wpTarget() falls back to the non-existent default site `tengence` in a multi-site
+ *   workspace. CLI callers may omit it (they pass --site in argv).
  * @returns {Promise<Array>} [{id, slug, status, link, categories:[id], tags:[id], ...}]
  */
-async function list(params = {}) {
+async function list(params = {}, options = {}) {
   const { apiAll } = require('./request');
-  return apiAll('posts', { _fields: 'id,slug,status,link,categories,tags,date', status: 'any', ...params });
+  return apiAll('posts', { _fields: 'id,slug,status,link,categories,tags,date', status: 'any', ...params }, options);
 }
 
 /**
@@ -80,6 +83,18 @@ async function create(data, options = {}) {
     console.warn('[wp.posts.create] meta now goes through the plugin API; the WP meta field is ignored (use saveMeta)');
   }
   return api('/posts', { method: 'POST', body, siteKey: options.siteKey });
+}
+
+/**
+ * Trash an article (DELETE /posts/{id}?force=false). WP keeps the content in the trash,
+ * so this stays reversible — unlike force=true (permanent delete).
+ * Needed because the multilingual plugin narrows the writable `status` enum to
+ * publish/future/draft/pending/private, so `POST status=trash` is rejected with 400.
+ * @param {number|string} id
+ * @param {{siteKey?:string}} [options] siteKey — required for MCP tool calls
+ */
+async function remove(id, options = {}) {
+  return api(`/posts/${id}?force=false`, { method: 'DELETE', siteKey: options.siteKey });
 }
 
 /**
@@ -147,4 +162,4 @@ async function findPostByLanguage(slug, lang, options = {}) {
   return plugin.findPostByLanguage(slug, lang, options);
 }
 
-module.exports = { findBySlug, get, list, update, create, getMeta, saveMeta, setPostLanguage, setPostDates, getPostDates, findPostByLanguage };
+module.exports = { findBySlug, get, list, update, create, remove, getMeta, saveMeta, setPostLanguage, setPostDates, getPostDates, findPostByLanguage };
