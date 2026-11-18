@@ -35,6 +35,7 @@
  * ============================================================================
  */
 
+const t = require('../index');
 const repo = require('../db/channel-schedule');
 const { withConn } = require('../db/connection');
 const channel = require('./channel'); // nextDue / recordWechatIssue / recordPublish
@@ -179,23 +180,23 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
   for (const s of schedule) {
     if (!s.enabled) continue;
     const [h, m] = String(s.publish_time).split(':').map(Number);
-    const t = new Date(now);
-    t.setHours(h, m, 0, 0);
+    const slotAt = new Date(now);
+    slotAt.setHours(h, m, 0, 0);
     const ranToday = !!(s.last_run_at && String(s.last_run_at).slice(0, 10) === day);
     // P2 漏跑自检：窗口右端已过 MISSED_REPORT_DELAY_MIN 分钟、今天仍没跑过 ⇒ 今日必漏。
     // 只看"今天已过点的槽"，避免把当天还没到的槽误报成漏跑。
-    const rightEdgeMs = t.getTime() + FIRE_WINDOW_MIN * 60000;
+    const rightEdgeMs = slotAt.getTime() + FIRE_WINDOW_MIN * 60000;
     if (!ranToday && nowMs > rightEdgeMs + MISSED_REPORT_DELAY_MIN * 60000) {
       staleSlots.push({
         id: s.id,
         platform: s.platform,
         publish_time: s.publish_time,
         last_run_at: s.last_run_at || null,
-        missed_by_min: Math.round((nowMs - t.getTime()) / 60000),
+        missed_by_min: Math.round((nowMs - slotAt.getTime()) / 60000),
         action: '人工补跑或等明日窗口；连续多日出现说明外部 tick 与窗口不匹配',
       });
     }
-    if (Math.abs(nowMs - t.getTime()) / 60000 > FIRE_WINDOW_MIN) continue;
+    if (Math.abs(nowMs - slotAt.getTime()) / 60000 > FIRE_WINDOW_MIN) continue;
     if (ranToday) {
       skippedToday.push({ id: s.id, platform: s.platform, publish_time: s.publish_time, reason: 'already ran today' });
       continue;
@@ -268,6 +269,9 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
             perIssue,
             maxCandidates: cap,
             check: async (slug) => {
+              // 从 siteKey 解析站点目录（本文件此前既未引入 t、也无 siteDir 变量，
+              // 导致 ReferenceError: t is not defined → 每篇候选都进 needsRepair）。
+              const siteDir = t.site.loadSite(siteKey).siteDir;
               // 有渠道改写稿时校验改写稿（与建稿内容一致）
               const rw = t.syndicate.wechat.readRewrittenExport(siteDir, slug);
               const report = await t.check.checkArticle({
