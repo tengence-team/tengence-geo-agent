@@ -3265,7 +3265,10 @@ const tools = [
           });
         }
 
-        const create = args.create_terms === true;
+        // 2026-11-20 — dry_run 必须真的只读：此前 create_terms=true 时预览阶段也会
+        // POST /tags 建出真实 term（实测 dry run 建了 agentic-ai），违反"预览不写"，
+        // 还会把词表缓存弄脏。预览时只解析、把需要新建的 slug 报在 would_create 里。
+        const create = args.create_terms === true && args.dry_run !== true;
         const catRes = wantCats === null
           ? null
           : await t.wp.terms.resolveTermIds(wantCats, { taxonomy: 'category', create, siteKey });
@@ -3295,6 +3298,11 @@ const tools = [
             },
             resolved: { categories: catRes ? catRes.resolved : [], tags: tagRes ? tagRes.resolved : [] },
             created: { categories: catRes ? catRes.created : [], tags: tagRes ? tagRes.created : [] },
+            // 预览时不会真的建词，把"真跑会新建哪些"如实报出来
+            would_create: {
+              categories: args.create_terms && catRes ? catRes.unknown : [],
+              tags: args.create_terms && tagRes ? tagRes.unknown : [],
+            },
             problems,
           });
         }

@@ -118,6 +118,11 @@ async function resolveTermIds(input, opts) {
     resolved.push({ input: raw, id: made.id, name: made.name, via: 'created' });
   }
 
+  // 2026-11-20 — 新建过词就丢弃本进程的词表缓存：否则下一个请求仍拿着"创建前"
+  // 的快照，同一个 slug 会判成 unknown 并再次 POST，撞 WP 的 400 term_exists
+  // （实测：dry run 建了 agentic-ai 之后，后续调用全部失败）。
+  if (created.length) clearCache();
+
   return { ids: [...new Set(ids)], created, unknown, resolved };
 }
 

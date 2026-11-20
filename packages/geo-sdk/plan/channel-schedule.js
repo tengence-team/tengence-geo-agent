@@ -254,6 +254,9 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
       // 隔离成 review_failed（从队列移出）并返回 blocked:true。旧行为是直接失败，
       // 这个槽当天就此报废；现在换下一批候选再试，最多 GATE_RETRY_MAX 轮，
       // 这样队头压着坏稿也不会让整个槽连续多日空转。
+      // 2026-11-20 — 本轮已试过的候选键（`slug::lang`）。传给 nextDue 后，闸门重试
+      // 才会真的换下一篇；此前它每轮都返回同一篇，一个 tick 内对同一篇撞 4 次。
+      const triedKeys = new Set();
       for (let attempt = 1; attempt <= GATE_RETRY_MAX; attempt += 1) {
         if (s.platform === 'wechat') {
           // 2026-11-13 — 微信一期 N 篇（默认 3，可由 schedule.count / 参数覆盖）：
@@ -327,8 +330,13 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
           if (attempt === GATE_RETRY_MAX) break;
           continue;
         }
-        next = await channel.nextDue(s.platform, { count: s.count || 1, register: !dryRun });
+        next = await channel.nextDue(s.platform, {
+          count: s.count || 1,
+          register: !dryRun,
+          excludeKeys: triedKeys,
+        });
         if (!next) break;
+        for (const x of next.tasks || []) triedKeys.add(`${x.slug}::${x.lang || 'zh-hans'}`);
         slugs = next.tasks.map((x) => x.slug);
         pub = await publishToChannel({
           platform: s.platform,
@@ -377,8 +385,18 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
         // 掘金/CSDN 停发 5 天却查不出原因的直接原因。现在把每个失败项按行落库。
         if (!dryRun && PUBLISH_LOG_PLATFORMS.includes(s.platform)) {
           const attemptAt = localStamp(new Date());
+          let quarantined = 0;
           for (const r of pub.results || []) {
             if (!r || r.ok) continue;
+            // 2026-11-20 — 内容闸拦截项已经由 applyContentGate 落成 review_failed
+            // （终态、从队列移出）。这里若再用 status:'failed' 覆盖，它立刻变回
+            // "可自动重试"，下一 tick 继续被 nextDue 取到 → 一篇缺标签的稿子把整个
+            // 渠道无限原地循环（11-18~11-20 掘金/CSDN 零产出即此因）。隔离记录已带
+            // reason，这里只计数，不重写状态。
+            if (r.stage === 'content_gate' && r.blocked) {
+              quarantined += 1;
+              continue;
+            }
             try {
               await channel.recordPublish({
                 platform: s.platform,
@@ -395,7 +413,8 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
               console.error('[channel_publish_due] recordPublish(failed) failed:', logErr.message);
             }
           }
-          fired.failuresLogged = (pub.results || []).filter((r) => r && !r.ok).length;
+          fired.failuresLogged = (pub.results || []).filter((r) => r && !r.ok).length - quarantined;
+          if (quarantined) fired.quarantined = quarantined;
         }
         results.push(fired);
         continue;
@@ -496,10 +515,16 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
             console.error('[channel_publish_due] recordPublish(exception) failed:', logErr.message);
           }
         }
-        try {
-          await withConn((conn) => repo.markLastRun(conn, appId, s.id, localStamp(now)));
-        } catch (markErr) {
-          console.error('[channel_publish_due] markLastRun after exception failed:', markErr.message);
+        // 2026-11-20 — 微信的失败不推进 last_run_at：微信每天只有两个窗口（08:26 / 17:12），
+        // 一次 access_token 抖动（40164 IP 白名单）就把当天窗口关掉，等于整天 0 产出
+        // （11-19、11-20 实测）。失败行已经按 slug 落库留痕，窗口内可再试一次；
+        // 掘金/CSDN 保持"失败即关窗"，避免它们在窗口里反复撞同一批候选。
+        if (s.platform !== 'wechat') {
+          try {
+            await withConn((conn) => repo.markLastRun(conn, appId, s.id, localStamp(now)));
+          } catch (markErr) {
+            console.error('[channel_publish_due] markLastRun after exception failed:', markErr.message);
+          }
         }
       }
       results.push({

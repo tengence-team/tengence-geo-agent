@@ -350,3 +350,118 @@ test('publishDue retries the next candidate when the gate blocks the head articl
     syndicateChannel.publishToChannel = origPublish;
   }
 });
+
+// ==================== 4. a gate quarantine must not be downgraded (2026-11-20) ====================
+// The 11-18..11-20 outage: the head article failed G17/G19, applyContentGate wrote
+// review_failed (terminal, out of the queue), then this branch rewrote it to
+// `failed` (retryable) — so nextDue kept returning the same article and the whole
+// slot looped on it. These three tests pin the fix.
+
+test('publishDue keeps a content-gate quarantine at review_failed (never downgrades to failed)', async () => {
+  const origNextDue = planChannel.nextDue;
+  const origPublish = syndicateChannel.publishToChannel;
+  await planChannel.recordPublish({
+    platform: 'csdn',
+    slug: 'gate-blocked',
+    status: 'review_failed',
+    error: { code: 'G17_GATE', message: 'WP taxonomy (G19): all plan tags present in WP' },
+    stage: 'content_gate',
+    notes: '[gate] 实质内容闸未通过（G17），已隔离待重写',
+  });
+  planChannel.nextDue = async () => ({ platform: 'csdn', tasks: [{ slug: 'gate-blocked', lang: 'zh-hans' }] });
+  syndicateChannel.publishToChannel = async () => ({
+    ok: false,
+    platform: 'csdn',
+    blocked: true,
+    action: 'gate_blocked',
+    results: [
+      {
+        slug: 'gate-blocked',
+        ok: false,
+        blocked: true,
+        stage: 'content_gate',
+        error: { code: 'G17_GATE', message: 'WP taxonomy (G19)' },
+      },
+    ],
+  });
+  try {
+    const slot = await t.plan.channelSchedule.set({ platform: 'csdn', publish_time: '10:00' });
+    const res = await t.plan.channelSchedule.publishDue({ now: at(10, 0), siteKey: 'tengence_test' });
+
+    assert.equal(res.results[0].status, 'failed');
+    assert.equal(res.results[0].quarantined, 1, 'the gate-blocked item is counted as quarantined');
+    assert.equal(res.results[0].failuresLogged, 0, 'it must not be logged as a retryable failure');
+
+    const rows = await planChannel.list({ platform: 'csdn' });
+    const row = rows.find((r) => r.slug === 'gate-blocked');
+    assert.equal(row.status, 'review_failed', 'quarantine stays terminal → nextDue skips it');
+    assert.ok(!String(row.notes).includes('[attempt'), 'no retryable-failure note appended');
+    assert.equal(row.error_code, 'G17_GATE');
+    assert.equal((await t.plan.channelSchedule.get(slot.id)).last_run_at, null, 'a failed run must not advance last_run_at');
+  } finally {
+    planChannel.nextDue = origNextDue;
+    syndicateChannel.publishToChannel = origPublish;
+  }
+});
+
+test('publishDue tells nextDue which candidates it already tried (no same-article retry loop)', async () => {
+  const origNextDue = planChannel.nextDue;
+  const origPublish = syndicateChannel.publishToChannel;
+  const seenExcludes = [];
+  let calls = 0;
+  planChannel.nextDue = async (_platform, opts = {}) => {
+    calls += 1;
+    seenExcludes.push(new Set(opts.excludeKeys || []));
+    return { platform: 'csdn', tasks: [{ slug: calls === 1 ? 'head-blocked' : 'next-one', lang: 'zh-hans' }] };
+  };
+  syndicateChannel.publishToChannel = async ({ slugs }) =>
+    slugs[0] === 'head-blocked'
+      ? {
+          ok: false,
+          blocked: true,
+          results: [{ slug: 'head-blocked', ok: false, blocked: true, stage: 'content_gate', error: { code: 'G17_GATE', message: 'x' } }],
+        }
+      : { ok: true, platform: 'csdn', results: [{ slug: 'next-one', ok: true, published: true }] };
+  try {
+    await t.plan.channelSchedule.set({ platform: 'csdn', publish_time: '10:00' });
+    const res = await t.plan.channelSchedule.publishDue({ now: at(10, 0), siteKey: 'tengence_test' });
+    assert.equal(calls, 2);
+    assert.equal(seenExcludes[0].size, 0, 'first round excludes nothing');
+    assert.ok(seenExcludes[1].has('head-blocked::zh-hans'), 'second round excludes the slug just tried');
+    assert.equal(res.results[0].status, 'published');
+    assert.deepEqual(res.results[0].slugs, ['next-one']);
+  } finally {
+    planChannel.nextDue = origNextDue;
+    syndicateChannel.publishToChannel = origPublish;
+  }
+});
+
+test('a wechat dispatch exception must NOT close today`s window (last_run_at unchanged)', async () => {
+  const origPublish = syndicateChannel.publishToChannel;
+  const origCandidates = planChannel.wechatIssueCandidates;
+  const origAssemble = planChannel.wechatIssue.assembleIssue;
+  planChannel.wechatIssueCandidates = async () => [{ slug: 'wx-1', title: 'wx-1' }];
+  planChannel.wechatIssue.assembleIssue = async () => ({
+    ready: [{ slug: 'wx-1', title: 'wx-1' }],
+    needsRepair: [],
+    perIssue: 1,
+  });
+  syndicateChannel.publishToChannel = async () => {
+    throw new Error('access_token fetch failed: 40164 invalid ip 1.2.3.4, not in whitelist');
+  };
+  try {
+    const slot = await t.plan.channelSchedule.set({ platform: 'wechat', publish_time: '08:26' });
+    const res = await t.plan.channelSchedule.publishDue({ now: at(8, 30), siteKey: 'tengence_test' });
+    assert.equal(res.results[0].status, 'failed');
+    const after = await t.plan.channelSchedule.get(slot.id);
+    assert.equal(after.last_run_at, null, 'the 17:12 window can still retry after an 08:26 failure');
+    const rows = await planChannel.list({ platform: 'wechat' });
+    const row = rows.find((r) => r.slug === 'wx-1');
+    assert.equal(row.status, 'failed', 'the failed article is still recorded for evidence');
+    assert.equal(row.error_code, 'DISPATCH_ERROR');
+  } finally {
+    syndicateChannel.publishToChannel = origPublish;
+    planChannel.wechatIssueCandidates = origCandidates;
+    planChannel.wechatIssue.assembleIssue = origAssemble;
+  }
+});

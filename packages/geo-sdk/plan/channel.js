@@ -1014,7 +1014,7 @@ async function wechatIssueCandidates({ limit = 8 } = {}) {
   }));
 }
 
-async function nextDue(platform, { count = 1, register = true } = {}) {
+async function nextDue(platform, { count = 1, register = true, excludeKeys = null } = {}) {
   const appId = DEFAULT_APP_ID();
   const langs = PLATFORM_LANGS[platform] || ['zh-hans'];
   const published = await publishedSlugs(platform); // Set<`slug::lang`>
@@ -1027,10 +1027,16 @@ async function nextDue(platform, { count = 1, register = true } = {}) {
     (a, b) => ((a.plan && a.plan.publishOrder) || 1e9) - ((b.plan && b.plan.publishOrder) || 1e9)
   );
   const picked = [];
+  // 2026-11-20 — 本轮已试过的键（`slug::lang`）。闸门重试此前每轮都重新 nextDue()，
+  // 拿到的永远是同一篇：GATE_RETRY_MAX 于是退化成"同一篇连撞 4 次"，队头坏稿
+  // 把整个渠道的槽锁死（11-18~11-20 掘金/CSDN 零产出）。调用方把已试键塞进来后，
+  // 重试才真正换成下一篇候选。
+  const excluded = excludeKeys instanceof Set ? excludeKeys : new Set(excludeKeys || []);
   await withConn(async (conn) => {
     for (const r of sorted) {
       const key = `${r.slug}::${r.lang}`;
       if (published.has(key)) continue; // 已发送 → 下一篇
+      if (excluded.has(key)) continue; // 本轮已试过 → 下一篇
       let task = await repo.getByKey(conn, appId, platform, r.slug, r.lang);
       if (task && NO_AUTO_RETRY.has(task.status)) continue; // 终态：不自动重发，需人工
       if (!task) {
