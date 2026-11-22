@@ -458,8 +458,15 @@ test('devto: publishFromSlugs sends the ENGLISH row (lang=en), live + cover imag
   const { withConn } = require('../packages/geo-sdk/db/connection');
   const oldKey = process.env.DEVTO_API_KEY;
   const oldFetch = globalThis.fetch;
+  const origCheck = t.check.checkArticle;
   process.env.DEVTO_API_KEY = 'test-devto-key';
   let sentBody = null;
+  // 2026-11-22: the content gate (checkArticle) went strict for published rows
+  // (body lower bound / meta / research brief are alwaysHard now), so a short
+  // routing fixture no longer passes it. This test is about en-row routing, live
+  // mode and the cover image — the gate has its own coverage — so stub it green
+  // rather than maintaining a 2200-char fixture whose length nobody asserts on.
+  t.check.checkArticle = async () => ({ ok: true, rows: [] });
 
   globalThis.fetch = async (url, opts) => {
     const u = String(url);
@@ -476,11 +483,9 @@ test('devto: publishFromSlugs sends the ENGLISH row (lang=en), live + cover imag
   try {
     await withConn(async (conn) => {
       // same slug, two language rows — zh-hans MUST NOT be used for dev.to
-      // The zh-hans row is what the publish gate (checkArticle) adjudicates; to
-      // keep this a routing test (and not an editorial-gate test), seed it as an
-      // already-published article (wp_post_id>0 → editorial rows go advisory)
-      // that still satisfies the ALWAYS-HARD G17 substance rows: substantive
-      // body (>=800 cn chars) + 2 content sections + a 数据来源 block + cover.
+      // The zh-hans row is what the publish gate (checkArticle) adjudicates; the
+      // gate is stubbed above, so this fixture only needs to exist and carry a
+      // 数据来源 block (kept so the fixture still reads like a real article).
       await conn.query(
         `INSERT INTO tengence_geo_articles
            (app_id, slug, title, lang, content_longtext, featured_image, status, wp_post_id)
@@ -524,6 +529,7 @@ test('devto: publishFromSlugs sends the ENGLISH row (lang=en), live + cover imag
   } finally {
     if (oldKey === undefined) delete process.env.DEVTO_API_KEY; else process.env.DEVTO_API_KEY = oldKey;
     globalThis.fetch = oldFetch;
+    t.check.checkArticle = origCheck;
     await withConn(async (conn) => {
       await conn.query(`DELETE FROM tengence_geo_articles WHERE slug = 'devto-lang-regression'`);
       await conn.query(`DELETE FROM tengence_geo_channel_plan WHERE slug = 'devto-lang-regression'`);
