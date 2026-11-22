@@ -23,6 +23,8 @@
  * ============================================================================
  */
 
+const { geoBlockLabels } = require('./md.js');
+
 /**
  * Whether a meta value has no real content
  * An empty array becomes the string "[]" after JSON.stringify; such values must not
@@ -400,6 +402,26 @@ function buildSeoGeoMeta(article, config, existingMeta = {}, lang = null) {
   for (const [k, v] of Object.entries(guarded)) {
     if (v !== undefined) meta[k] = v;
   }
+
+  // UI labels for the renderer (block headings + breadcrumb root). The single source
+  // of truth is geoBlockLabels(), never a per-language map in PHP and never the body.
+  // Merge into the existing i18n object so unrelated keys survive re-publish.
+  const metaLang = lang || (article && article.lang) || (config && config.lang);
+  const labels = geoBlockLabels(metaLang);
+  const prevI18n = (existingMeta && typeof existingMeta.i18n === 'object' && existingMeta.i18n)
+    ? existingMeta.i18n : {};
+  const prevLabels = (prevI18n && typeof prevI18n.labels === 'object' && prevI18n.labels)
+    ? prevI18n.labels : {};
+  meta.i18n = Object.assign({}, prevI18n, {
+    labels: Object.assign({}, prevLabels, {
+      takeaways: labels.takeaways,
+      faq: labels.faq,
+      q: labels.q,
+      a: labels.a,
+      sep: labels.sep,
+      breadcrumbRoot: labels.blog,
+    }),
+  });
   return meta;
 }
 

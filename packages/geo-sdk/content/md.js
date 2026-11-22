@@ -435,9 +435,9 @@ function h2List(html) {
 // (2026-10-06 incident, zh-hant enterprise-geo-playbook).
 
 const GEO_BLOCK_LABELS = {
-  'zh-hans': { takeaways: '关键要点', faq: '常见问题', q: '问', a: '答', sep: '：' },
-  'zh-hant': { takeaways: '關鍵要點', faq: '常見問題', q: '問', a: '答', sep: '：' },
-  'en': { takeaways: 'Key Takeaways', faq: 'FAQ', q: 'Q', a: 'A', sep: ': ' },
+  'zh-hans': { takeaways: '关键要点', faq: '常见问题', q: '问', a: '答', sep: '：', blog: '博客' },
+  'zh-hant': { takeaways: '關鍵要點', faq: '常見問題', q: '問', a: '答', sep: '：', blog: '網誌' },
+  'en': { takeaways: 'Key Takeaways', faq: 'FAQ', q: 'Q', a: 'A', sep: ': ', blog: 'Blog' },
 };
 
 /**
@@ -445,7 +445,7 @@ const GEO_BLOCK_LABELS = {
  * Unknown / missing language falls back to the site default (zh-hans) — never throws,
  * so every existing 2-argument call site keeps its current output byte-for-byte.
  * @param {string} [lang] geo language code (zh-hans | zh-hant | en, accepts zh-hant/zh-tw/en)
- * @returns {{takeaways:string, faq:string, q:string, a:string, sep:string}}
+ * @returns {{takeaways:string, faq:string, q:string, a:string, sep:string, blog:string}}
  */
 function geoBlockLabels(lang) {
   const k = String(lang == null ? '' : lang).trim().toLowerCase();
