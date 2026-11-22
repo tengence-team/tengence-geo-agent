@@ -301,15 +301,16 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   const geo = dbArticle ? parseJson(dbArticle.geo, {}) : (meta.geo || {});
   const qaPairs = (geo && geo.qa_pairs) || [];
 
-  // ===== already-published article → the editorial gate becomes advisory =====
-  // Publishing an article for the first time must pass every hard rule. But an article
-  // that already went out under the WP (wp_post_id > 0) can no longer be "un-published"
-  // by failing today's stricter rules: re-publishing it is what adds the trilingual
-  // translation_group / fixes metadata, and its body is a legacy artifact written
-  // before the current standards existed. `status` is NOT a usable signal here — the
-  // production DB has 77 zh-hans rows still marked `draft` that already carry a
-  // wp_post_id, so status alone would hard-block live articles. Drafts (no
-  // wp_post_id) keep the full hard gate, research brief included.
+  // ===== already-published article → legacy-formatting rows become advisory =====
+  // Publishing for the first time must pass every hard rule. An article already on
+  // WP (wp_post_id > 0) cannot be "un-published" by a formatting convention that
+  // postdates its body, so those rows are reported but do not block a re-publish
+  // (which is what adds the trilingual translation_group / metadata fixes).
+  // Content-completeness rows are NOT part of that exemption (see the demotion loop
+  // at the end of the row list): a thin live page is a defect now, not a legacy
+  // artifact. `status` is NOT a usable signal here — the production DB has zh-hans
+  // rows still marked `draft` that already carry a wp_post_id, so status alone
+  // would hard-block live articles. Drafts (no wp_post_id) keep the full hard gate.
   const isPublished = Boolean(dbArticle && Number(dbArticle.wp_post_id) > 0);
 
   // ===== G19 WP-side taxonomy sync (2026-11-10) =====
@@ -616,6 +617,14 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     // 4th element soft=true means the row is informational only and doesn't affect
     // the exit code (word count inferred from dir when --type is not explicit)
     [wcLabel, cn, wcOk, !typeExplicit],
+    // 2026-11-22 (thin-content incident): the LOWER bound is content completeness, not a
+    // legacy formatting convention — a live article below its type minimum is thin
+    // content no matter when it was written, so it is always hard, even for a published
+    // row. The upper bound stays in the informational row above: legacy long-form is
+    // over the ceiling but still substantive, so it must not block a re-publish.
+    // en is measured in words (the zh T1–T7 ranges are Chinese char counts, so they
+    // cannot apply): 1200 words is the "判废" floor of the writing standard.
+    ['body length lower bound (hard)', (LANG === 'en' ? md.split(/\s+/).filter(Boolean).length : cn) + ' >= ' + (LANG === 'en' ? 1200 : typeInfo.range[0]), (LANG === 'en' ? md.split(/\s+/).filter(Boolean).length : cn) >= (LANG === 'en' ? 1200 : typeInfo.range[0]), false, true],
     ['Banned words hit', hits.length ? hits.join('/') : '0', hits.length === 0],
     ['Tengence misdescribed as "search engine"', prodAsEngine, prodAsEngine === 0],
     ['FAQ answers with A: prefix', badA, badA === 0],
@@ -642,7 +651,10 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     // and the published-article convention): zh-hans 165-175, en 150-160, zh-hant 60-80.
     // A universal 165-175 range would make en/zh-hant forever fail the publish gate
     // (and contradict T8), so the range is derived from LANG.
-    ['meta_description chars', mdl, (LANG === 'en' ? (mdl >= 150 && mdl <= 160) : LANG === 'zh-hant' ? (mdl >= 60 && mdl <= 80) : (mdl >= 165 && mdl <= 175))],
+    ['meta_description chars', mdl, (LANG === 'en' ? (mdl >= 150 && mdl <= 160) : LANG === 'zh-hant' ? (mdl >= 60 && mdl <= 80) : (mdl >= 165 && mdl <= 175)), false, true],
+    // 2026-11-22: the takeaways/FAQ rows stay advisory for a published row — they are
+    // rendering conventions of the body format (legacy en bodies keep them in meta),
+    // not the thin-content defect this gate is fixing.
     ['takeaway count (body/meta effective)', effTakeaways.length, effTakeaways.length >= 5],
     ['FAQ pair count (body/meta effective)', effFaq.length, effFaq.length >= 5],
     ['materialized takeaways block', take, take === 1],
@@ -711,9 +723,11 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
       ? [['citation URLs present in research brief (B2 ledger)', ledgerMiss.length ? ledgerMiss.length + ' missing: ' + ledgerMiss.slice(0, 3).join(' ') : 'all ' + cites.length + ' cited in brief', ledgerMiss.length === 0, false, true]]
       : [['citation URLs present in research brief (B2 ledger)', 'no brief (ledger n/a)', true, true]]),
     // B6 (2026-11-04): a hollow research brief ("industry blogs", zero URLs) must not
-    // count as research. The brief has to carry actual source URLs (≥2). Advisory for
-    // already-published rows (the brief gates writing); hard for first-time publishes.
-    ['research brief contains source URLs (G17/B6)', researchText ? ((researchText.match(/https?:\/\//g) || []).length + ' urls') : 'no brief', !hasResearch || (researchText.match(/https?:\/\//g) || []).length >= 2, isPublished, false],
+    // count as research. The brief has to carry actual source URLs (≥2). 2026-11-22:
+    // always hard — a live article whose "research" carries no source URL is an
+    // unverifiable claim set, which is exactly the thin-content defect this gate
+    // exists to catch.
+    ['research brief contains source URLs (G17/B6)', researchText ? ((researchText.match(/https?:\/\//g) || []).length + ' urls') : 'no brief', !hasResearch || (researchText.match(/https?:\/\//g) || []).length >= 2, false, true],
     // B3 related reading (2026-11-04 accident): the block linked external site homepages
     // (perplexity.ai / docs.anthropic.com / huggingface.co). Only own-site article URLs
     // are allowed here; external references live exclusively in the Data Sources section.
@@ -751,13 +765,12 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     ['CTA block single link per line (hard)', ctaIssues.length ? ctaIssues.length + ' violations' : 'ok', ctaIssues.length === 0],
   ];
 
-  // Already on WordPress → every editorial row above is informational only (see the
-  // isPublished note). Reporting is preserved; the hard verdict is dropped so the row
-  // can be re-published (translation_group, metadata fixes) without rewriting a body
-  // that is already live. First-time publishes (no wp_post_id) are unaffected.
-  // Rows marked alwaysHard (5th element, currently the featured_image completeness
-  // gate) stay hard even when isPublished — a missing featured image means the live
-  // page has no cover, which is a real defect, not a legacy-format artifact.
+  // Already on WordPress → only rows about *legacy formatting conventions* become
+  // advisory. Content-completeness rows (alwaysHard, 5th element) stay hard even when
+  // isPublished: body length lower bound, meta_description length, the research brief
+  // and its source-URL ledger. 2026-11-22 incident: a
+  // 1409-char live article returned ok:true because every editorial row was demoted,
+  // so "the gate passed" said nothing about whether the page had content.
   if (isPublished) {
     for (const row of rows) {
       if (!row[4]) row[3] = true;
@@ -787,10 +800,11 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   if (!hasResearch) {
     warns.push('No pre-writing research brief found (file or articles.research_md; AGENTS.md §9: the mandatory pre-writing research gate — missing blocks publish)');
   }
-  // Same advisory rule for an already-published row: the research brief gates *writing*,
-  // so it only ever applies to a first publish. Re-publishing a translated group must
-  // not require re-authoring the brief.
-  rows.push(['pre-writing research brief (AGENTS.md §9 mandatory gate)', hasResearch ? (researchSource || 'present') : 'missing', hasResearch, isPublished]);
+  // Same rule for an already-published row was dropped on 2026-11-22: the brief is the
+  // provenance ledger for every claim in the body, and a live article without one has
+  // no traceable evidence chain. It now stays hard for published rows too; the
+  // zh-hans brief still satisfies the translation rows through the B7 cascade.
+  rows.push(['pre-writing research brief (AGENTS.md §9 mandatory gate)', hasResearch ? (researchSource || 'present') : 'missing', hasResearch, false, true]);
 
   // ===== heading-level soft checks (added 2026-09-16 plan A, no publish block) =====
   // 1. H2 Chinese-numbered continuity (一、二、三… must be continuous, no skipped or
@@ -859,7 +873,7 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
     if (!rowOk && !soft) ok = false;
   }
   if (isPublished) {
-    warns.push('Already published (wp_post_id=' + dbArticle.wp_post_id + '): editorial checks are advisory for this re-publish, including the research brief. Drafts (no wp_post_id) remain hard-gated.');
+    warns.push('Already published (wp_post_id=' + dbArticle.wp_post_id + '): legacy-formatting rows are advisory for this re-publish; content-completeness rows (body length lower bound, meta description, research brief) remain HARD.');
   }
 
   return {
