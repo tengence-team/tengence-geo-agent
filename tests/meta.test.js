@@ -43,6 +43,7 @@ test('keys have no prefix and no _yoast dead keys', () => {
     'geo_citations',
     'geo_key_takeaways',
     'geo_qa_pairs',
+    'i18n', // 2026-11-23 block labels ship as meta so the WP plugin reads labels, never the body
     'seo_meta_description',
     'seo_meta_keywords',
     'seo_meta_title',
