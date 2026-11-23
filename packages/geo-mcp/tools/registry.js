@@ -742,70 +742,6 @@ const tools = [
   },
 
   {
-    // 2026-11-23: product-page URL normalization. The website moved its product
-    // pages to /{lang}/products/{slug} (no trailing slash). Legacy bodies still
-    // carry /tengence-search (301 → English), /tengence-insight (404),
-    // /products/tengence-rayview (retired name, 404) and /products/xxx/ (403).
-    // This tool rewrites the URL only — no re-render, no SEO/GEO recompute.
-    name: 'article_product_links_fix',
-    title: '产品页链接纠偏',
-    annotations: { readOnlyHint: false },
-    structured: true,
-    description:
-      'Normalize product-page URLs in article bodies and live WP posts to `https://www.tengence.com/{lang}/products/{slug}` ' +
-      '(matching the article language, no trailing slash). Handles legacy `/tengence-search|insight|geo` links, the retired ' +
-      '`tengence-rayview` name (→ insight by default) and already-`/products/` links that carry a trailing slash (403 on the live site). ' +
-      'Rewrites articles.content_longtext / content_html / seo / geo and the live WP post content + geo citations; never re-renders the ' +
-      'body, never recomputes SEO/GEO, never touches title/cover/status/dates. Default apply=false = READ-ONLY dry-run; apply=true ' +
-      're-reads both surfaces and reports residual 0. Pass slugs / langs / statuses to run a batch; wp_slugs handles live posts with no DB row.',
-    inputSchema: z.object({
-      site: siteField,
-      apply: z.boolean().optional().describe('false (default) = dry-run (before/after report only); true = write DB + live WP'),
-      langs: z.array(z.string()).optional().describe('limit to these languages (zh-hans|zh-hant|en)'),
-      statuses: z.array(z.string()).optional().describe('limit to these statuses (publish|draft)'),
-      slugs: z.array(z.object({ slug: z.string(), lang: z.string().optional() })).optional().describe('limit to these rows'),
-      wp_slugs: z.array(z.object({ slug: z.string(), lang: z.string() })).optional().describe('live WP posts without a DB row (WP-only repair)'),
-      products: z.array(z.enum(['tengence-search', 'tengence-insight', 'tengence-geo', 'tengence-rayview'])).optional()
-        .describe('product set to normalize (default: search + insight + geo + rayview)'),
-      rayview_to_insight: z.boolean().optional().describe('map tengence-rayview → tengence-insight (default true)'),
-      include_wp: z.boolean().optional().describe('also read/patch live WP posts (default true)'),
-      max_results: z.number().optional().describe('how many per-row results to return (default 200)'),
-    }),
-    async run(args) {
-      try {
-        const S = withSite(args);
-        process.env.APP_ID = process.env.APP_ID || S.env.APP_ID || '1';
-        const appId = parseInt(process.env.APP_ID || '1', 10);
-        if (args.langs && args.langs.length) {
-          for (const l of args.langs) { const e = langReject(l); if (e) return fail(new Error(e)); }
-        }
-        if (args.slugs && args.slugs.length) {
-          for (const w of args.slugs) { if (w.lang) { const e = langReject(w.lang); if (e) return fail(new Error(e)); } }
-        }
-        if (args.wp_slugs && args.wp_slugs.length) {
-          for (const w of args.wp_slugs) { const e = langReject(w.lang); if (e) return fail(new Error(e)); }
-        }
-        const r = await t.productLinks.repairProductLinks({
-          appId,
-          site: S.siteKey,
-          dryRun: args.apply !== true,
-          langs: args.langs && args.langs.length ? args.langs.map(langNorm) : undefined,
-          statuses: args.statuses && args.statuses.length ? args.statuses : undefined,
-          slugs: args.slugs || null,
-          wpSlugs: args.wp_slugs || null,
-          products: args.products || undefined,
-          rayviewToInsight: args.rayview_to_insight !== false,
-          includeWp: args.include_wp !== false,
-          maxResults: args.max_results,
-        });
-        return okStructured(r);
-      } catch (e) {
-        return fail(e);
-      }
-    },
-  },
-
-  {
     name: 'article_research_sync',
     title: '研究 brief 引用补齐（B2 ledger）',
     annotations: { readOnlyHint: false },
@@ -4196,7 +4132,7 @@ const TOOL_GROUPS = [
   { group: 'Workspace & Site', match: /^(workspace_use|site_|db_|diagnose_site)/ },
   {
     group: 'Content authoring & gate',
-    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_links_audit|article_links_fix|article_product_links_fix|article_research_sync|article_state_read|article_state_audit|state_reconcile_wp|check_article|check_translation|translation_glossary_get|wp_post_get|wp_post_trash)/,
+    match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_links_audit|article_links_fix|article_research_sync|article_state_read|article_state_audit|state_reconcile_wp|check_article|check_translation|translation_glossary_get|wp_post_get|wp_post_trash)/,
   },
   { group: 'Publishing (WordPress)', match: /^publish_/ },
   { group: 'Search inclusion & analytics', match: /^(search_|webmaster_)/ },
