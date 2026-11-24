@@ -40,7 +40,7 @@ const csdn = require('./csdn');
 const aliyun = require('./aliyun');
 const tencent = require('./tencent');
 const tencentTaxonomy = require('./tencent-taxonomy');
-const { publishDevto } = require('./devto');
+const { publishDevto, mapPlanTagsToDevto } = require('./devto');
 const { articleUrl, appendUtm, rewriteMarkdownUtm, langFor } = require('./utm');
 const styleCheck = require('./styleCheck');
 const sanitize = require('./sanitize');
@@ -600,17 +600,24 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
             });
           }
         } else if (platform === 'devto') {
+          // tags: article_plan.tags is the single source of truth (2026-11-24), the
+          // same as juejin/csdn/tencent. target_keywords stays as the fallback because
+          // the articles column is empty for almost every row (1266/1275), which used
+          // to make every Dev.to post ship with the same `seo, ai`.
+          const planTagSlugs = Array.isArray(article.planTags) ? article.planTags : [];
+          const devtoTags = mapPlanTagsToDevto(planTagSlugs);
           const fm = {
             title: article.title,
             keywords: `[${(article.targetKeywords || '').split(',').map((k) => k.trim()).filter(Boolean).slice(0, 8).join(', ')}]`,
           };
+          if (devtoTags.length) fm.tags = JSON.stringify(devtoTags);
           // title is in the front matter above; drop any leading "# Title" from
           // the body so the exported file never shows the title twice.
           fs.writeFileSync(mdPath, `---\n${yaml.dump(fm, { lineWidth: -1 }).trim()}\n---\n\n${stripLeadingTitle(contentMd, article.title).trim()}\n`, 'utf8');
           // coverImage: the blog's featured image (absolute URL). dev.to re-hosts
           // it to its own CDN at publish time (main_image field), so a broken
           // source never leaves a broken cover.
-          const res = await publishDevto({ mdPath, dryRun, coverImage: article.featuredImage || null });
+          const res = await publishDevto({ mdPath, dryRun, coverImage: article.featuredImage || null, tags: devtoTags });
           appendLog(site.siteDir, { action: dryRun ? 'dry-run' : 'publish', platform, slug, ok: true, detail: res });
           // dev.to publishes LIVE (2026-10-12): no draft-first anymore, no review
           // pipeline. `published:true` marks the result as a live article so the

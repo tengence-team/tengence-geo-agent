@@ -19,14 +19,67 @@ const path = require('path');
 const { articleUrl, appendUtm } = require('./utm');
 
 /**
+ * Plan tag slug → Dev.to tag (2026-11-24).
+ * Dev.to has no category taxonomy and accepts any lowercase tag, so unlike
+ * juejin/tencent there is no dictionary to resolve against — only a naming map.
+ * Source of truth is `article_plan.tags`; `target_keywords` stays as the fallback
+ * (the articles table is empty for 1266/1275 rows, which used to make every
+ * Dev.to post ship with the same `seo, ai`).
+ */
+const PLAN_TAG_TO_DEVTO = {
+  'geo-seo': 'seo',
+  'technical-seo': 'seo',
+  'schema-markup': 'seo',
+  'international-seo': 'seo',
+  'ai-search': 'ai',
+  'agentic-ai': 'ai',
+  'entity-authority': 'ai',
+  'geo-monitoring': 'ai',
+  'ai-content-disclosure': 'ai',
+  'ai-transformation': 'ai',
+  'tengence-geo': 'ai',
+  'rag': 'ai',
+  'vector-search': 'ai',
+  'data-analytics': 'analytics',
+  'user-data': 'analytics',
+  'data-growth': 'analytics',
+  'funnel-analysis': 'analytics',
+  'conversion-optimization': 'growth',
+  'search-system': 'search',
+  'tengence-search': 'search',
+  'technical-solutions': 'api',
+  'api-integration': 'api',
+  'implementation-guide': 'api',
+  'core-web-vitals': 'webdev',
+  'recommendation-system': 'machinelearning',
+  'ecommerce': 'ecommerce',
+  'cross-border': 'international',
+  'content-marketing': 'content',
+  'brand-strategy': 'marketing',
+};
+
+/** Map our plan tag slugs to Dev.to tags (unknown slugs dropped); max 4, de-duped */
+function mapPlanTagsToDevto(planTags) {
+  const out = [];
+  for (const slug of planTags || []) {
+    const tag = PLAN_TAG_TO_DEVTO[String(slug || '').trim().toLowerCase()];
+    if (tag && !out.includes(tag)) out.push(tag);
+  }
+  return out.slice(0, 4);
+}
+
+
+/**
  * Publish a local markdown article to Dev.to (LIVE, not draft)
- * @param {{mdPath:string, dryRun?:boolean, coverImage?:string}} opts
+ * @param {{mdPath:string, dryRun?:boolean, coverImage?:string, tags?:string[]}} opts
  *        coverImage — absolute URL of the article's cover image; dev.to re-hosts
  *        it to its own CDN at publish time (field: main_image).
+ *        tags — Dev.to tags already resolved from article_plan.tags by the channel
+ *        layer (2026-11-24); when omitted, the `tags:` front matter / keywords are used.
  * @returns {Promise<{dryRun?:boolean, id?:number, url?:string}>}
  * @throws missing file / no front matter / API failure (every error path except dry-run)
  */
-async function publishDevto({ mdPath, dryRun = false, coverImage = null }) {
+async function publishDevto({ mdPath, dryRun = false, coverImage = null, tags = null }) {
   const API_KEY = process.env.DEVTO_API_KEY;
   if (!API_KEY) {
     console.error('❌ DEVTO_API_KEY not set (in sites/tengence/.env)');
@@ -75,6 +128,22 @@ async function publishDevto({ mdPath, dryRun = false, coverImage = null }) {
     { slug, lang: 'en' }
   );
 
+  // tags: a `tags:` front matter field (already mapped from article_plan.tags by the
+  // channel layer, 2026-11-24) wins; otherwise derive from keywords, then fall back
+  const fmTagsLine = fmValue('tags');
+  let fmTags = [];
+  if (fmTagsLine) {
+    // the value is written as a JSON array, but YAML.dump wraps it in single quotes:
+    // tags: '["seo","ai"]' — strip the outer quotes before parsing
+    const raw = fmTagsLine.trim().replace(/^['"]+/, '').replace(/['"]+$/, '');
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) fmTags = parsed.map((x) => String(x).trim()).filter(Boolean);
+    } catch (e) {
+      fmTags = raw.split(',').map((x) => x.replace(/[["'\]\s]/g, '')).filter(Boolean);
+    }
+  }
+
   // derive Dev.to tags from keywords
   const keywordsLine = fmValue('keywords') || '[]';
   const kwMatch = keywordsLine.match(/\[(.*?)\]/);
@@ -95,7 +164,13 @@ async function publishDevto({ mdPath, dryRun = false, coverImage = null }) {
   for (const kw of rawKeywords) {
     if (tagMap[kw]) derivedTags.push(tagMap[kw]);
   }
-  const devtoTags = [...new Set(derivedTags)].slice(0, 4);
+  const derivedFinal = [...new Set(derivedTags)].slice(0, 4);
+  const explicitTags = Array.isArray(tags) ? tags.map((x) => String(x).trim()).filter(Boolean) : [];
+  const devtoTags = explicitTags.length
+    ? [...new Set(explicitTags)].slice(0, 4)
+    : Array.isArray(fmTags) && fmTags.length
+      ? fmTags.slice(0, 4)
+      : derivedFinal;
   if (devtoTags.length === 0) devtoTags.push('seo', 'ai');
 
   // strip the Front Matter and images from the body (Dev.to uses its own image host)
@@ -151,4 +226,4 @@ async function publishDevto({ mdPath, dryRun = false, coverImage = null }) {
   return { id: data.id, url: data.url };
 }
 
-module.exports = { publishDevto };
+module.exports = { publishDevto, mapPlanTagsToDevto };
