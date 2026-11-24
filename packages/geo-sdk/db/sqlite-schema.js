@@ -91,7 +91,12 @@ const MCP_TASKS = 'tengence_geo_mcp_tasks';
 // position in the history order) and the dead `article_images.status` column is gone.
 // The index is created by a one-off script for existing DBs (the table already has
 // data that must be normalised first); fresh DBs get it from the DDL above.
-const SCHEMA_VERSION = 11;
+// v12 (2026-11-24): the 6 legacy content tables (seo/geo/qa_pairs/citations/social/vectors)
+// and the category/tag association tables (article_categories/article_tags) are gone
+// (0 rows, never written after 2026-09-20, never read). Existing DBs had them DROPPed
+// by a one-off operation (scripts/drop-legacy-metadata-tables-2026-11-24.js); fresh DBs
+// never create them because the DDL below no longer contains them.
+const SCHEMA_VERSION = 12;
 
 /**
  * publish_order is the history order every channel queue derives from, so the
@@ -284,112 +289,6 @@ CREATE TABLE IF NOT EXISTS ${TABLES.tags} (
   UNIQUE (app_id, slug)
 );
 CREATE INDEX IF NOT EXISTS idx_sqlite_tags_app ON ${TABLES.tags} (app_id);
-
--- ========== 4. article-category link table ==========
-CREATE TABLE IF NOT EXISTS ${TABLES.articleCategories} (
-  article_id INTEGER NOT NULL,
-  app_id INTEGER NOT NULL DEFAULT 1,
-  category_id INTEGER NOT NULL,
-  position INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
-  PRIMARY KEY (article_id, category_id)
-);
-CREATE INDEX IF NOT EXISTS idx_sqlite_ac_app ON ${TABLES.articleCategories} (app_id);
-CREATE INDEX IF NOT EXISTS idx_sqlite_ac_category ON ${TABLES.articleCategories} (app_id, category_id);
-
--- ========== 5. article-tag link table ==========
-CREATE TABLE IF NOT EXISTS ${TABLES.articleTags} (
-  article_id INTEGER NOT NULL,
-  app_id INTEGER NOT NULL DEFAULT 1,
-  tag_id INTEGER NOT NULL,
-  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime')),
-  PRIMARY KEY (article_id, tag_id)
-);
-CREATE INDEX IF NOT EXISTS idx_sqlite_at_app ON ${TABLES.articleTags} (app_id);
-CREATE INDEX IF NOT EXISTS idx_sqlite_at_tag ON ${TABLES.articleTags} (app_id, tag_id);
-
--- ========== 6. SEO metadata table ==========
-CREATE TABLE IF NOT EXISTS ${TABLES.seo} (
-  article_id INTEGER NOT NULL,
-  app_id INTEGER NOT NULL DEFAULT 1,
-  title TEXT,
-  meta_description TEXT,
-  keywords TEXT,
-  canonical_url TEXT,
-  focus_keyword TEXT,
-  og_type TEXT DEFAULT 'article',
-  og_image TEXT,
-  og_title TEXT,
-  og_description TEXT,
-  og_locale TEXT,
-  PRIMARY KEY (article_id)
-);
-CREATE INDEX IF NOT EXISTS idx_sqlite_seo_app ON ${TABLES.seo} (app_id);
-
--- ========== 7. GEO metadata table ==========
-CREATE TABLE IF NOT EXISTS ${TABLES.geo} (
-  article_id INTEGER NOT NULL,
-  app_id INTEGER NOT NULL DEFAULT 1,
-  ai_summary TEXT,
-  key_takeaways TEXT,
-  call_to_action TEXT,
-  content_structure TEXT,
-  PRIMARY KEY (article_id)
-);
-CREATE INDEX IF NOT EXISTS idx_sqlite_geo_app ON ${TABLES.geo} (app_id);
-
--- ========== 8. GEO Q&A pairs table ==========
-CREATE TABLE IF NOT EXISTS ${TABLES.qaPairs} (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  article_id INTEGER NOT NULL,
-  app_id INTEGER NOT NULL DEFAULT 1,
-  question TEXT NOT NULL,
-  answer TEXT NOT NULL,
-  position INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime'))
-);
-CREATE INDEX IF NOT EXISTS idx_sqlite_qa_article ON ${TABLES.qaPairs} (article_id);
-CREATE INDEX IF NOT EXISTS idx_sqlite_qa_app ON ${TABLES.qaPairs} (app_id, article_id);
-
--- ========== 9. GEO citations table ==========
-CREATE TABLE IF NOT EXISTS ${TABLES.citations} (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  article_id INTEGER NOT NULL,
-  app_id INTEGER NOT NULL DEFAULT 1,
-  source TEXT NOT NULL,
-  claim TEXT,
-  position INTEGER DEFAULT 0,
-  created_at TEXT DEFAULT (strftime('%Y-%m-%d %H:%M:%S','now','localtime'))
-);
-CREATE INDEX IF NOT EXISTS idx_sqlite_cit_article ON ${TABLES.citations} (article_id);
-CREATE INDEX IF NOT EXISTS idx_sqlite_cit_app ON ${TABLES.citations} (app_id, article_id);
-
--- ========== 10. social share metadata table ==========
-CREATE TABLE IF NOT EXISTS ${TABLES.social} (
-  article_id INTEGER NOT NULL,
-  app_id INTEGER NOT NULL DEFAULT 1,
-  og_type TEXT DEFAULT 'article',
-  og_image TEXT,
-  og_title TEXT,
-  og_description TEXT,
-  twitter_card TEXT,
-  twitter_image TEXT,
-  PRIMARY KEY (article_id)
-);
-CREATE INDEX IF NOT EXISTS idx_sqlite_social_app ON ${TABLES.social} (app_id);
-
--- ========== 11. vector index status table ==========
-CREATE TABLE IF NOT EXISTS ${TABLES.vectors} (
-  article_id INTEGER NOT NULL,
-  app_id INTEGER NOT NULL DEFAULT 1,
-  vector_id TEXT,
-  indexed_at TEXT,
-  embedding_version TEXT DEFAULT 'v1',
-  embedding_provider TEXT DEFAULT 'simple',
-  PRIMARY KEY (article_id)
-);
-CREATE INDEX IF NOT EXISTS idx_sqlite_vectors_app ON ${TABLES.vectors} (app_id);
-CREATE INDEX IF NOT EXISTS idx_sqlite_vectors_appv ON ${TABLES.vectors} (app_id, vector_id);
 
 -- ========== 12. image library ==========
 CREATE TABLE IF NOT EXISTS ${TABLES.images} (

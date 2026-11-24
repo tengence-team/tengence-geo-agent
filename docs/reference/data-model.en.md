@@ -28,14 +28,6 @@ Key design points:
 | `tengence_geo_articles` | Content library, one row per slug+lang | id, app_id, slug, title, content_path, content_longtext, content_html, research_md, excerpt, featured_image, target_keywords, lang, translation_group, region_market, status (draft…), author, wp_post_id, published_at, created_at, updated_at |
 | `tengence_geo_categories` | Categories | id, app_id, name, slug |
 | `tengence_geo_tags` | Tags | id, app_id, name, slug |
-| `tengence_geo_article_categories` | Article ↔ category join | article_id, category_id, app_id |
-| `tengence_geo_article_tags` | Article ↔ tag join | article_id, tag_id, app_id |
-| `tengence_geo_seo` | Per-article SEO meta | article_id, title, meta_title, meta_description, keywords, canonical_url, og_*, noindex… |
-| `tengence_geo_geo` | Per-article GEO meta | article_id, ai_summary, key_takeaways, qa (link), citations (link), schema_data, entity… |
-| `tengence_geo_qa_pairs` | FAQ Q&A rows | article_id, question, answer |
-| `tengence_geo_citations` | Citation rows (dual-channel evidence) | article_id, title, url, channel… |
-| `tengence_geo_social` | Social/OG meta | article_id, og_* |
-| `tengence_geo_vectors` | Content vectors | article_id, embedding… |
 | `tengence_geo_images` | Media library mirror | id, app_id, url, file, format, width, height, alt, wp_media_id… |
 | `tengence_geo_article_images` | Article ↔ image join | article_id, image_id, is_featured… |
 | `tengence_geo_geo_monitor_answers` | Raw monitoring answers (prompt × model × layer) | run_id, model, layer, prompt, answer… |

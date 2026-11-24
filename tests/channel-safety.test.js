@@ -267,7 +267,7 @@ test('applyContentGate quarantines the failing slug and keeps the rest publishab
         ok: false,
         rows: [
           ['Chinese char count (T1/T5/T6 2200–3800)', 1800, false],
-          ['WP taxonomy (G19): plan category present in WP', 'missing', false],
+          ['WP taxonomy (G19): WP post carries tags (hard)', 'EMPTY (no tags on WP post)', false],
           ['Banned words hit', '0', true],
         ],
       };

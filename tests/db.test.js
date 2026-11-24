@@ -53,9 +53,11 @@ test('articles.list: no filter → only the app_id param, with aggregation and o
   const { sql, params } = conn.calls[0];
   assert.deepEqual(params, [1]);
   assert.match(sql, new RegExp(`FROM ${TABLES.articles} a`));
-  assert.match(sql, /GROUP_CONCAT\(DISTINCT c\.name ORDER BY ac\.position SEPARATOR ', '\) as categories/);
-  assert.match(sql, /GROUP_CONCAT\(DISTINCT t\.name SEPARATOR ', '\) as tags/);
-  assert.match(sql, /GROUP BY a\.id ORDER BY a\.lastmod DESC$/);
+  // category/tags come from the article_plan join (2026-11-24); no GROUP_CONCAT/ GROUP BY
+  assert.match(sql, new RegExp(`LEFT JOIN ${TABLES.articlePlan} p`));
+  assert.match(sql, /p\.tags AS plan_tags/);
+  assert.match(sql, new RegExp(`LEFT JOIN ${TABLES.categories} c`));
+  assert.match(sql, /ORDER BY a\.lastmod DESC$/);
 });
 
 test('articles.list: status / lang / limit append params in order', async () => {
@@ -68,37 +70,35 @@ test('articles.list: status / lang / limit append params in order', async () => 
   assert.match(sql, /LIMIT \?$/);
 });
 
-test('articles.list: category uses an EXISTS subquery with an extra app_id', async () => {
+test('articles.list: category filters on the plan row (single param)', async () => {
   const conn = makeStub();
   await t.db.articles.list(conn, 1, { category: 'product-solutions' });
   const { sql, params } = conn.calls[0];
-  assert.deepEqual(params, [1, 1, 'product-solutions']);
-  assert.match(sql, /AND EXISTS \(SELECT 1 FROM/);
-  assert.match(sql, new RegExp(`FROM ${TABLES.categories} WHERE app_id = \\? AND slug = \\? LIMIT 1`));
+  assert.deepEqual(params, [1, 'product-solutions']);
+  assert.match(sql, /AND p\.category = \?/);
 });
 
-test('articles.getDetail: with empty seo/geo it reads the articles columns directly; 3 queries total', async () => {
-  const conn = makeStub([{ id: 318, title: 'T', slug: 'what-is-geo', seo: null, geo: null }]);
+test('articles.getDetail: single query, plan row supplies category/tags', async () => {
+  const conn = makeStub([
+    { id: 318, title: 'T', slug: 'what-is-geo', seo: null, geo: null, categories: 'GEO', plan_tags: '["geo","ai"]' },
+  ]);
   const article = await t.db.articles.getDetail(conn, 1, 'what-is-geo');
-  assert.equal(conn.calls.length, 3);
+  assert.equal(conn.calls.length, 1);
   assert.equal(article.id, 318);
-  // ① main query: app_id + slug (seo/geo columns returned directly by SELECT)
   assert.deepEqual(conn.calls[0].params, [1, 'what-is-geo']);
-  assert.match(conn.calls[0].sql, new RegExp(`FROM ${TABLES.articles}`));
-  // ②③ social / vectors (only these two legacy association tables are still read)
-  for (let i = 1; i < 3; i++) assert.deepEqual(conn.calls[i].params, [318]);
-  assert.match(conn.calls[1].sql, new RegExp(`SELECT \\* FROM ${TABLES.social} WHERE article_id = \\?`));
-  assert.match(conn.calls[2].sql, new RegExp(`SELECT \\* FROM ${TABLES.vectors} WHERE article_id = \\?`));
-  // empty association fields are normalized to null / []
+  assert.match(conn.calls[0].sql, new RegExp(`LEFT JOIN ${TABLES.articlePlan} p`));
+  // tags decoded from the plan row, plan_tags dropped
+  assert.deepEqual(article.tags, ['geo', 'ai']);
+  assert.equal(article.categories, 'GEO');
+  assert.equal(article.plan_tags, undefined);
+  // empty seo/geo normalized to null / []
   assert.equal(article.seo, null);
   assert.equal(article.geo, null);
-  assert.equal(article.social, null);
-  assert.equal(article.vector, null);
   assert.deepEqual(article.qa_pairs, []);
   assert.deepEqual(article.citations, []);
 });
 
-test('articles.getDetail: seo/geo column reads drive qa/citations; 3 queries total', async () => {
+test('articles.getDetail: seo/geo column reads drive qa/citations; single query', async () => {
   const seoCol = { title: 'T', meta_description: 'D', keywords: ['a', 'b'] };
   const geoCol = {
     ai_summary: 'S',
@@ -107,15 +107,12 @@ test('articles.getDetail: seo/geo column reads drive qa/citations; 3 queries tot
     citations: [{ url: 'https://x', text: 'Y' }],
   };
   const conn = makeSeq([
-    [{ id: 9, title: 'T', slug: 's', seo: seoCol, geo: geoCol }], // ① main (seo/geo columns)
-    [[]],                                                         // ② social
-    [[]],                                                         // ③ vectors
+    [{ id: 9, title: 'T', slug: 's', seo: seoCol, geo: geoCol, plan_tags: '[]' }], // ① main (seo/geo columns + plan)
   ]);
   const article = await t.db.articles.getDetail(conn, 1, 's');
-  assert.equal(conn.calls.length, 3); // no longer queries config / legacy seo/geo/qa/citations
+  assert.equal(conn.calls.length, 1); // no config / legacy seo/geo/qa/citations/social/vectors
   assert.deepEqual(conn.calls[0].params, [1, 's']);
-  assert.match(conn.calls[1].sql, new RegExp(`SELECT \\* FROM ${TABLES.social}`));
-  assert.match(conn.calls[2].sql, new RegExp(`SELECT \\* FROM ${TABLES.vectors}`));
+  assert.deepEqual(article.tags, []);
   // the articles columns directly drive seo/geo/qa/citations
   assert.equal(article.seo.title, 'T');
   assert.deepEqual(article.geo.key_takeaways, ['k1', 'k2']);

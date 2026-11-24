@@ -326,9 +326,10 @@ async function main() {
   // flip EVERY language row of the slug with the source's post id (drift source).
   console.log('\n[5/7] Plan write-back handled by publishArticle (verified, per-language)');
 
-  console.log('\n[6/7] db-register syncs categories/tags...');
-  console.log(`\n$ tengence-geo taxonomy.js db-register --slugs=${slug}${siteFlag}`);
-  await t.taxonomy.registerDatabase({ slugFilter: [slug], appId: APP_ID });
+  // [6/7] retired 2026-11-24: this used to run `taxonomy.js db-register` to mirror
+  // the plan's category/tags into the article_categories / article_tags tables. Those
+  // tables are gone — the plan row is the only local staging, and nothing read the
+  // duplicate. Step [7/7] still archives the working files.
 
   if (options.move) {
     // From 2026-09-20: working files are archived to data/archive/<date>/ after

@@ -10,9 +10,9 @@
  * added to createTablesSQL following the REAL structure from the production DB's
  * `SHOW CREATE TABLE`, field-identical with production.
  *
- * Note: db-init still creates the 6 tables (seo/geo/qa_pairs/citations/social/vectors)
- * that nobody currently reads/writes — they belong to the platform-side schema and
- * are kept for a complete rebuild.
+ * Note (2026-11-24): the 6 legacy content tables (seo/geo/qa_pairs/citations/social/vectors)
+ * and the category/tag association tables (article_categories/article_tags) were dropped —
+ * content metadata lives in the articles columns and category/tags in article_plan.
  * ============================================================================
  */
 
@@ -22,14 +22,6 @@ const TABLES = {
   articles: `${PREFIX}articles`,
    categories: `${PREFIX}categories`,
   tags: `${PREFIX}tags`,
-  articleCategories: `${PREFIX}article_categories`,
-  articleTags: `${PREFIX}article_tags`,
-  seo: `${PREFIX}seo`,
-  geo: `${PREFIX}geo`,
-  qaPairs: `${PREFIX}qa_pairs`,
-  citations: `${PREFIX}citations`,
-  social: `${PREFIX}social`,
-  vectors: `${PREFIX}vectors`,
   images: `${PREFIX}images`,
   articleImages: `${PREFIX}article_images`,
   geoMonitorAnswers: `${PREFIX}geo_monitor_answers`,
@@ -37,19 +29,11 @@ const TABLES = {
   articlePlan: `${PREFIX}article_plan`,
 };
 
-/** Tables db-init.js actually creates (after batch D = all 14) */
+/** Tables db-init.js actually creates */
 const CREATED_BY_DB_INIT = [
   TABLES.articles,
   TABLES.categories,
   TABLES.tags,
-  TABLES.articleCategories,
-  TABLES.articleTags,
-  TABLES.seo,
-  TABLES.geo,
-  TABLES.qaPairs,
-  TABLES.citations,
-  TABLES.social,
-  TABLES.vectors,
   TABLES.images,
   TABLES.articleImages,
   // GEO monitoring (added P1 2026-09-16, see plan/2026 doc 10, section 10)
@@ -167,120 +151,6 @@ CREATE TABLE IF NOT EXISTS ${TABLES.tags} (
     UNIQUE KEY uk_app_slug (app_id, slug),
     INDEX idx_app_id (app_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='tags table';
-
--- 4. article-category link table
-CREATE TABLE IF NOT EXISTS ${TABLES.articleCategories} (
-    article_id BIGINT UNSIGNED NOT NULL,
-    app_id BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'application id (multi-tenant)',
-    category_id INT UNSIGNED NOT NULL,
-    position INT DEFAULT 0 COMMENT 'sort position',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (article_id, category_id),
-    INDEX idx_app_id (app_id),
-    INDEX idx_category_id (app_id, category_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='article-category link table';
-
--- 5. article-tag link table
-CREATE TABLE IF NOT EXISTS ${TABLES.articleTags} (
-    article_id BIGINT UNSIGNED NOT NULL,
-    app_id BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'application id (multi-tenant)',
-    tag_id INT UNSIGNED NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    PRIMARY KEY (article_id, tag_id),
-    INDEX idx_app_id (app_id),
-    INDEX idx_tag_id (app_id, tag_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='article-tag link table';
-
--- 6. SEO metadata table
-CREATE TABLE IF NOT EXISTS ${TABLES.seo} (
-    article_id BIGINT UNSIGNED NOT NULL,
-    app_id BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'application id (multi-tenant)',
-    title VARCHAR(500) COMMENT 'SEO title',
-    meta_description TEXT COMMENT 'page description',
-    keywords JSON COMMENT 'keyword array',
-    canonical_url VARCHAR(500) COMMENT 'canonical URL',
-    focus_keyword VARCHAR(200) COMMENT 'primary keyword',
-    og_type VARCHAR(50) DEFAULT 'article',
-    og_image VARCHAR(500),
-    og_title VARCHAR(500),
-    og_description TEXT,
-    og_locale VARCHAR(20),
-
-    PRIMARY KEY (article_id),
-    INDEX idx_app_id (app_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='SEO metadata table';
-
--- 7. GEO metadata table
-CREATE TABLE IF NOT EXISTS ${TABLES.geo} (
-    article_id BIGINT UNSIGNED NOT NULL,
-    app_id BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'application id (multi-tenant)',
-    ai_summary TEXT COMMENT 'AI summary',
-    key_takeaways JSON COMMENT 'key takeaways array',
-    call_to_action JSON COMMENT 'call to action',
-    content_structure JSON COMMENT 'content structure',
-
-    PRIMARY KEY (article_id),
-    INDEX idx_app_id (app_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='GEO metadata table';
-
--- 8. GEO Q&A pairs table
-CREATE TABLE IF NOT EXISTS ${TABLES.qaPairs} (
-    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    article_id BIGINT UNSIGNED NOT NULL,
-    app_id BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'application id (multi-tenant)',
-    question TEXT NOT NULL COMMENT 'question',
-    answer TEXT NOT NULL COMMENT 'answer',
-    position INT DEFAULT 0 COMMENT 'sort position',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    INDEX idx_article_id (article_id),
-    INDEX idx_app_article (app_id, article_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='GEO Q&A pairs table';
-
--- 9. GEO citations table
-CREATE TABLE IF NOT EXISTS ${TABLES.citations} (
-    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-    article_id BIGINT UNSIGNED NOT NULL,
-    app_id BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'application id (multi-tenant)',
-    source VARCHAR(500) NOT NULL COMMENT 'source',
-    claim TEXT COMMENT 'claimed content',
-    position INT DEFAULT 0 COMMENT 'sort position',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-    INDEX idx_article_id (article_id),
-    INDEX idx_app_article (app_id, article_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='GEO citations table';
-
--- 10. social share metadata table
-CREATE TABLE IF NOT EXISTS ${TABLES.social} (
-    article_id BIGINT UNSIGNED NOT NULL,
-    app_id BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'application id (multi-tenant)',
-    og_type VARCHAR(50) DEFAULT 'article',
-    og_image VARCHAR(500),
-    og_title VARCHAR(500),
-    og_description TEXT,
-    twitter_card VARCHAR(50),
-    twitter_image VARCHAR(500),
-
-    PRIMARY KEY (article_id),
-    INDEX idx_app_id (app_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='social share metadata table';
-
--- 11. vector index status table
-CREATE TABLE IF NOT EXISTS ${TABLES.vectors} (
-    article_id BIGINT UNSIGNED NOT NULL,
-    app_id BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT 'application id (multi-tenant)',
-    vector_id VARCHAR(100) COMMENT 'external vector store point id (legacy field, currently unused)',
-    indexed_at TIMESTAMP NULL COMMENT 'index time',
-    embedding_version VARCHAR(20) DEFAULT 'v1' COMMENT 'vector version',
-    embedding_provider VARCHAR(50) DEFAULT 'simple' COMMENT 'simple, openai, python',
-
-    PRIMARY KEY (article_id),
-    INDEX idx_app_id (app_id),
-    INDEX idx_app_vector (app_id, vector_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='vector index status table';
 
 -- 13. image library (batch D completion: images domain uses it; no DDL existed before)
 CREATE TABLE IF NOT EXISTS ${TABLES.images} (
@@ -470,16 +340,8 @@ CREATE TABLE IF NOT EXISTS ${TABLES.articlePlan} (
 const dropTablesSQL = `
 DROP TABLE IF EXISTS ${TABLES.geoMonitorResults};
 DROP TABLE IF EXISTS ${TABLES.geoMonitorAnswers};
-DROP TABLE IF EXISTS ${TABLES.vectors};
-DROP TABLE IF EXISTS ${TABLES.social};
-DROP TABLE IF EXISTS ${TABLES.citations};
-DROP TABLE IF EXISTS ${TABLES.qaPairs};
-DROP TABLE IF EXISTS ${TABLES.geo};
-DROP TABLE IF EXISTS ${TABLES.seo};
 DROP TABLE IF EXISTS ${TABLES.articleImages};
 DROP TABLE IF EXISTS ${TABLES.images};
-DROP TABLE IF EXISTS ${TABLES.articleTags};
-DROP TABLE IF EXISTS ${TABLES.articleCategories};
 DROP TABLE IF EXISTS ${TABLES.tags};
 DROP TABLE IF EXISTS ${TABLES.categories};
 DROP TABLE IF EXISTS ${TABLES.articlePlan};

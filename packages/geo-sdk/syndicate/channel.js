@@ -145,7 +145,7 @@ async function articleFromDb(conn, appId, slug, siteDomain, lang = 'zh-hans') {
   if (!detail) throw new Error(`Article not found: ${slug}`);
   let planRow = null;
   try {
-    planRow = await planRepo.getBySlug(conn, appId, slug);
+    planRow = await planRepo.getBySlug(conn, appId, slug, lang);
   } catch (e) {
     // a missing/unreadable plan row must not block publishing
     planRow = null;
@@ -846,6 +846,9 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
       detail: { reason: 'already published on this platform (Mode B)', mode: 'export' },
     });
   }
+  // plan taxonomy must be read from the same language row the content came from:
+  // dev.to publishes the 'en' row, every other channel the zh-hans one.
+  const articleLang = platform === 'devto' ? 'en' : 'zh-hans';
   const activeArticles = (articles || []).filter((a) => keepSet.has(a.slug));
 
   const exported = [];
@@ -940,7 +943,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
         let tags = Array.isArray(article.tags) && article.tags.length ? article.tags : [];
         try {
           await t.db.withConn(async (conn) => {
-            const row = await planRepo.getBySlug(conn, DEFAULT_APP_ID(), article.slug);
+            const row = await planRepo.getBySlug(conn, DEFAULT_APP_ID(), article.slug, articleLang);
             if (!row) return;
             category = row.category || category;
             if (Array.isArray(row.tags) && row.tags.length) tags = row.tags;
@@ -1018,7 +1021,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
         let tags = Array.isArray(article.tags) && article.tags.length ? article.tags : [];
         try {
           await t.db.withConn(async (conn) => {
-            const row = await planRepo.getBySlug(conn, DEFAULT_APP_ID(), article.slug);
+            const row = await planRepo.getBySlug(conn, DEFAULT_APP_ID(), article.slug, articleLang);
             if (row && Array.isArray(row.tags) && row.tags.length) tags = row.tags;
           });
         } catch (e) {
@@ -1132,7 +1135,7 @@ async function exportArticles({ platform, articles, dryRun, siteKey, asDraft = t
         let category = null;
         try {
           await t.db.withConn(async (conn) => {
-            const row = await planRepo.getBySlug(conn, DEFAULT_APP_ID(), article.slug);
+            const row = await planRepo.getBySlug(conn, DEFAULT_APP_ID(), article.slug, articleLang);
             if (!row) return;
             category = row.category || category;
           });

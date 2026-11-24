@@ -80,7 +80,8 @@ function formatArticleDetail(article) {
 
   console.log(`\nCategory & tags:`);
   console.log(`  Categories:  ${article.categories || 'N/A'}`);
-  console.log(`  Tags:        ${article.tags || 'N/A'}`);
+  const tagList = Array.isArray(article.tags) ? article.tags : [];
+  console.log(`  Tags:        ${tagList.length ? tagList.join(', ') : 'N/A'}`);
 
   console.log(`\nSEO:`);
   if (article.seo) {
@@ -118,15 +119,6 @@ function formatArticleDetail(article) {
       const url = c.url || '';
       console.log(`  • ${text}${url ? ` — ${url}` : ''}`);
     }
-  }
-
-  console.log(`\nVector index:`);
-  if (article.vector) {
-    console.log(`  Vector ID:   ${article.vector.vector_id || 'N/A'}`);
-    console.log(`  Provider:    ${article.vector.embedding_provider || 'N/A'}`);
-    console.log(`  Indexed At:  ${article.vector.indexed_at || 'N/A'}`);
-  } else {
-    console.log(`  (not indexed)`);
   }
 
   console.log('\n' + '='.repeat(80) + '\n');

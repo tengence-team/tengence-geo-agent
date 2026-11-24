@@ -68,10 +68,13 @@ Dependencies only flow downward: MCP → CLI/SDK, CLI → SDK; the SDK never dep
 
 ## 4. Data model & multi-tenancy
 
-- **Table names**: all `tengence_geo_*` (16 tables: articles / article_plan / article_images /
-  categories / tags / article_categories / article_tags / seo / geo / qa_pairs / citations /
-  geo_monitor_results / geo_monitor_answers / images / social / vectors). They correspond
-  one-to-one with the legacy business `tengence_omni_*` tables for easy future migration.
+- **Table names**: all `tengence_geo_*` (12 tables: articles / article_plan / article_images /
+  categories / tags / images / geo_monitor_results / geo_monitor_answers / channel_plan /
+  channel_schedule / channel_taxonomy / mcp_tasks). They correspond one-to-one with the legacy
+  business `tengence_omni_*` tables for easy future migration. The 6 legacy content tables
+  (seo / geo / qa_pairs / citations / social / vectors) and the category/tag association tables
+  (article_categories / article_tags) were dropped on 2026-11-24: SEO/GEO live in the `articles`
+  columns and category/tags in `article_plan`.
 - **Multi-tenancy**: business tables carry an `app_id` column; all repository queries filter
   by `app_id`. `app_id` resolution: env var `APP_ID` > site `.env` `APP_ID` > default 1.
 - **Single-file SQLite**: all app_ids share one file at the default path

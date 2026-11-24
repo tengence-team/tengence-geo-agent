@@ -71,8 +71,8 @@ test('builtin backend (node:sqlite): schema + NOW() behave like the native one',
   const r = runChild({ GEO_SQLITE_DRIVER: 'builtin' });
   assert.equal(r.kind, 'builtin');
   assert.equal(r.detect, 'builtin');
-  assert.equal(r.tables, 20);
-  assert.equal(r.schema, 11);
+  assert.equal(r.tables, 12);
+  assert.equal(r.schema, 12);
   assert.match(r.now, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 });
 
@@ -80,13 +80,13 @@ test('native backend (better-sqlite3): same schema + NOW() when installed', () =
   if (!driver.nativeAvailable()) return; // optional dependency not installed: skip
   const r = runChild({ GEO_SQLITE_DRIVER: 'native' });
   assert.equal(r.kind, 'better-sqlite3');
-  assert.equal(r.tables, 20);
-  assert.equal(r.schema, 11);
+  assert.equal(r.tables, 12);
+  assert.equal(r.schema, 12);
   assert.match(r.now, /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
 });
 
 test('default selection prefers the built-in backend when it is available', () => {
   const r = runChild({});
   assert.equal(r.kind, driver.builtinAvailable() ? 'builtin' : 'better-sqlite3');
-  assert.equal(r.tables, 20);
+  assert.equal(r.tables, 12);
 });

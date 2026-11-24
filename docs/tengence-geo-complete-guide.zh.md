@@ -38,7 +38,7 @@
 
 5. [环境变量与配置](#5-环境变量与配置)
 
-6. [数据模型（18 张表）](#6-数据模型18-张表)
+6. [数据模型（12 张表）](#6-数据模型12-张表)
 
 7. [其它配套说明](#7-其它配套说明)
 
@@ -124,7 +124,7 @@ GEO_MCP_PORT=8787 GEO_MCP_TOKEN=sk-xxx node packages/geo-mcp/bin/geo-mcp-http.js
 
 
 
-* **默认**：单文件多租户 SQLite（`~/.tengence/geo-mcp/geo.sqlite`），首次使用自动初始化（零配置），共 18 张表（`tengence_geo_*`）。
+* **默认**：单文件多租户 SQLite（`~/.tengence/geo-mcp/geo.sqlite`），首次使用自动初始化（零配置），共 12 张表（`tengence_geo_*`）。
 
 * **可选**：MySQL（`DB_DRIVER=mysql`），只写 `tengence_geo_*` 表，与生产 `tengence_omni_*` 物理隔离。
 
@@ -1658,7 +1658,7 @@ tengence-geo db-query.js [--list] [--slug=xxx] [--category=xxx] [--status=xxx]
 
 ***
 
-# 6. 数据模型（18 张表）
+# 6. 数据模型（12 张表）
 
 > 权威来源：
 >
@@ -1676,7 +1676,9 @@ tengence-geo db-query.js [--list] [--slug=xxx] [--category=xxx] [--status=xxx]
 
 ## 6.1 概览
 
-共 18 张表：**16 张业务表**（与 MySQL 生产 schema 共享，`tengence_geo_*`）+ **2 张工作区本地表**（仅 SQLite，存每平台发布日历与外部平台分类法词典）。
+共 12 张表：**8 张业务表**（与 MySQL 生产 schema 共享，`tengence_geo_*`）+ **4 张工作区本地表**（仅 SQLite，存每平台发布日历、分类法词典与 MCP 任务表）。
+
+> 2026-11-24 已删除 8 张死表（`seo`/`geo`/`qa_pairs`/`citations`/`social`/`vectors` + `article_categories`/`article_tags`）：SEO/GEO 元数据存在 `articles.seo` / `articles.geo` JSON 列，分类/标签的唯一真源是 `article_plan.category` / `article_plan.tags`。
 
 关键设计：每张表带 `app_id`（多租户）；业务唯一键都含 `app_id`；`(app_id, slug, lang)` 是 `articles` 与 `article_plan` 的唯一键（每种语言一行）；SQLite 用本地时间，ENUM 变 TEXT（语义校验在应用层）；Schema 版本记录在 `PRAGMA user_version`（当前 `SCHEMA_VERSION = 5`）。
 
@@ -1689,14 +1691,6 @@ tengence-geo db-query.js [--list] [--slug=xxx] [--category=xxx] [--status=xxx]
 | `tengence_geo_articles`            | 内容库，每 slug+lang 一行                               | id、app\_id、slug、title、content\_path、content\_html、research\_md、excerpt、featured\_image、target\_keywords、lang、translation\_group、region\_market、status、author、wp\_post\_id、published\_at、created\_at、updated\_at                                                                                |
 | `tengence_geo_categories`          | 分类                                               | id、app\_id、name、slug                                                                                                                                                                                                                                                                           |
 | `tengence_geo_tags`                | 标签                                               | id、app\_id、name、slug                                                                                                                                                                                                                                                                           |
-| `tengence_geo_article_categories`  | 文章 ↔ 分类关联                                        | article\_id、category\_id、app\_id                                                                                                                                                                                                                                                               |
-| `tengence_geo_article_tags`        | 文章 ↔ 标签关联                                        | article\_id、tag\_id、app\_id                                                                                                                                                                                                                                                                    |
-| `tengence_geo_seo`                 | 每篇文章的 SEO meta                                   | article\_id、title、meta\_title、meta\_description、keywords、canonical\_url、og\_\*、noindex…                                                                                                                                                                                                        |
-| `tengence_geo_geo`                 | 每篇文章的 GEO meta                                   | article\_id、ai\_summary、key\_takeaways、qa、citations、schema\_data、entity…                                                                                                                                                                                                                       |
-| `tengence_geo_qa_pairs`            | FAQ 问答行                                          | article\_id、question、answer                                                                                                                                                                                                                                                                    |
-| `tengence_geo_citations`           | 引用行（双通道证据）                                       | article\_id、title、url、channel…                                                                                                                                                                                                                                                                 |
-| `tengence_geo_social`              | 社交 / OG meta                                     | article\_id、og\_\*                                                                                                                                                                                                                                                                             |
-| `tengence_geo_vectors`             | 内容向量                                             | article\_id、embedding…                                                                                                                                                                                                                                                                         |
 | `tengence_geo_images`              | 媒体库镜像                                            | id、app\_id、url、file、format、width、height、alt、wp\_media\_id…                                                                                                                                                                                                                                     |
 | `tengence_geo_article_images`      | 文章 ↔ 图片关联                                        | article\_id、image\_id、is\_featured…                                                                                                                                                                                                                                                            |
 | `tengence_geo_geo_monitor_answers` | 监测原始回答（提示词 × 模型 × 层级）                            | run\_id、model、layer、prompt、answer…                                                                                                                                                                                                                                                             |

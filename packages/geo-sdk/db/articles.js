@@ -185,9 +185,11 @@ async function findTitleBySlug(conn, slug, appId, lang = null) {
 }
 
 /**
- * List articles (list view): includes category/tag aggregation
- * 2026-09-14 entry-layer refactor: moved verbatim from listArticles in
- * commands/db-query.js, SQL unchanged byte-for-byte.
+ * List articles (list view): includes category / tags, read from the article plan
+ * table (2026-11-24). The plan row is the local staging of the editorial intent and
+ * the single source of truth for category/tags; the old article_categories /
+ * article_tags join was removed together with those tables (they were never written
+ * after 2026-09-20, so every list/detail carried `categories: null`).
  *
  * @param {object} filters { status, category, lang, limit }
  */
@@ -195,13 +197,13 @@ async function list(conn, appId, filters = {}) {
   let query = `
         SELECT a.id, a.slug, a.title, a.status, a.lang, a.region_market,
                a.date, a.lastmod, a.published_at,
-               GROUP_CONCAT(DISTINCT c.name ORDER BY ac.position SEPARATOR ', ') as categories,
-               GROUP_CONCAT(DISTINCT t.name SEPARATOR ', ') as tags
+               c.name AS categories,
+               p.tags AS plan_tags
         FROM ${TABLES.articles} a
-        LEFT JOIN ${TABLES.articleCategories} ac ON a.id = ac.article_id AND ac.app_id = a.app_id
-        LEFT JOIN ${TABLES.categories} c ON ac.category_id = c.id AND c.app_id = a.app_id
-        LEFT JOIN ${TABLES.articleTags} at ON a.id = at.article_id AND at.app_id = a.app_id
-        LEFT JOIN ${TABLES.tags} t ON at.tag_id = t.id AND t.app_id = a.app_id
+        LEFT JOIN ${TABLES.articlePlan} p
+               ON p.app_id = a.app_id AND p.slug = a.slug AND p.lang = a.lang
+        LEFT JOIN ${TABLES.categories} c
+               ON c.app_id = a.app_id AND c.slug = p.category
         WHERE a.app_id = ?
     `;
 
@@ -213,8 +215,8 @@ async function list(conn, appId, filters = {}) {
   }
 
   if (filters.category) {
-    query += ` AND EXISTS (SELECT 1 FROM ${TABLES.articleCategories} ac2 WHERE ac2.article_id = a.id AND ac2.app_id = a.app_id AND ac2.category_id = (SELECT id FROM ${TABLES.categories} WHERE app_id = ? AND slug = ? LIMIT 1))`;
-    params.push(appId, filters.category);
+    query += ' AND p.category = ?';
+    params.push(filters.category);
   }
 
   if (filters.lang) {
@@ -222,7 +224,7 @@ async function list(conn, appId, filters = {}) {
     params.push(filters.lang);
   }
 
-  query += ' GROUP BY a.id ORDER BY a.lastmod DESC';
+  query += ' ORDER BY a.lastmod DESC';
 
   if (filters.limit) {
     query += ' LIMIT ?';
@@ -230,7 +232,12 @@ async function list(conn, appId, filters = {}) {
   }
 
   const [articles] = await conn.query(query, params);
-  return articles;
+  return articles.map((row) => {
+    const tags = parseJsonValue(row.plan_tags, []);
+    const out = { ...row, tags: Array.isArray(tags) ? tags.map(String) : [] };
+    delete out.plan_tags;
+    return out;
+  });
 }
 
 /**
@@ -244,27 +251,30 @@ function normalizeCitation(c) {
 }
 
 /**
- * Read a single article detail: article + category/tag aggregation + SEO / GEO / QA /
- * Citations / Social / vector status
+ * Read a single article detail: article + category/tags (from the plan row) + SEO /
+ * GEO (from the articles columns) + QA / citations (derived from geo).
  *
  * 2026-09-20 merge refactor: SEO/GEO are read directly from the articles table's
- * seo/geo columns (the article_config table retired; legacy seo/geo/qa_pairs/citations
- * tables are no longer read). Returns null when the article is not found.
+ * seo/geo columns (the article_config table retired).
+ * 2026-11-24: category/tags come from the article_plan row (the local staging);
+ * the article_categories / article_tags join and the legacy social / vectors lookups
+ * were removed — those tables held no rows, so the fields were always empty while
+ * costing two extra queries per detail read.
  */
 async function getDetail(conn, appId, slug, lang = null) {
   const langClause = lang ? ' AND a.lang = ?' : '';
   const params = lang ? [appId, slug, lang] : [appId, slug];
   const [articles] = await conn.query(
     `SELECT a.*,
-                GROUP_CONCAT(DISTINCT c.name ORDER BY ac.position SEPARATOR ', ') as categories,
-                GROUP_CONCAT(DISTINCT t.name SEPARATOR ', ') as tags
+                c.name AS categories,
+                p.tags AS plan_tags
          FROM ${TABLES.articles} a
-         LEFT JOIN ${TABLES.articleCategories} ac ON a.id = ac.article_id AND ac.app_id = a.app_id
-         LEFT JOIN ${TABLES.categories} c ON ac.category_id = c.id AND c.app_id = a.app_id
-         LEFT JOIN ${TABLES.articleTags} at ON a.id = at.article_id AND at.app_id = a.app_id
-         LEFT JOIN ${TABLES.tags} t ON at.tag_id = t.id AND t.app_id = a.app_id
+         LEFT JOIN ${TABLES.articlePlan} p
+                ON p.app_id = a.app_id AND p.slug = a.slug AND p.lang = a.lang
+         LEFT JOIN ${TABLES.categories} c
+                ON c.app_id = a.app_id AND c.slug = p.category
          WHERE a.app_id = ? AND a.slug = ?${langClause}
-         GROUP BY a.id`,
+         LIMIT 1`,
     params
   );
 
@@ -274,6 +284,11 @@ async function getDetail(conn, appId, slug, lang = null) {
 
   const article = articles[0];
 
+  // tags: the plan row stores a JSON array of tag slugs
+  const tags = parseJsonValue(article.plan_tags, []);
+  article.tags = Array.isArray(tags) ? tags.map(String) : [];
+  delete article.plan_tags;
+
   // 2026-09-20 merge refactor: SEO/GEO read directly from the articles columns (article_config retired)
   article.seo = parseJsonValue(article.seo, null);
   article.geo = parseJsonValue(article.geo, null);
@@ -282,13 +297,6 @@ async function getDetail(conn, appId, slug, lang = null) {
   article.qa_pairs = (article.geo && Array.isArray(article.geo.qa_pairs)) ? article.geo.qa_pairs : [];
   const geoCitations = (article.geo && Array.isArray(article.geo.citations)) ? article.geo.citations : [];
   article.citations = geoCitations.map(normalizeCitation);
-
-  // Social / vector status: legacy tables only (the articles columns carry neither)
-  const [social] = await conn.query(`SELECT * FROM ${TABLES.social} WHERE article_id = ?`, [article.id]);
-  article.social = social[0] || null;
-
-  const [vectors] = await conn.query(`SELECT * FROM ${TABLES.vectors} WHERE article_id = ?`, [article.id]);
-  article.vector = vectors[0] || null;
 
   return article;
 }

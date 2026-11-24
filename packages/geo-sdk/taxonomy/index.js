@@ -3,11 +3,12 @@
  * taxonomy domain (tengence-geo-sdk/taxonomy)
  * ============================================================================
  * Sunk down from commands/taxonomy.js on 2026-09-20: whitelist + plan-table
- * loading, taxonomy validity checks, DB term registration (db-register
- * orchestration), DB association verification, WP assignment verification,
- * three-way verify orchestration, and wp-cleanup orchestration. Printing stays in
- * the SDK (byte-identical to the CLI output), shared by the CLI and
- * publish-draft's in-process direct call (no subprocess).
+ * loading, taxonomy validity checks, DB / WP assignment verification and the
+ * three-way verify orchestration, plus wp-cleanup orchestration.
+ *
+ * 2026-11-24: db-register (writing the article_categories / article_tags tables)
+ * was removed together with those tables — the plan row is the single local
+ * staging for category/tags and nothing read the association tables.
  *
  * Data sources (since 2026-09-20 P2, taxonomy.yaml has been retired):
  *   - category/tag whitelist: DB categories / tags tables
@@ -37,15 +38,6 @@ async function loadSources(appId) {
   return { categories, tags, planRows, appId };
 }
 
-/** Plan-table rows → the articles structure consumed by t.db.terms.register */
-function planToArticles(planRows) {
-  const out = {};
-  for (const p of planRows) {
-    out[p.slug] = { category: p.category, tags: p.tags || [], wp_post_id: p.wp_post_id };
-  }
-  return out;
-}
-
 /** Whitelist + plan-table validity checks (complements db/terms's rule checks) */
 async function validateTaxonomy({ categories, tags, planRows }) {
   const errors = [];
@@ -68,26 +60,6 @@ async function validateTaxonomy({ categories, tags, planRows }) {
     }
   }
   if (errors.length) throw new Error(errors.join('\n'));
-}
-
-/**
- * DB term-association registration (idempotent; only touches plan-table rows with a
- * non-null wp_post_id, never rewrites articles outside the plan)
- * @returns {Promise<Array>} register report (also console.logs the same JSON as the
- *         original CLI)
- */
-async function registerDatabase({ slugFilter = [], appId }) {
-  const src = await loadSources(appId);
-  await validateTaxonomy(src);
-  const taxonomy = {
-    categories: src.categories,
-    tags: src.tags,
-    articles: planToArticles(src.planRows),
-    rules: { max_tags_per_article: MAX_TAGS_PER_ARTICLE },
-  };
-  const report = await t.db.terms.register({ taxonomy, appId, slugFilter });
-  console.log(JSON.stringify({ action: 'db-register', articles: report.length, report }, null, 2));
-  return report;
 }
 
 /** WP-side article-category/tag assignment verification (row-by-row vs the plan) */
@@ -118,7 +90,15 @@ async function assertWpAssignments(planRows) {
   return { wpCategories, wpTags };
 }
 
-/** DB association verification: whitelist ↔ plan table ↔ DB term associations ↔ wp_post_id */
+/**
+ * DB verification: whitelist ↔ plan table ↔ articles table ↔ wp_post_id
+ *
+ * 2026-11-24: the article_categories / article_tags association tables were dropped
+ * (they were never written after 2026-09-20, so the old "DB associations" join was
+ * comparing the plan against two empty tables). The plan row is the local staging of
+ * category/tags; verification now checks the plan rows against the dictionary plus
+ * the article_id / wp_post_id mirrors.
+ */
 async function verifyDatabase({ categories, tags, planRows, appId }) {
   return t.db.withConn(async (connection) => {
     const [dbCategories] = await connection.query(
@@ -130,15 +110,11 @@ async function verifyDatabase({ categories, tags, planRows, appId }) {
       [appId]
     );
     const [dbArticles] = await connection.query(
-      `SELECT a.id, a.slug, a.wp_post_id,
-              GROUP_CONCAT(DISTINCT c.slug ORDER BY ac.position) category_slugs,
-              GROUP_CONCAT(DISTINCT t.slug ORDER BY t.slug) tag_slugs
+      `SELECT a.id, a.slug, a.wp_post_id, p.category AS category_slug, p.tags AS plan_tags
        FROM ${TABLES.articles} a
-       LEFT JOIN ${TABLES.articleCategories} ac ON ac.article_id = a.id AND ac.app_id = a.app_id
-       LEFT JOIN ${TABLES.categories} c ON c.id = ac.category_id AND c.app_id = ac.app_id
-       LEFT JOIN ${TABLES.articleTags} atg ON atg.article_id = a.id AND atg.app_id = a.app_id
-       LEFT JOIN ${TABLES.tags} t ON t.id = atg.tag_id AND t.app_id = atg.app_id
-       WHERE a.app_id = ? GROUP BY a.id ORDER BY a.id`,
+       LEFT JOIN ${TABLES.articlePlan} p
+              ON p.app_id = a.app_id AND p.slug = a.slug AND p.lang = a.lang
+       WHERE a.app_id = ? ORDER BY a.id`,
       [appId]
     );
 
@@ -154,10 +130,11 @@ async function verifyDatabase({ categories, tags, planRows, appId }) {
     for (const article of dbArticles) {
       const plan = planRows.find((p) => p.slug === article.slug && p.article_id === article.id);
       if (!plan) continue; // articles outside the plan aren't checked (legacy non-plan articles)
-      if (article.category_slugs !== plan.category) errors.push(`${article.slug}: DB category mismatch`);
-      const actualTags = article.tag_slugs ? article.tag_slugs.split(',').sort() : [];
-      if (JSON.stringify(actualTags) !== JSON.stringify([...(plan.tags || [])].sort())) {
-        errors.push(`${article.slug}: DB tags mismatch`);
+      if ((article.category_slug || null) !== (plan.category || null)) errors.push(`${article.slug}: plan category changed during read`);
+      let actualTags = [];
+      try { actualTags = JSON.parse(article.plan_tags || '[]'); } catch (e) { actualTags = []; }
+      if (JSON.stringify([...actualTags].sort()) !== JSON.stringify([...(plan.tags || [])].sort())) {
+        errors.push(`${article.slug}: plan tags changed during read`);
       }
       if (plan.wp_post_id && article.wp_post_id !== plan.wp_post_id) {
         errors.push(`${article.slug}: wp_post_id mismatch`);
@@ -271,4 +248,4 @@ async function cleanup({ appId }) {
   return { deletedCategories, deletedTags };
 }
 
-module.exports = { registerDatabase, verify, cleanup };
+module.exports = { verify, cleanup };

@@ -415,10 +415,16 @@ const tools = [
   {
     name: 'article_list',
     title: '文章列表',
-    description: 'List articles (articles table), with status/lang/limit filters',
+    description:
+      'List articles (articles table) with category/tags resolved from the article plan row, ' +
+      'with status/category/lang/limit filters',
     inputSchema: z.object({
       site: siteField,
       status: z.string().optional().describe('draft|queued|published etc. (optional)'),
+      category: z
+        .string()
+        .optional()
+        .describe('plan category slug filter, e.g. geo-ai-search (optional)'),
       lang: z.string().optional().describe('language filter (zh-hans|en|zh-hant; default all)'),
       limit: z.number().optional().describe('max rows (default 50)'),
     }),
@@ -429,6 +435,7 @@ const tools = [
         const rows = await t.db.withConn((conn) =>
           t.db.articles.list(conn, appId, {
             status: args.status || undefined,
+            category: args.category || undefined,
             lang: args.lang || undefined,
             limit: args.limit || 50,
           })

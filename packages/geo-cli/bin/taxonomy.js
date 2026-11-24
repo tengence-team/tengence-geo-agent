@@ -9,16 +9,19 @@
  *   - Article assignments (category / tags / wp_post_id): the article plan table tengence_geo_article_plan
  *
  * Commands:
- *   db-register     register DB term associations from the article plan (idempotent, safe; --slugs targeted)
  *   wp-cleanup      delete non-canonical WordPress categories / tags (allow-list from the DB)
- *   verify          verify: DB allow-list ↔ plan table ↔ DB associations ↔ WP category/tags + local md
+ *   verify          verify: DB allow-list ↔ plan table ↔ articles ↔ WP category/tags + local md
  *
- * B-batch refactor: the CLI degraded to a thin shell — term registration and
- * verification orchestration moved into tengence-geo-sdk/taxonomy, WP requests are
+ * 2026-11-24: `db-register` removed. It wrote the article_categories / article_tags
+ * association tables, which no longer exist — category/tags are staged in the article
+ * plan table and nothing else reads a second copy.
+ *
+ * B-batch refactor: the CLI degraded to a thin shell — verification orchestration
+ * moved into tengence-geo-sdk/taxonomy, WP requests are
  * funneled through tengence-geo-sdk/wp, table names reference db.TABLES, and
  * connections go through db.withConn.
  *
- * Usage: tengence-geo taxonomy.js <db-register|wp-cleanup|verify> [--slugs=a,b,c] [--site <key>]
+ * Usage: tengence-geo taxonomy.js <wp-cleanup|verify> [--site <key>]
  */
 
 const path = require('path');
@@ -40,16 +43,9 @@ async function main() {
   }
   const command = positional[0];
 
-  if (command === 'db-register') {
-    const slugsArg = argv.find((arg) => arg.startsWith('--slugs='));
-    const slugFilter = slugsArg
-      ? slugsArg.slice('--slugs='.length).split(',').map((item) => item.trim()).filter(Boolean)
-      : [];
-    return t.taxonomy.registerDatabase({ slugFilter, appId });
-  }
   if (command === 'wp-cleanup') return t.taxonomy.cleanup({ appId });
   if (command === 'verify') return t.taxonomy.verify({ appId });
-  throw new Error('Usage: tengence-geo taxonomy.js <db-register|wp-cleanup|verify> [--site <key>]');
+  throw new Error('Usage: tengence-geo taxonomy.js <wp-cleanup|verify> [--site <key>]  (db-register removed 2026-11-24: category/tags live in the plan table only)');
 }
 
 if (require.main === module) {
@@ -60,7 +56,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  registerDatabase: (opts) => t.taxonomy.registerDatabase(opts),
   verify: (opts) => t.taxonomy.verify(opts),
   cleanup: (opts) => t.taxonomy.cleanup(opts),
 };

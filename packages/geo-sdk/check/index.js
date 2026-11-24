@@ -313,14 +313,32 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   // would hard-block live articles. Drafts (no wp_post_id) keep the full hard gate.
   const isPublished = Boolean(dbArticle && Number(dbArticle.wp_post_id) > 0);
 
-  // ===== G19 WP-side taxonomy sync (2026-11-10) =====
+  // ===== G19 WP-side taxonomy (2026-11-24 rewrite: WP is the judge) =====
   // G18 validates plan-table tag/category *semantics* (are they correct for the topic).
-  // G19 validates that the plan taxonomy actually *landed in WordPress* — the
-  // publish-update-article.js patch previously dropped categories/tags entirely, so
-  // 288 live posts had empty WP tags/categories while plan rows were correct.
-  // Always hard: a taxonomy that exists in the plan but not in WP is a live defect,
-  // not a legacy-format artifact.
-  let wpTax = { checked: false, wpCats: [], wpTags: [], missingCats: [], missingTags: [], extraCats: [], extraTags: [] };
+  // The 2026-11-10 version of G19 compared plan against WP and hard-failed on any
+  // difference. That inverted the source of truth: the plan row is only the local
+  // staging of the editorial intent, WP is what readers actually see, and the WP
+  // side is routinely re-edited (editor / plugin) after publish. The 2026-11-17
+  // batch rewrite of ~775 plan rows left 63 live posts "missing" a category and 96
+  // "missing" tags purely because the plan moved and WP did not.
+  // New rule:
+  //   hard     — the live post carries at least one category and at least one tag
+  //              (the defect that shipped 288 live posts with empty WP tags);
+  //   advisory — whether the locally staged plan taxonomy happens to match WP.
+  //              Reported only: never blocks, never written back to WP.
+  let wpTax = {
+    checked: false,
+    wpCats: [],
+    wpTags: [],
+    wpCatCount: 0,
+    wpTagCount: 0,
+    missingCats: [],
+    missingTagCount: 0,
+    missingPlanTags: [],
+    extraCats: [],
+    extraTags: [],
+    advisoryError: '',
+  };
   if (isPublished) {
     try {
       const postId = Number(dbArticle.wp_post_id);
@@ -329,40 +347,52 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
       const wpCatIds = new Set(wpPost.categories || []);
       const wpTagIds = new Set(wpPost.tags || []);
 
-      // Resolve plan category slug → WP category ID
-      const planCat = (taxCur && taxCur.plan_category) || (taxSrc && taxSrc.plan_category) || '';
-      let planCatId = null;
-      if (planCat) {
-        const wpCats = await t.wp.api(`/categories?slug=${encodeURIComponent(planCat)}&_fields=id,slug`, WP_OPTS);
-        if (wpCats && wpCats.length) planCatId = wpCats[0].id;
-      }
-
-      // Resolve plan tag slugs → WP tag IDs
-      const planTagSlugs = effTags;
-      const planTagIds = [];
-      if (planTagSlugs.length) {
-        const wpTagsAll = await t.wp.api(`/tags?per_page=100&_fields=id,slug`, WP_OPTS);
-        const slugToId = {};
-        (wpTagsAll || []).forEach((x) => { slugToId[x.slug] = x.id; });
-        for (const s of planTagSlugs) {
-          if (slugToId[s]) planTagIds.push(slugToId[s]);
-        }
-      }
-
-      // Compare
-      const missingCats = planCatId && !wpCatIds.has(planCatId) ? [planCat] : [];
-      const missingTags = planTagIds.filter((id) => !wpTagIds.has(id)).length;
-
       wpTax = {
+        ...wpTax,
         checked: true,
         wpCats: [...wpCatIds],
         wpTags: [...wpTagIds],
-        planCatId,
-        planTagIds,
-        missingCats,
-        missingTagCount: missingTags,
-        planTagCount: planTagIds.length,
+        wpCatCount: wpCatIds.size,
+        wpTagCount: wpTagIds.size,
       };
+
+      // Advisory only: resolve the plan taxonomy inside WP. Each lookup is isolated
+      // in its own try/catch so a taxonomy-endpoint hiccup can never turn the hard
+      // "post carries taxonomy" rows red as a side effect.
+      const planCat = (taxCur && taxCur.plan_category) || (taxSrc && taxSrc.plan_category) || '';
+      const planTagSlugs = effTags;
+      wpTax.planCat = planCat;
+      wpTax.planTagCount = planTagSlugs.length;
+      try {
+        let planCatId = null;
+        if (planCat) {
+          const wpCats = await t.wp.api(`/categories?slug=${encodeURIComponent(planCat)}&_fields=id,slug`, WP_OPTS);
+          if (wpCats && wpCats.length) planCatId = wpCats[0].id;
+        }
+
+        const missingPlanTags = [];
+        const planTagIds = [];
+        if (planTagSlugs.length) {
+          const wpTagsAll = await t.wp.api(`/tags?per_page=100&_fields=id,slug`, WP_OPTS);
+          const slugToId = {};
+          (wpTagsAll || []).forEach((x) => { slugToId[x.slug] = x.id; });
+          for (const s of planTagSlugs) {
+            if (slugToId[s]) planTagIds.push(slugToId[s]);
+            else missingPlanTags.push(s);
+          }
+        }
+
+        wpTax = {
+          ...wpTax,
+          planCatId,
+          planTagIds,
+          missingCats: planCatId && !wpCatIds.has(planCatId) ? [planCat] : [],
+          missingPlanTags,
+          missingTagCount: missingPlanTags.length,
+        };
+      } catch (e) {
+        wpTax.advisoryError = e.message;
+      }
     } catch (e) {
       wpTax = { checked: false, error: e.message };
     }
@@ -692,30 +722,10 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
         : (sem.domain ? sem.domain + ' / ok' : 'domain ambiguous (cross-domain check n/a)'),
       sem.mismatches.length === 0, false, true],
     ['tag semantics (G18): product category matches article topic (hard)', sem.categoryConflict || 'ok', !sem.categoryConflict, false, true],
-    // ===== G19 WP-side taxonomy sync (2026-11-10) =====
-    // Always hard: the plan says category X and tags Y, but WP shows neither.
-    // This is the defect that shipped 288 live posts with empty WP tags.
-    ...(wpTax.checked
-      ? [
-          ['WP taxonomy (G19): plan category present in WP',
-            wpTax.missingCats.length
-              ? 'MISSING: ' + wpTax.missingCats.join(', ') + ' (plan cat not in WP)'
-              : (wpTax.planCatId ? 'cat ID ' + wpTax.planCatId + ' in WP' : 'no plan category (n/a)'),
-            wpTax.missingCats.length === 0, false, true],
-          ['WP taxonomy (G19): all plan tags present in WP',
-            wpTax.planTagCount
-              ? (wpTax.planTagCount - wpTax.missingTagCount) + '/' + wpTax.planTagCount + ' plan tags in WP'
-              : 'no plan tags (n/a)',
-            wpTax.planTagCount === 0 || wpTax.missingTagCount === 0, false, true],
-        ]
-      : [
-          ['WP taxonomy (G19): plan category present in WP',
-            isPublished ? 'lookup failed: ' + (wpTax.error || 'unknown') : 'n/a (draft, not yet on WP)',
-            !isPublished, isPublished, false],
-          ['WP taxonomy (G19): all plan tags present in WP',
-            isPublished ? 'lookup failed' : 'n/a (draft, not yet on WP)',
-            !isPublished, isPublished, false],
-        ]),
+    // ===== G19 WP-side taxonomy (2026-11-24: WP is the judge) =====
+    // Rows are built by wpTaxRows() so the wording/verdict is unit-testable without
+    // a site/DB/WP harness.
+    ...wpTaxRows(wpTax, isPublished),
     // B2 citation ledger (2026-11-04): every body citation URL must appear in the
     // research brief. Hard when a brief exists (always-hard: re-publishing with a
     // citation that no research supports is a substantive defect); n/a when no brief.
@@ -910,4 +920,62 @@ async function checkArticle({ slug, dir = 'industry-insights', type = null, lang
   };
 }
 
-module.exports = { checkArticle, computeSubstance, isNonSpecificPage, isGenericPadding };
+/**
+ * G19 report rows (2026-11-24 rewrite: WP is the judge).
+ *
+ * Hard rows judge the live post: it must carry at least one category and at least
+ * one tag. Advisory rows compare the locally staged plan taxonomy against WP —
+ * informational only, because WP is re-edited after publish and the plan is intent,
+ * not fact. Row shape matches the gate: [name, value, ok, advisory, alwaysHard].
+ *
+ * @param {object} wpTax wpTax accumulator from checkArticle
+ * @param {boolean} isPublished whether the article already carries a wp_post_id
+ * @returns {Array<Array>} four rows
+ */
+function wpTaxRows(wpTax, isPublished) {
+  if (!wpTax.checked) {
+    const why = isPublished ? 'lookup failed: ' + (wpTax.error || 'unknown') : 'n/a (draft, not yet on WP)';
+    const ok = !isPublished;
+    return [
+      ['WP taxonomy (G19): WP post carries a category (hard)', why, ok, false, true],
+      ['WP taxonomy (G19): WP post carries tags (hard)', why, ok, false, true],
+      ['WP taxonomy (G19): plan category matched in WP (advisory)', why, true, true],
+      ['WP taxonomy (G19): plan tags matched in WP (advisory)', why, true, true],
+    ];
+  }
+
+  const catValue = wpTax.wpCatCount
+    ? wpTax.wpCatCount + ' cat ID: ' + wpTax.wpCats.join(', ')
+    : 'EMPTY (no category on WP post)';
+  const tagValue = wpTax.wpTagCount
+    ? wpTax.wpTagCount + ' tag ID: ' + wpTax.wpTags.join(', ')
+    : 'EMPTY (no tags on WP post)';
+
+  let planCatValue;
+  if (wpTax.advisoryError) planCatValue = 'advisory unavailable: ' + wpTax.advisoryError;
+  else if (!wpTax.planCat) planCatValue = 'no plan category (n/a)';
+  else if (wpTax.planCatId) {
+    planCatValue = 'plan "' + wpTax.planCat + '" → cat ID ' + wpTax.planCatId +
+      ((wpTax.missingCats || []).length ? ' (not on this post)' : '');
+  } else planCatValue = 'plan "' + wpTax.planCat + '" not found in WP';
+
+  let planTagValue;
+  if (wpTax.advisoryError) planTagValue = 'advisory unavailable: ' + wpTax.advisoryError;
+  else if (!wpTax.planTagCount) planTagValue = 'no plan tags (n/a)';
+  else {
+    const missing = wpTax.missingPlanTags || [];
+    planTagValue = (wpTax.planTagCount - (wpTax.missingTagCount || 0)) + '/' + wpTax.planTagCount + ' plan tags in WP' +
+      (missing.length
+        ? ' (missing: ' + missing.slice(0, 3).join(', ') + (missing.length > 3 ? ' …' : '') + ')'
+        : '');
+  }
+
+  return [
+    ['WP taxonomy (G19): WP post carries a category (hard)', catValue, wpTax.wpCatCount > 0, false, true],
+    ['WP taxonomy (G19): WP post carries tags (hard)', tagValue, wpTax.wpTagCount > 0, false, true],
+    ['WP taxonomy (G19): plan category matched in WP (advisory)', planCatValue, true, true],
+    ['WP taxonomy (G19): plan tags matched in WP (advisory)', planTagValue, true, true],
+  ];
+}
+
+module.exports = { checkArticle, computeSubstance, isNonSpecificPage, isGenericPadding, wpTaxRows };

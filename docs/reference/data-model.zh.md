@@ -22,14 +22,6 @@
 | `tengence_geo_articles` | 内容库，每 slug+lang 一行 | id、app_id、slug、title、content_path、content_longtext、content_html、research_md、excerpt、featured_image、target_keywords、lang、translation_group、region_market、status（draft…）、author、wp_post_id、published_at、created_at、updated_at |
 | `tengence_geo_categories` | 分类 | id、app_id、name、slug |
 | `tengence_geo_tags` | 标签 | id、app_id、name、slug |
-| `tengence_geo_article_categories` | 文章 ↔ 分类关联 | article_id、category_id、app_id |
-| `tengence_geo_article_tags` | 文章 ↔ 标签关联 | article_id、tag_id、app_id |
-| `tengence_geo_seo` | 每篇文章的 SEO meta | article_id、title、meta_title、meta_description、keywords、canonical_url、og_*、noindex… |
-| `tengence_geo_geo` | 每篇文章的 GEO meta | article_id、ai_summary、key_takeaways、qa（关联）、citations（关联）、schema_data、entity… |
-| `tengence_geo_qa_pairs` | FAQ 问答行 | article_id、question、answer |
-| `tengence_geo_citations` | 引用行（双通道证据） | article_id、title、url、channel… |
-| `tengence_geo_social` | 社交/OG meta | article_id、og_* |
-| `tengence_geo_vectors` | 内容向量 | article_id、embedding… |
 | `tengence_geo_images` | 媒体库镜像 | id、app_id、url、file、format、width、height、alt、wp_media_id… |
 | `tengence_geo_article_images` | 文章 ↔ 图片关联 | article_id、image_id、is_featured… |
 | `tengence_geo_geo_monitor_answers` | 监测原始回答（提示词 × 模型 × 层级） | run_id、model、layer、prompt、answer… |
