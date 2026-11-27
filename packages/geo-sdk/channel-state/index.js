@@ -116,13 +116,17 @@ async function list({ appId, platform = null, status = null, limit = DEFAULT_LIM
  * @param {{appId:number, id:number, to:string, reason?:string, draftIds?:string[],
  *          articleId?:string|number, force?:boolean, conn?:object}} args
  */
-async function setState({ appId, id, to, reason = null, draftIds, articleId, force = false, conn: injected } = {}) {
+async function setState({ appId, id, to, reason = null, draftIds, articleId, force = false, platform = null, conn: injected } = {}) {
   if (id == null) throw new Error('channelState.setState requires id');
   const target = assertState(to);
   const run = async (c) => {
     const row = await repo.selectOne(c, appId, id);
     if (!row) throw errors.notFound(id);
     const from = states.normalize(row.status) || null;
+    // platform is only needed for the per-platform transition exceptions (a
+    // live-publish platform may go todo -> published without a draft stage);
+    // fall back to the row's own platform when the caller did not pass one.
+    const platformKey = states.normalize(platform || row.platform);
 
     if (from === target) {
       // idempotent: still allow attaching metadata
@@ -132,7 +136,7 @@ async function setState({ appId, id, to, reason = null, draftIds, articleId, for
     }
 
     if (force && !reason) throw errors.reasonRequired(from, target);
-    if (!force && !states.canTransition(from, target)) {
+    if (!force && !states.canTransition(from, target, platformKey)) {
       throw errors.invalidTransition(from, target, states.TRANSITIONS[from]);
     }
     if (states.reasonRequired(from, target) && !reason) throw errors.reasonRequired(from, target);
@@ -205,6 +209,7 @@ async function record(rec = {}) {
         reason: rec.reason || null,
         force: rec.force === true,
         articleId: rec.articleId,
+        platform,
         conn: c,
       });
       applied = out.to;

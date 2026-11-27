@@ -42,6 +42,17 @@ const TRANSITIONS = {
   published: ['published'],
 };
 
+/**
+ * Platforms that publish LIVE with no draft stage (2026-11-27).
+ * nextDue registers the row as `todo` and the platform call goes straight to
+ * published, so `todo → published` MUST be legal for them. Without this the row
+ * stayed `todo` after a successful live publish and the next tick re-sent the
+ * same article — dev.to answered 422 “Canonical url has already been taken”
+ * every hour from 2026-11-16 to 2026-11-25 and the whole queue behind it stalled.
+ * Other platforms keep the strict rule (published only from draft/reviewing).
+ */
+const LIVE_PUBLISH_PLATFORMS = ['devto'];
+
 /** Moves that must explain themselves (they either hide content or revive it). */
 const REASON_REQUIRED = new Set(['deleted', 'review_failed', 'todo']);
 
@@ -77,14 +88,20 @@ function isState(status) {
   return ALL.includes(normalize(status));
 }
 
-function canTransition(from, to) {
+function canTransition(from, to, platform = null) {
   const f = normalize(from);
   const t = normalize(to);
   if (!f) return isState(t); // a brand-new row may be created in any state
   if (!isState(t)) return false;
   const allowed = TRANSITIONS[f];
   if (!allowed) return false;
-  return allowed.includes(t);
+  if (allowed.includes(t)) return true;
+  // live-publish platforms have no draft stage: a registered queue row (todo)
+  // becomes published in one step, so the move must be legal for them alone.
+  if (t === STATES.PUBLISHED && f === STATES.TODO && LIVE_PUBLISH_PLATFORMS.includes(normalize(platform))) {
+    return true;
+  }
+  return false;
 }
 
 function reasonRequired(from, to) {
@@ -113,6 +130,7 @@ module.exports = {
   STATES,
   ALL,
   TRANSITIONS,
+  LIVE_PUBLISH_PLATFORMS,
   DISPATCHED_BY_PLATFORM,
   DEFAULT_DISPATCHED,
   NO_AUTO_RETRY,

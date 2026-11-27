@@ -31,3 +31,17 @@ test('devto: unknown slugs are dropped, empty input yields no tags', () => {
   assert.deepEqual(mapPlanTagsToDevto([]), []);
   assert.deepEqual(mapPlanTagsToDevto(null), []);
 });
+
+// --------------------------------------------------------------- error classes
+
+test('devto: 422 canonical-taken is classified as already published, not a retryable error', () => {
+  const { classifyDevtoError } = require('../packages/geo-sdk/syndicate/devto');
+  const body = JSON.stringify({
+    error: 'Canonical url has already been taken. Email support@dev.to for further details.',
+    status: 422,
+  });
+  assert.equal(classifyDevtoError(422, body).kind, 'already_published');
+  // a real API failure stays a failure
+  assert.equal(classifyDevtoError(422, JSON.stringify({ error: 'Body markdown is too long' })).kind, 'api_error');
+  assert.equal(classifyDevtoError(401, JSON.stringify({ error: 'unauthorized' })).kind, 'api_error');
+});

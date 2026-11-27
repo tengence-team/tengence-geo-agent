@@ -405,7 +405,9 @@ async function publishDue({ now = new Date(), dryRun = false, siteKey, appId = D
                 status: 'failed',
                 draftId: r.draftId || (r.detail && r.detail.draftId),
                 notes: `[attempt ${attemptAt}] 发布失败：${r.stage || 'unknown'}${r.blocked ? '（前置闸门拦截，未调平台接口）' : ''}`,
-                error: r.error || (r.reason ? { code: 'STYLE_GATE', message: r.reason } : null),
+                error: r.error
+                  ? (r.errorDetail ? { code: String(r.error), message: String(r.error), raw: r.errorDetail } : r.error)
+                  : (r.reason ? { code: 'STYLE_GATE', message: r.reason } : null),
                 stage: r.stage || (r.blocked ? 'style_check' : null),
                 context: r.context || (r.errors ? { gateErrors: r.errors.slice(0, 10) } : null),
               });

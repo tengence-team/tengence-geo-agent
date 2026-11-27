@@ -332,6 +332,29 @@ async function recordPublish(rec) {
   errorStage = errorStage || rec.stage || null;
 
   const status = rec.status || 'failed';
+  // P1-c (2026-11-27): published is terminal — a later duplicate attempt must never
+  // demote a live article back to failed. dev.to answered 422 "canonical already
+  // taken" for every re-send of an already-published row; that failure write used
+  // to flip published → failed, making the row retryable again and locking the
+  // whole dev.to queue for 9 days. Only a genuine published outcome may touch it.
+  if (status !== 'published') {
+    const current = await channelState.read({
+      appId,
+      platform: rec.platform,
+      slug: rec.slug,
+      lang,
+    });
+    if (current && String(current.status || '').toLowerCase() === 'published') {
+      return {
+        ok: true,
+        platform: rec.platform,
+        slug: rec.slug,
+        lang,
+        status: 'published',
+        skipped: 'already-published',
+      };
+    }
+  }
   // Stamp failed_at only on a genuine failure that carries an error; keep a prior
   // failed_at when re-recording the same failing row (do not overwrite with null).
   const failedAt = status === 'failed' && (errorCode || errorMessage) ? nowLocalStamp() : rec.failed_at || null;

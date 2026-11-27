@@ -212,3 +212,27 @@ test('audit: reports draft rows with no media id and queue rows still holding on
   assert.equal(report.counts.queueWithMedia, 1);
   assert.equal(report.counts.draftWithoutPeriod, 1);
 });
+
+// ------------------------------------------------- live-publish platforms
+
+test('matrix: todo -> published is refused globally but allowed for a live-publish platform', () => {
+  assert.equal(states.canTransition('todo', 'published'), false, 'no platform: strict rule stays');
+  assert.equal(states.canTransition('todo', 'published', 'juejin'), false, 'juejin keeps the draft stage');
+  assert.equal(states.canTransition('todo', 'published', 'devto'), true, 'dev.to publishes live');
+});
+
+test('setState: devto todo row may go straight to published (no draft stage)', async () => {
+  const conn = makeStub({ row: row({ platform: 'devto', lang: 'en', status: 'todo', draft_ids: '[]' }) });
+  const out = await cs.setState({ appId: 1, id: 253, to: 'published', platform: 'devto', draftIds: ['5131370'], conn });
+  assert.equal(out.from, 'todo');
+  assert.equal(out.to, 'published');
+  assert.equal(out.changed, true);
+});
+
+test('setState: juejin todo row may NOT go straight to published', async () => {
+  const conn = makeStub({ row: row({ platform: 'juejin', status: 'todo' }) });
+  await assert.rejects(
+    () => cs.setState({ appId: 1, id: 253, to: 'published', platform: 'juejin', conn }),
+    (e) => e.code === 'E_INVALID_TRANSITION'
+  );
+});

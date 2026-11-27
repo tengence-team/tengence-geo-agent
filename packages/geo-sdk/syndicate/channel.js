@@ -622,7 +622,18 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
           // dev.to publishes LIVE (2026-10-12): no draft-first anymore, no review
           // pipeline. `published:true` marks the result as a live article so the
           // caller logs "published", never "draft".
-          results.push({ slug, ok: true, published: true, draftId: res && res.id, detail: res });
+          // alreadyPublished (2026-11-27): 422 "canonical already taken" means the
+          // article is ALREADY live under the same canonical URL — that is a success
+          // for our purposes (never a retryable failure), otherwise the queue row
+          // stays retryable and the ticker re-sends it every hour.
+          results.push({
+            slug,
+            ok: true,
+            published: true,
+            alreadyPublished: !!res.alreadyPublished,
+            draftId: res && res.id,
+            detail: res,
+          });
         } else if (platform === 'csdn') {
           // Reuses the SAME upstream dedup as every other platform (filterUnpublished,
           // run once at the top of publishFromSlugs) — no platform-local re-check.
@@ -803,8 +814,14 @@ async function publishFromSlugs({ platform, slugs, asDraft, keepOrder, dryRun, s
         }
     } catch (e) {
       failed += 1;
-      results.push({ slug, ok: false, error: e.message, title: typeof article !== 'undefined' ? article.title : undefined });
-      appendLog(site.siteDir, { action: 'error', platform, slug, ok: false, detail: { error: e.message } });
+      results.push({
+        slug,
+        ok: false,
+        error: e.message,
+        errorDetail: e.detail || null,
+        title: typeof article !== 'undefined' ? article.title : undefined,
+      });
+      appendLog(site.siteDir, { action: 'error', platform, slug, ok: false, detail: { error: e.message, errorDetail: e.detail || null } });
     }
     }
   });

@@ -79,6 +79,25 @@ function mapPlanTagsToDevto(planTags) {
  * @returns {Promise<{dryRun?:boolean, id?:number, url?:string}>}
  * @throws missing file / no front matter / API failure (every error path except dry-run)
  */
+/**
+ * Classify a non-2xx response from the Dev.to API.
+ * 422 “Canonical url has already been taken” is NOT a retryable failure: the
+ * article is already live under the same canonical URL, i.e. this run is a
+ * duplicate attempt. Treating it as a generic error kept the channel_plan row
+ * retryable and made the hourly ticker re-send the same article forever
+ * (2026-11-16..11-25, every slot answered 422).
+ * @param {number} status HTTP status
+ * @param {string} body raw response text
+ * @returns {{kind:'already_published'|'api_error', message:string}}
+ */
+function classifyDevtoError(status, body) {
+  const text = typeof body === 'string' ? body : JSON.stringify(body == null ? {} : body);
+  if (Number(status) === 422 && /canonical\s*url has already been taken/i.test(text)) {
+    return { kind: 'already_published', message: text };
+  }
+  return { kind: 'api_error', message: text };
+}
+
 async function publishDevto({ mdPath, dryRun = false, coverImage = null, tags = null }) {
   const API_KEY = process.env.DEVTO_API_KEY;
   if (!API_KEY) {
@@ -215,10 +234,38 @@ async function publishDevto({ mdPath, dryRun = false, coverImage = null, tags = 
     },
     body: JSON.stringify(payload),
   });
-  const data = await res.json();
+  // read the raw body once (needed for error classification AND for the payload);
+  // stubs/tests may only implement json(), so fall back to that when text() is absent.
+  let bodyText = '';
+  if (typeof res.text === 'function') {
+    bodyText = await res.text();
+  } else if (typeof res.json === 'function') {
+    bodyText = JSON.stringify(await res.json());
+  }
+  let data = {};
+  try {
+    data = bodyText ? JSON.parse(bodyText) : {};
+  } catch (e) {
+    data = { raw: bodyText };
+  }
   if (!res.ok) {
+    const cls = classifyDevtoError(res.status, bodyText);
     console.error('❌ Publish failed:', res.status, JSON.stringify(data, null, 2));
-    throw new Error('DEVTO_API_ERROR');
+    if (cls.kind === 'already_published') {
+      // the article is already live under this canonical URL — nothing to publish
+      console.log('ℹ️  canonical already taken → treated as already published');
+      return {
+        alreadyPublished: true,
+        canonicalUrl,
+        status: res.status,
+        detail: bodyText.slice(0, 500),
+      };
+    }
+    const err = new Error('DEVTO_API_ERROR');
+    // keep the real status + body so channel_plan.error_detail is diagnosable
+    // (channel-log used to carry only the string 'DEVTO_API_ERROR')
+    err.detail = { status: res.status, body: bodyText.slice(0, 1000) };
+    throw err;
   }
   console.log(`✅ Success! Dev.to article ID: ${data.id}`);
   console.log(`   Article link: ${data.url}`);
@@ -226,4 +273,4 @@ async function publishDevto({ mdPath, dryRun = false, coverImage = null, tags = 
   return { id: data.id, url: data.url };
 }
 
-module.exports = { publishDevto, mapPlanTagsToDevto };
+module.exports = { publishDevto, mapPlanTagsToDevto, classifyDevtoError };
