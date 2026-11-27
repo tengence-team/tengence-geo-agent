@@ -35,7 +35,11 @@ const TRANSITIONS = {
   todo: ['todo', 'draft', 'reviewing', 'failed', 'paused', 'deleted'],
   draft: ['draft', 'published', 'reviewing', 'failed', 'paused', 'deleted'],
   reviewing: ['reviewing', 'published', 'review_failed', 'failed', 'paused', 'deleted'],
-  failed: ['failed', 'todo', 'paused', 'deleted'],
+  // draft added 2026-11-27: a retry that succeeds as a draft (aliyun/juejin/csdn
+  // are human-gated, so success == draft) must be recordable, otherwise the
+  // draft id lands but the status stays `failed` (same class of bug as the dev.to
+  // todo→published one).
+  failed: ['failed', 'todo', 'draft', 'paused', 'deleted'],
   review_failed: ['review_failed', 'todo', 'paused', 'deleted'],
   paused: ['paused', 'todo', 'deleted'],
   deleted: ['deleted', 'todo'],

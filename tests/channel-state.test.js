@@ -236,3 +236,8 @@ test('setState: juejin todo row may NOT go straight to published', async () => {
     (e) => e.code === 'E_INVALID_TRANSITION'
   );
 });
+
+test('matrix: a retried failure may land as draft (human-gated channels succeed as draft)', () => {
+  assert.equal(states.canTransition('failed', 'draft'), true);
+  assert.equal(states.canTransition('failed', 'published'), false, 'never straight to published');
+});

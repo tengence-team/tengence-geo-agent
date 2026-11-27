@@ -186,9 +186,20 @@ async function harvestCsrf({ force = false } = {}) {
   const res = await rawRequest(CSRF_SEED_URL, { method: 'GET' });
   const setCookie = res.headers['set-cookie'] || [];
   const hit = setCookie.map((s) => String(s)).find((s) => s.startsWith('c_csrf='));
-  if (!hit) throw new Error('ALIYUN_CSRF_MISSING');
-  cachedCsrf = hit.split(';')[0].slice('c_csrf='.length);
-  return cachedCsrf;
+  if (hit) {
+    cachedCsrf = hit.split(';')[0].slice('c_csrf='.length);
+    return cachedCsrf;
+  }
+  // Fallback (2026-11-27): a logged-in session often no longer re-issues c_csrf
+  // (the page answers 200 with no Set-Cookie), but the pasted cookie already
+  // carries one — reuse it instead of failing the whole channel with
+  // ALIYUN_CSRF_MISSING.
+  const fromCookie = (creds().cookie.match(/c_csrf=([^;]+)/) || [])[1];
+  if (fromCookie) {
+    cachedCsrf = decodeURIComponent(fromCookie);
+    return cachedCsrf;
+  }
+  throw new Error('ALIYUN_CSRF_MISSING');
 }
 
 /**
