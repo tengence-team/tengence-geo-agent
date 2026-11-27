@@ -2477,9 +2477,17 @@ const tools = [
                   : null;
               // publishGated (aliyun): the platform refused/never attempted a live
               // publish, so even with asDraft=false the truthful status is "draft".
-              // r.published is the platform's own answer (juejin/csdn = !asDraft,
-              // devto always false = draft-first) — it wins over wentLive.
-              const status = !r.ok ? 'failed' : r.published === false ? 'draft' : wentLive && !r.publishGated ? 'published' : 'draft';
+              // r.published is the platform's own answer — true means the platform
+              // really went live (devto since 2026-10-12), so it must win over the
+              // manual-call default asDraft=true (2026-11-27: a live dev.to post was
+              // recorded as `draft`, hiding it from the published audit).
+              const status = !r.ok
+                ? 'failed'
+                : r.published === false
+                  ? 'draft'
+                  : r.published === true || (wentLive && !r.publishGated)
+                    ? 'published'
+                    : 'draft';
               // devto returns the live post url in detail.url — keep it as publish evidence
               // (devto has no taxonomy, so taxNote alone would drop the trace).
               const devtoUrl = r.detail && r.detail.url ? `url: ${r.detail.url}` : null;
