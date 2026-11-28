@@ -951,6 +951,123 @@ const tools = [
     },
   },
   {
+    name: 'content_publish',
+    title: '发布任意 WordPress 内容',
+    description:
+      'Generic WordPress content writer for ANY REST-exposed post type (post / page / tengence_doc / …). ' +
+      'The tool knows only a target (site + post_type) and a payload (plain WP fields); it has no content profile, ' +
+      'no post-type allowlist and no per-type branching. Idempotency key = post_type + slug + language. ' +
+      'parent accepts an ID or a slug path such as "products/tengence-search" resolved inside the same post type + language. ' +
+      'meta is passed through to the native API: keys registered for that post type are written, others are ignored by WP.',
+    inputSchema: z.object({
+      site: siteField,
+      workspace: workspaceField,
+      post_type: z.string().optional().describe('WP post type; default tengence_doc'),
+      language: z.string().optional().describe('zh-hans | en | zh-hant (language taxonomy term); omit only for a non-multilingual type'),
+      translation_group: z.string().optional().describe('translation group slug shared by the language versions'),
+      parent: z.union([z.number(), z.string()]).optional().describe('parent ID, or slug path inside the same post type + language (e.g. "products/tengence-search")'),
+      menu_order: z.number().optional(),
+      slug: z.string().describe('stable slug; part of the idempotency key'),
+      title: z.string().describe('page title in the target language'),
+      content: z.string().optional().describe('HTML body'),
+      excerpt: z.string().optional(),
+      status: z.enum(['publish', 'draft', 'pending', 'private']).optional().describe('default publish'),
+      meta: z.record(z.any()).optional().describe('registered meta keys (e.g. _tengence_doc_summary); passed through to the native API'),
+    }).passthrough(),
+    async run(args) {
+      const { site, workspace, post_type, language, translation_group, menu_order, meta, ...rest } = args;
+      if (language) {
+        const e = langReject(language);
+        if (e) return fail(new Error(e));
+      }
+      withSite(args);
+      let parent = rest.parent;
+      if (typeof parent === 'string') {
+        const segments = parent.split('/').filter(Boolean);
+        let parentId = 0;
+        for (const segment of segments) {
+          const found = await t.wpContent.findBySlug(segment, {
+            postType: post_type || 'tengence_doc', status: 'any', parent: parentId || undefined, lang: language,
+          });
+          if (!found) return fail(new Error(`parent path not found: ${parent} (segment "${segment}")`));
+          parentId = found.id;
+        }
+        parent = parentId;
+      }
+      const payload = {
+        ...rest,
+        postType: post_type || 'tengence_doc',
+        language,
+        translationGroup: translation_group,
+        menuOrder: menu_order,
+        meta,
+        parent,
+      };
+      if (!payload.slug || !payload.title) return fail(new Error('content_publish requires slug and title'));
+      const result = await t.wpContent.publish(payload);
+      return ok(result);
+    },
+  },
+  {
+    name: 'content_tree',
+    title: '读取任意内容树',
+    description: 'Read every node of a hierarchical WordPress post type (default tengence_doc) and return both the flat list and the assembled tree (parent + menu_order). Type-agnostic.',
+    inputSchema: z.object({
+      site: siteField,
+      workspace: workspaceField,
+      post_type: z.string().optional().describe('default tengence_doc'),
+      status: z.string().optional().describe('default any (drafts included)'),
+    }).passthrough(),
+    async run(args) {
+      withSite(args);
+      const { flat, tree } = await t.wpContent.tree({ postType: args.post_type || 'tengence_doc', status: args.status || 'any' });
+      return ok({ total: flat.length, tree });
+    },
+  },
+  {
+    name: 'content_status',
+    title: '内容状态统计',
+    description: 'Count nodes of a post type by status and language, and list them. Type-agnostic; useful before and after a batch publish.',
+    inputSchema: z.object({
+      site: siteField,
+      workspace: workspaceField,
+      post_type: z.string().optional().describe('default tengence_doc'),
+      language: z.string().optional().describe('filter by zh-hans | en | zh-hant'),
+      status: z.string().optional().describe('default any'),
+    }).passthrough(),
+    async run(args) {
+      withSite(args);
+      const { flat } = await t.wpContent.tree({ postType: args.post_type || 'tengence_doc', status: args.status || 'any' });
+      const languageSet = new Set();
+      if (args.language) {
+        const localized = await t.wp.plugin.listPostsByLanguage('', args.language, { postType: args.post_type || 'tengence_doc' }).catch(() => []);
+        localized.forEach((p) => languageSet.add(p.id));
+      }
+      const items = flat
+        .filter((n) => !args.language || languageSet.has(n.id))
+        .map((n) => ({ id: n.id, slug: n.slug, title: typeof n.title === 'string' ? n.title : n.title && n.title.rendered, status: n.status, parent: n.parent, menu_order: n.menu_order }));
+      const byStatus = items.reduce((acc, n) => { acc[n.status] = (acc[n.status] || 0) + 1; return acc; }, {});
+      return ok({ post_type: args.post_type || 'tengence_doc', language: args.language || null, total: items.length, by_status: byStatus, items });
+    },
+  },
+  {
+    name: 'content_delete',
+    title: '删除任意内容',
+    description: 'Delete a WordPress content item by ID. force=false trashes it (reversible), force=true deletes permanently. Type-agnostic.',
+    inputSchema: z.object({
+      site: siteField,
+      workspace: workspaceField,
+      post_type: z.string().optional().describe('default tengence_doc'),
+      id: z.number(),
+      force: z.boolean().optional().describe('default false (trash)'),
+    }).passthrough(),
+    async run(args) {
+      withSite(args);
+      const result = await t.wpContent.remove(args.id, { postType: args.post_type || 'tengence_doc', force: Boolean(args.force) });
+      return ok({ id: args.id, deleted: Boolean(args.force), previous_status: result && result.status });
+    },
+  },
+  {
     name: 'publish_update_article',
     title: '更新已发布文章',
     description: 'Bypass update of an existing article (title/content/status + sync SEO/GEO meta). ' +
@@ -4149,6 +4266,7 @@ const TOOL_GROUPS = [
     group: 'Content authoring & gate',
     match: /^(article_list|article_draft|article_ingest|article_export|article_terms_sync|article_links_audit|article_links_fix|article_research_sync|article_state_read|article_state_audit|state_reconcile_wp|check_article|check_translation|translation_glossary_get|wp_post_get|wp_post_trash)/,
   },
+  { group: 'Generic content (any post type)', match: /^content_/ },
   { group: 'Publishing (WordPress)', match: /^publish_/ },
   { group: 'Search inclusion & analytics', match: /^(search_|webmaster_)/ },
   { group: 'AI visibility monitoring', match: /^(monitor_|report_write)/ },

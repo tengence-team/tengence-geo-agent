@@ -187,13 +187,34 @@ async function setPostLanguage(postId, { language, translationGroup = null } = {
  * @returns {Promise<object|null>} the matching post (plugin response shape) or null
  *   when the plugin API is unavailable (pre-multilingual plugin) / not found
  */
-async function findPostByLanguage(slug, lang, options = {}) {
+async function listPostsByLanguage(slug, lang, options = {}) {
   const code = toPluginLanguage(lang || 'zh-hans');
-  const res = await pluginApi(`/language/posts?slug=${encodeURIComponent(slug)}&lang=${code}`, {
+  const typeQs = options.postType ? `&post_type=${encodeURIComponent(options.postType)}` : '';
+  const res = await pluginApi(`/language/posts?slug=${encodeURIComponent(slug)}&lang=${code}${typeQs}`, {
     siteKey: options.siteKey,
   });
-  const list = res && res.data ? (Array.isArray(res.data) ? res.data : [res.data]) : [];
+  return res && res.data ? (Array.isArray(res.data) ? res.data : [res.data]) : [];
+}
+
+async function findPostByLanguage(slug, lang, options = {}) {
+  const list = await listPostsByLanguage(slug, lang, options);
   return list.length ? list[0] : null;
 }
 
-module.exports = { pluginTarget, pluginApi, getPostMeta, updatePostMeta, setPostLanguage, setPostDates, getPostDates, toPluginLanguage, findPostByLanguage };
+/**
+ * Batch-write post attributes through the generic attributes endpoint
+ * (title / excerpt / slug / status / date / modified / featured_media / categories /
+ * tags / sticky / parent / menu_order). The endpoint does not care about post type.
+ * @param {number|string} postId
+ * @param {object} attributes
+ * @returns {Promise<object>} { updated:[...], attributes:{...} }
+ */
+async function updatePostAttributes(postId, attributes = {}, options = {}) {
+  if (!attributes || typeof attributes !== 'object' || Object.keys(attributes).length === 0) {
+    throw new Error('updatePostAttributes requires at least one attribute');
+  }
+  const res = await pluginApi(`/posts/${postId}/attributes`, { method: 'PUT', body: attributes, siteKey: options.siteKey });
+  return res && res.data ? res.data : res;
+}
+
+module.exports = { pluginTarget, pluginApi, getPostMeta, updatePostMeta, setPostLanguage, setPostDates, getPostDates, toPluginLanguage, findPostByLanguage, listPostsByLanguage, updatePostAttributes };

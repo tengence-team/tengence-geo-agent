@@ -61,6 +61,7 @@ lazy('plan', () => require('./plan'));
 lazy('articleState', () => require('./article-state'));
 lazy('channelState', () => require('./channel-state'));
 lazy('wp', () => require('./wp'));
+lazy('wpContent', () => require('./wp/content'));
 lazy('content', () => require('./content'));
 // 2026-11-14 internal-link language audit/repair (shares the SSOT rule with check_article)
 lazy('linkAudit', () => require('./content/link-repair'));

@@ -32,7 +32,8 @@
     "tengence-geo-taxonomy": "packages/geo-cli/bin/taxonomy.js",
     "tengence-geo-mcp": "packages/geo-mcp/bin/geo-mcp.js",
     "tengence-geo-mcp-http": "packages/geo-mcp/bin/geo-mcp-http.js",
-    "tengence-geo-agent": "apps/agent/launcher.js"
+    "tengence-geo-agent": "apps/agent/launcher.js",
+    "tengence-geo-content": "packages/geo-cli/bin/content.js"
   },
   "files": [
     "packages",

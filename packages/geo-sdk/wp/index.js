@@ -20,6 +20,7 @@ const media = require('./media');
 const target = require('./target');
 const request = require('./request');
 const posts = require('./posts');
+const content = require('./content');
 const plugin = require('./plugin');
 const termnames = require('./termnames');
 const terms = require('./terms');
@@ -30,6 +31,7 @@ module.exports = {
   api: request.api,
   apiAll: request.apiAll,
   posts,
+  content,
   media,
   plugin,
   termnames,
