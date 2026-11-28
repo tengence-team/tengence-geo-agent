@@ -20,8 +20,8 @@ const { prompts } = require('../packages/geo-mcp/tools/prompts');
 const { fixedResources, resourceTemplates, GLOSSARY_LANGS } = require('../packages/geo-mcp/tools/resources');
 const { buildInstructions } = require('../packages/geo-mcp/server.js');
 
-test('registry: 96 tools, all titled, no standards_* tools', () => {
-  assert.equal(tools.length, 96);
+test('registry: 98 tools, all titled, no standards_* tools', () => {
+  assert.equal(tools.length, 98);
   assert.ok(tools.every((t) => !!t.title), 'every tool must have a title');
   assert.ok(!tools.some((t) => t.name.startsWith('standards_')), 'no legacy standards tools');
 });

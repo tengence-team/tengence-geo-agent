@@ -1009,6 +1009,50 @@ const tools = [
     },
   },
   {
+    name: 'content_media_upload',
+    title: '上传内容配图/截图',
+    description:
+      'Upload one local image to the WordPress media library with SEO-complete metadata. ' +
+      'Type-agnostic: it only takes a file plus alt / title / filename; no post type, no stock-photo search, no DB image records. ' +
+      'The file name is normalised (ASCII lowercase, hyphens, <=80 chars) before upload; alt must describe the image itself in the page language, ' +
+      'title is the media title in the page language. Returns media_id + url for inserting into the content body.',
+    inputSchema: z.object({
+      site: siteField,
+      workspace: workspaceField,
+      path: z.string().describe('absolute local image path (png/jpg/jpeg/webp, max 8 MB)'),
+      alt: z.string().describe('alt text of the image itself, in the page language (required)'),
+      title: z.string().describe('media title in the page language (required)'),
+      filename: z.string().optional().describe('normalised filename, e.g. tengence-docs-quickstart-step1-workbench-zh-hans.png; when omitted a normalised local basename is used'),
+    }).passthrough(),
+    async run(args) {
+      withSite(args);
+      if (!args.path) return fail(new Error('content_media_upload requires path'));
+      if (!args.alt || !args.title) return fail(new Error('content_media_upload requires alt and title'));
+      const result = await t.wp.media.uploadMediaWithMeta(args.path, {
+        alt: args.alt,
+        title: args.title,
+        filename: args.filename,
+      });
+      return ok(result);
+    },
+  },
+  {
+    name: 'content_media_get',
+    title: '读取媒体信息',
+    description: 'Read one WordPress media item by ID (source URL, alt, title). Use it to verify an upload before inserting it into a doc.',
+    inputSchema: z.object({
+      site: siteField,
+      workspace: workspaceField,
+      media_id: z.number(),
+    }).passthrough(),
+    async run(args) {
+      withSite(args);
+      const media = await t.wp.media.getMedia(args.media_id);
+      if (!media) return fail(new Error(`media ${args.media_id} not found`));
+      return ok(media);
+    },
+  },
+  {
     name: 'content_tree',
     title: '读取任意内容树',
     description: 'Read every node of a hierarchical WordPress post type (default tengence_doc) and return both the flat list and the assembled tree (parent + menu_order). Type-agnostic.',

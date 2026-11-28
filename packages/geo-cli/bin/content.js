@@ -12,6 +12,8 @@
  *   tengence-geo-content status --site tengence --type tengence_doc --lang zh-hans
  *   tengence-geo-content publish --site tengence --type page payload.json
  *   tengence-geo-content delete  --site tengence --type page --id 123 [--force]
+ *   tengence-geo-content media-upload <file> --site tengence --alt ... --title ... [--filename ...]
+ *   tengence-geo-content media-get --site tengence --id 123
  *   cat payload.json | tengence-geo-content publish --site tengence
  *
  * Payload: { language, translationGroup, parent, menuOrder, meta, ...WP fields }
@@ -122,6 +124,26 @@ async function main() {
     return;
   }
 
+  if (command === 'media-upload') {
+    const file = opts._[1];
+    if (!file) throw new Error('media-upload requires a local image path');
+    const result = await t.wp.media.uploadMediaWithMeta(file, {
+      alt: opts.alt,
+      title: opts.title,
+      filename: opts.filename,
+    });
+    console.log(JSON.stringify(result));
+    return;
+  }
+
+  if (command === 'media-get') {
+    if (!opts.id) throw new Error('media-get requires --id');
+    const media = await t.wp.media.getMedia(Number(opts.id));
+    if (!media) throw new Error(`media ${opts.id} not found`);
+    console.log(JSON.stringify(media));
+    return;
+  }
+
   if (command === 'delete') {
     if (!opts.id) throw new Error('delete requires --id');
     const result = await t.wpContent.remove(opts.id, { postType: opts.type, force: Boolean(opts.force), siteKey });
@@ -129,7 +151,7 @@ async function main() {
     return;
   }
 
-  throw new Error('Usage: content <tree|status|publish|delete> [--site key] [--type postType] [payload.json]');
+  throw new Error('Usage: content <tree|status|publish|delete|media-upload|media-get> [--site key] [--type postType] [payload.json]');
 }
 
 main().catch((err) => {
